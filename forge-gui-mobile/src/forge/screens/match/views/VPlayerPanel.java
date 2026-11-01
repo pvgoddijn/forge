@@ -301,6 +301,7 @@ public class VPlayerPanel extends FContainer {
     private float compactPhaseTop, compactPhaseHeight, compactAvatarSize = -1f, compactAvatarNatural; //phase button under the life total, avatar fitted to the panel
     private CompactScrollAnimation compactScrollAnimation;
     private final Color compactHintColor = new Color();
+    private boolean noPhaseIndicator; //showOnlyZones: a panel with no game behind it has no phases
     private boolean commandUserOpened; //compact layout: opened by hand while no card zone was open, stays open until closed by hand
 
     public VPlayerPanel(PlayerView player0, boolean showHand, int playerCount) {
@@ -397,6 +398,25 @@ public class VPlayerPanel extends FContainer {
 
     public void setBottomPlayer(boolean val) {
         isBottomPlayer = val;
+    }
+
+    private void syncPhaseIndicator() {
+        phaseIndicator.syncCompactVisibility();
+        if (noPhaseIndicator) { phaseIndicator.setVisible(false); }
+    }
+
+    /** For a panel with no game behind it: keeps only these zones' tabs, and drops the phase indicator. */
+    public void showOnlyZones(Set<ZoneType> zones) {
+        noPhaseIndicator = true;
+        phaseIndicator.setVisible(false);
+        for (InfoTab tab : new ArrayList<>(tabs)) {
+            boolean keep = tab == commandTab ? zones.contains(ZoneType.Command)
+                    : tab instanceof InfoTabZone zoneTab && zones.contains(zoneTab.zoneType);
+            if (!keep) {
+                tabs.remove(tab);
+                tab.setVisible(false);
+            }
+        }
     }
 
     public void addZoneDisplay(ZoneType zoneType) {
@@ -712,7 +732,7 @@ public class VPlayerPanel extends FContainer {
         }
         tabStrip.setVisible(false); //compact landscape controls
         phaseButton.setVisible(false);
-        phaseIndicator.syncCompactVisibility();
+        syncPhaseIndicator();
         restoreAvatarSize();
         //layout for bottom panel by default
         float x = avatarHeight;
@@ -721,7 +741,7 @@ public class VPlayerPanel extends FContainer {
         if (avatarHeight < VAvatar.HEIGHT) {
             indicatorScale = 0.6f;
         }
-        float h = phaseIndicator.getPreferredHeight(w) * indicatorScale;
+        float h = noPhaseIndicator ? 0 : phaseIndicator.getPreferredHeight(w) * indicatorScale;
         phaseIndicator.setBounds(x, height - h, w, h);
 
         float y = height - avatarHeight;
@@ -823,7 +843,7 @@ public class VPlayerPanel extends FContainer {
         tabColTop = y;
         tabColHeight = height - y;
         tabStrip.setVisible(compact && !isDoubleTabs()); //no scroller, so no scroll bar, when every tab is showing
-        phaseButton.setVisible(phaseButtonShown);
+        phaseButton.setVisible(phaseButtonShown && !noPhaseIndicator);
         layoutTabsLandscape();
         updateTabLayout(width, height);
     }
@@ -916,6 +936,7 @@ public class VPlayerPanel extends FContainer {
             compactOrder.add(tabManaPool);
             compactOrder.add(commandTab);
             compactOrder.add(extraTab);
+            compactOrder.retainAll(tabs); //showOnlyZones may have dropped some
         }
         return compactOrder;
     }
@@ -971,6 +992,7 @@ public class VPlayerPanel extends FContainer {
             compactGrid.add(commandTab);
             compactGrid.add(extraTab);
             compactGrid.add(tabManaPool);
+            compactGrid.retainAll(tabs); //showOnlyZones may have dropped some
         }
         return compactGrid;
     }
@@ -1200,7 +1222,7 @@ public class VPlayerPanel extends FContainer {
         } else {
             phaseIndicator.setBounds(tabColWidth, 0, avatar.getWidth() * 0.6f, height);
         }
-        phaseIndicator.syncCompactVisibility();
+        syncPhaseIndicator();
         updateAnimatedLayout(width, height);
     }
 
@@ -1889,7 +1911,7 @@ public class VPlayerPanel extends FContainer {
                 g.fillRect(FSkinColor.get(Forge.isMobileAdventureMode ? Colors.ADV_CLR_THEME2 : Colors.CLR_THEME2), 0, 0, getWidth(), getHeight());
             }
             float x, y, w, h;
-            boolean drawOverlay = MatchController.getView().selectedPlayerPanel().getPlayer() == player && Forge.hasGamepad();
+            boolean drawOverlay = Forge.hasGamepad() && MatchController.getView() != null && MatchController.getView().selectedPlayerPanel().getPlayer() == player;
             if (isSelected()) {
                 y = 0;
                 w = getWidth();
@@ -2376,7 +2398,7 @@ public class VPlayerPanel extends FContainer {
 
     @Override
     public boolean keyDown(int keyCode) {
-        if (MatchController.getView().selectedPlayerPanel() == this && !((FMenuBar) MatchController.getView().getHeader()).isShowingMenu(true)) {
+        if (MatchController.getView() != null && MatchController.getView().selectedPlayerPanel() == this && !((FMenuBar) MatchController.getView().getHeader()).isShowingMenu(true)) {
             if (keyCode == Input.Keys.BUTTON_B) {
                 MatchScreen.nullPotentialListener();
                 closeSelectedTab();

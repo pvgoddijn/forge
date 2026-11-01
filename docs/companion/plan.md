@@ -19,7 +19,7 @@ Three independent parts, joined by narrow interfaces:
 Key decisions:
 
 1. **The game is an append-only action log, and state is computed by replaying it.** History (AC-26), undo (AC-27), resume (AC-29) and the "wrong player" correction (AC-22a) all come from this one mechanism instead of four separate features. Undo and correction are themselves actions. Replay skips an undone action, and uses the corrected player for a reassigned card. This also gets AC-22a's "as if the card had never left" right, including when the hand count was clamped at 0 (AC-19), and it suits later sync.
-2. **The tracker does not touch the rules engine** (Q5). No `Game`, `MatchController` or match views.
+2. **The tracker does not touch the rules engine, but it does reuse the match interface** (Q5). No `Game`, `HostedMatch` or running match. The game screen shows real `VPlayerPanel` boards, fed read-only views built from the replayed state.
 3. **Name-only recognition** (Q10): the guide frame crops the name band, OCR reads it, and fuzzy matching against `CardDb` picks the card. No image index.
 4. **OCR is chosen by measurement, not assumption.** See section 4.
 
@@ -52,12 +52,15 @@ No UI or libGDX, so it can be tested on a plain JVM. This module already has Tes
 |---|---|
 | `NewGameMenu.NewGameScreen.Companion` | New enum entry, using an existing skin icon (AC-1). Resumes the active game if there is one. |
 | `CompanionSetupScreen` | Players, seat order, Me, deck and commander (AC-2 to AC-5). Reuses `FDeckImportDialog`. |
-| `CompanionGameScreen` | All-players overview (AC-23), next turn, life, undo, and capture and add-by-name buttons. |
+| `CompanionGameScreen` | A scrolling list of real `VPlayerPanel` boards, one per player (AC-23), plus next turn, life, undo, and capture and add-by-name buttons. |
+| `CompanionBoard` | Copies a `CompanionState` into `PlayerView` and `CardView` objects. Hidden hand cards are card backs in the Hand zone. Holds no game state. |
+| `CompanionController` | The `IGameController` the panels send taps to, registered as the match controller's spectator. A card tap moves the card; a player or hidden-card tap changes the hand count. |
 | `CardSuggestionDialog` | Suggestions, target player, from/to zones, and search and cancel (AC-8, AC-17, AC-18). |
 | `CardSearchDialog` | Type-to-search using `CardNameMatcher`. Partial OCR text can pre-fill it (AC-11, AC-14 to AC-16). |
 | `CompanionHistoryScreen` | Filter by player. Also opens ended games read-only (AC-28, AC-30). |
 
-- Card drawing reuses `CardRenderer` and `CardView.getCardForUi`. These still have a few `MatchController` references, which slice 0 has to check, and fix only if they actually get hit.
+- Card drawing comes with the panels. Board cards use `CardFactory.getCard` with the per-game instance ID, not `CardView.getCardForUi`, which shares one card per printing with ID -1 and so would merge copies.
+- Match view changes stay small: null guards for a missing `MatchScreen`, `VPlayerPanel.showOnlyZones`, and `CardFlightOverlay.disable`. Entering the screen resets the match controller and card panels, because a finished match leaves both behind.
 - The auto/confirm setting is a new `FPref` (AC-10).
 
 ## 3. Files touched outside new code
@@ -112,8 +115,8 @@ Sizes, versions and licences above are not confirmed yet. The spike confirms the
 | Maintainers don't want the feature or dependency | **Ask before building**, with spike numbers in hand. If they decline, it lives on your fork, and this design doesn't change. |
 | `android-maven-plugin` struggles with the new AAR or native libraries | `sentry-android` already comes in as an AAR, so it should work. Slice 1 proves it early. |
 | ProGuard strips OCR classes used through JNI | Keep rules in `proguard.cfg`. Only testable in a release-style APK. |
-| 6 players don't fit on a phone screen | Compact rows with tap to expand. Test in slice 0 with 6 players. |
-| `CardRenderer` needs a running match | Check in slice 0. Fall back to a small guard or a plain image plus name. |
+| 6 players don't fit on a phone screen | Boards scroll, at a minimum height that keeps cards legible. About three fit per screen at phone proportions, so AC-23 at 6 players means scrolling. |
+| Match views need a running match | Checked on the dev build, including before and after a real AI match. Still to check on a phone. |
 | Replay slows down on long games | Hundreds of small actions should be trivial. Cache state in memory, and only replay fully on load or undo. |
 | No phone reachable from this environment | This distro is isolated from Windows and has no Android SDK yet. The SDK can be installed here. APKs get copied out through `\\wsl.localhost` and installed by you, so **phone checks (AC-6, 29, 31, 33) depend on you**. |
 

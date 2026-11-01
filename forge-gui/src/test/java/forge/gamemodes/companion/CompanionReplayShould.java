@@ -42,9 +42,9 @@ public class CompanionReplayShould {
     @Test
     public void giveTheSameStateFromTheSameLog() {
         CompanionGame game = store.createGame(PLAYERS);
-        game.addCard(1, "Sol Ring");
-        game.addCard(1, "Sol Ring");
-        game.addCard(0, "Forest");
+        game.addCard(1, "Sol Ring", null, CompanionZone.BATTLEFIELD);
+        game.addCard(1, "Sol Ring", null, CompanionZone.BATTLEFIELD);
+        game.addCard(0, "Forest", null, CompanionZone.BATTLEFIELD);
 
         assertThat(CompanionState.replay(game.log())).isEqualTo(game.state());
         assertThat(game.state().players().get(1).battlefield()).extracting(CompanionState.GameCard::name)
@@ -54,8 +54,8 @@ public class CompanionReplayShould {
     @Test
     public void keepTwoCopiesDistinct() {
         CompanionGame game = store.createGame(PLAYERS);
-        game.addCard(0, "Forest");
-        game.addCard(0, "Forest");
+        game.addCard(0, "Forest", null, CompanionZone.BATTLEFIELD);
+        game.addCard(0, "Forest", null, CompanionZone.BATTLEFIELD);
 
         List<CompanionState.GameCard> cards = game.state().players().get(0).battlefield();
         assertThat(cards.get(0).instanceId()).isNotEqualTo(cards.get(1).instanceId());
@@ -64,7 +64,7 @@ public class CompanionReplayShould {
     @Test
     public void resumeASavedGameExactly() {
         CompanionGame game = store.createGame(PLAYERS);
-        game.addCard(1, "Lim-Dûl's Vault");
+        game.addCard(1, "Lim-Dûl's Vault", null, CompanionZone.BATTLEFIELD);
 
         CompanionGame resumed = new CompanionStore(dir).loadActive().orElseThrow();
 
@@ -76,14 +76,14 @@ public class CompanionReplayShould {
     @Test
     public void ignoreATornLastLineAndKeepGoing() throws IOException {
         CompanionGame game = store.createGame(PLAYERS);
-        game.addCard(0, "Forest");
+        game.addCard(0, "Forest", null, CompanionZone.BATTLEFIELD);
         byte[] torn = "{\"seq\":2,\"time\":1,\"type\":\"CardAd".getBytes(StandardCharsets.UTF_8);
         Files.write(fileOf(game), torn, StandardOpenOption.APPEND);
 
         CompanionGame resumed = store.loadActive().orElseThrow();
         assertThat(resumed.state()).isEqualTo(game.state());
 
-        resumed.addCard(1, "Sol Ring");
+        resumed.addCard(1, "Sol Ring", null, CompanionZone.BATTLEFIELD);
         CompanionGame again = store.loadActive().orElseThrow();
         assertThat(again.state().players().get(1).battlefield()).hasSize(1);
         assertThat(again.state().players().get(0).battlefield()).hasSize(1);
@@ -92,7 +92,7 @@ public class CompanionReplayShould {
     @Test
     public void setADamagedGameAsideAndReportIt() throws IOException {
         CompanionGame game = store.createGame(PLAYERS);
-        game.addCard(0, "Forest");
+        game.addCard(0, "Forest", null, CompanionZone.BATTLEFIELD);
         List<String> lines = Files.readAllLines(fileOf(game));
         lines.set(0, "not json");
         Files.write(fileOf(game), lines);
@@ -119,7 +119,7 @@ public class CompanionReplayShould {
         CompanionGame game = store.createGame(PLAYERS);
         long sizeBefore = fileOf(game).toFile().length();
 
-        assertThatThrownBy(() -> game.addCard(5, "Sol Ring")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> game.addCard(5, "Sol Ring", null, CompanionZone.BATTLEFIELD)).isInstanceOf(IllegalArgumentException.class);
 
         assertThat(fileOf(game).toFile().length()).isEqualTo(sizeBefore);
         assertThat(game.log()).hasSize(1);

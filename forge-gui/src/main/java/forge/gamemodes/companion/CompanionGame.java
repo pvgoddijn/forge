@@ -44,8 +44,17 @@ public class CompanionGame {
         return Collections.unmodifiableList(log);
     }
 
-    public void addCard(int player, String cardName) {
-        apply(new CompanionAction.CardAdded(log.size(), System.currentTimeMillis(), player, cardName));
+    /** Logs a card for a player. {@code from} is null if it comes from outside the tracked zones. */
+    public void addCard(int player, String cardName, CompanionZone from, CompanionZone to) {
+        apply(new CompanionAction.CardAdded(log.size(), System.currentTimeMillis(), player, cardName, from, to));
+    }
+
+    public void moveCard(int instanceId, int toPlayer, CompanionZone to) {
+        apply(new CompanionAction.CardMoved(log.size(), System.currentTimeMillis(), instanceId, toPlayer, to));
+    }
+
+    public void changeHandCount(int player, int delta) {
+        apply(new CompanionAction.HandCountChanged(log.size(), System.currentTimeMillis(), player, delta));
     }
 
     /**

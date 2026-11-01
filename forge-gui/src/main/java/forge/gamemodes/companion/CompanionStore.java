@@ -173,12 +173,33 @@ public class CompanionStore {
             json.addProperty("type", "CardAdded");
             json.addProperty("player", added.player());
             json.addProperty("card", added.cardName());
+            if (added.from() != null) {
+                json.addProperty("from", added.from().name());
+            }
+            json.addProperty("to", added.to().name());
+        } else if (action instanceof CompanionAction.CardMoved moved) {
+            json.addProperty("type", "CardMoved");
+            json.addProperty("card", moved.instanceId());
+            json.addProperty("toPlayer", moved.toPlayer());
+            json.addProperty("to", moved.to().name());
+        } else if (action instanceof CompanionAction.HandCountChanged changed) {
+            json.addProperty("type", "HandCountChanged");
+            json.addProperty("player", changed.player());
+            json.addProperty("delta", changed.delta());
         } else if (action instanceof CompanionAction.GameEnded) {
             json.addProperty("type", "GameEnded");
         } else {
             throw new IllegalArgumentException("Unknown action " + action);
         }
         return json.toString();
+    }
+
+    private static CompanionZone zone(JsonObject json, String key) {
+        try {
+            return CompanionZone.valueOf(json.get(key).getAsString());
+        } catch (IllegalArgumentException e) {
+            throw new JsonParseException("Unknown zone in " + json, e);
+        }
     }
 
     static CompanionAction fromJson(String line) {
@@ -197,7 +218,14 @@ public class CompanionStore {
                 return new CompanionAction.GameStarted(seq, time, players);
             case "CardAdded":
                 return new CompanionAction.CardAdded(seq, time,
-                        json.get("player").getAsInt(), json.get("card").getAsString());
+                        json.get("player").getAsInt(), json.get("card").getAsString(),
+                        json.has("from") ? zone(json, "from") : null, zone(json, "to"));
+            case "CardMoved":
+                return new CompanionAction.CardMoved(seq, time,
+                        json.get("card").getAsInt(), json.get("toPlayer").getAsInt(), zone(json, "to"));
+            case "HandCountChanged":
+                return new CompanionAction.HandCountChanged(seq, time,
+                        json.get("player").getAsInt(), json.get("delta").getAsInt());
             case "GameEnded":
                 return new CompanionAction.GameEnded(seq, time);
             default:

@@ -134,7 +134,7 @@ These are defaults filled in during writing, not discussed explicitly:
 | Q2 | Android for v1. The desktop mobile-dev build captures from image files. iOS later. |
 | Q3 | One device, one operator. Multi-device sync much later. |
 | Q4 | Aim upstream, so open-source dependencies only. |
-| Q5 | A tracker, not the rules engine. Reuse the card database, card rendering and deck import. |
+| Q5 | A tracker, not the rules engine. Reuse the card database, card rendering, match views and deck import. |
 | Q6 | 2–6 players with a Command zone. Commander damage is the first "later" feature. |
 | Q7 | One card per photo. |
 | Q8 | Confirm mode by default, with an auto-mode setting. Typing to search is always available. |

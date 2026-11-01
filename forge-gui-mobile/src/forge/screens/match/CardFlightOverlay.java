@@ -226,6 +226,15 @@ public final class CardFlightOverlay {
         return n;
     }
 
+    /**
+     * For showing card panels outside the match screen, whose draw() is what runs flights and refreshes this setting.
+     * A card waiting on a flight that never runs would stay hidden.
+     */
+    public static void disable() {
+        clear();
+        enabled = false;
+    }
+
     /** Call on new game / leaving the match screen. */
     public static void clear() {
         // a panel hides its real card until its flight is done, so release them before dropping the list

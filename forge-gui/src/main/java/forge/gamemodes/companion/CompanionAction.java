@@ -21,8 +21,20 @@ public sealed interface CompanionAction {
         }
     }
 
-    /** A card, token or emblem put on a player's battlefield. The card's instance ID is this action's {@code seq}. */
-    record CardAdded(int seq, long timestamp, int player, String cardName) implements CompanionAction { }
+    /**
+     * A card, token or emblem newly logged for a player. The card's instance ID is this action's {@code seq}, unless
+     * it was already known in that player's hand. {@code from} is null if it comes from outside the tracked zones,
+     * such as a library or a token being created.
+     */
+    record CardAdded(int seq, long timestamp, int player, String cardName, CompanionZone from, CompanionZone to)
+            implements CompanionAction { }
+
+    /** A tracked card moved to any zone of any player. */
+    record CardMoved(int seq, long timestamp, int instanceId, int toPlayer, CompanionZone to)
+            implements CompanionAction { }
+
+    /** A change to a hidden hand count, such as a draw or a discard. The count never goes below 0. */
+    record HandCountChanged(int seq, long timestamp, int player, int delta) implements CompanionAction { }
 
     /** Marks the game as over, so it no longer resumes. */
     record GameEnded(int seq, long timestamp) implements CompanionAction { }

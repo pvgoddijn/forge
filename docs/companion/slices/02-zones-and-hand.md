@@ -19,7 +19,7 @@ Cards land in the right zone by default and can be moved anywhere. Hand counts a
 
 ## Build
 - **Domain:** add `CardMoved` and `HandCountChanged` actions. Put the rules in the replay in `CompanionGame`. Zones: Hand, Battlefield, Graveyard, Exile, Command.
-- **Screens:** from/to zone choice in the add dialog, a move menu on tapping a card, ±1 hand controls, and zone views on `CompanionGameScreen`.
+- **Screens:** real `VPlayerPanel` boards. From/to zone choice in the add dialog, a move dialog on tapping a card, hand ±1 on tapping an avatar or hidden card, and the panels' own zone tabs.
 - Use the card's type from `CardDb` for the AC-18 default.
 
 ## Tests (CI)

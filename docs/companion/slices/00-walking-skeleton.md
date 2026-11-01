@@ -27,6 +27,7 @@ The operator opens Companion, enters players, adds a card by typing, sees it on 
 **`forge-gui-mobile`, package `forge.screens.companion`:**
 - `NewGameMenu.NewGameScreen.Companion` enum entry with an existing `FSkinImage` icon. Add a `lblCompanion` string.
 - `CompanionSetupScreen`, `CompanionGameScreen`, `CardSearchDialog`. Subclass `FScreen`, and use the `forge.toolbox` widgets.
+- **Changed in slice 2:** `CompanionGameScreen` now shows real `VPlayerPanel` boards, as the owner asked to reuse the existing interface. See `plan.md` section 2.
 
 ## Check early
 - Whether `CardRenderer` and `CardView.getCardForUi` work with no match running. They contain some `MatchController` references. Fix only what actually gets hit. The fallback is image plus name.
