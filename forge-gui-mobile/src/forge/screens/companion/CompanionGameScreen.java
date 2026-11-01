@@ -103,8 +103,12 @@ public class CompanionGameScreen extends FScreen {
             CompanionState.PlayerState player = state.players().get(i);
             StringBuilder text = new StringBuilder(player.name()).append(player.me() ? " (Me)" : "")
                     .append(" - Hand: ").append(player.hiddenHand()).append(" hidden");
-            for (CompanionState.GameCard known : player.knownHand()) {
-                text.append("; ").append(known.name());
+            if (!player.knownHand().isEmpty()) {
+                // the count comes first because a long list of names is cut off; the Hand tab shows them all
+                text.append(", ").append(player.knownHand().size()).append(" known");
+                for (CompanionState.GameCard known : player.knownHand()) {
+                    text.append("; ").append(known.name());
+                }
             }
             names.get(i).setText(text.toString());
             for (ZoneType zone : REFRESHED_ZONES) {
