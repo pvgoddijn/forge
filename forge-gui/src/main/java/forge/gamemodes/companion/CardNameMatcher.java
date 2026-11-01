@@ -97,6 +97,19 @@ public class CardNameMatcher {
                 return 0.55 * (1 - (double) partial / query.length());
             }
         }
+        // a typo in one word of the name, as in "Bolr" for Lightning Bolt
+        int wordStart = name.indexOf(' ') + 1;
+        while (wordStart > 0) {
+            int wordEnd = name.indexOf(' ', wordStart);
+            String word = wordEnd < 0 ? name.substring(wordStart) : name.substring(wordStart, wordEnd);
+            if (Math.abs(word.length() - query.length()) <= maxEdits) {
+                int edits = distance.apply(query, word);
+                if (edits >= 0) {
+                    return 0.45 * (1 - (double) edits / query.length());
+                }
+            }
+            wordStart = wordEnd + 1;
+        }
         return 0;
     }
 

@@ -95,6 +95,8 @@ public class NewGameMenu extends FPopupMenu {
     }
     public static void setPreferredScreen(NewGameScreen preferredScreen0) {
         if (preferredScreen == preferredScreen0) { return; }
+        //companion resumes its active game and has no setup to come back to, so New Game mustn't default to it
+        if (NewGameScreen.Companion.equals(preferredScreen0)) { return; }
         preferredScreen = preferredScreen0;
         String prefName = preferredScreen.name();
         //don't save adventure mode launchscreen, default to constructed

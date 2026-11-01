@@ -27,8 +27,10 @@ import java.util.UUID;
  */
 public class CompanionStore {
     private static final String EXTENSION = ".jsonl";
+    private static final String DAMAGED_SUFFIX = ".damaged";
 
     private final File dir;
+    private List<File> unreadable = new ArrayList<>();
 
     public CompanionStore(File dir) {
         this.dir = dir;
@@ -39,8 +41,14 @@ public class CompanionStore {
         return CompanionGame.start(id, players, action -> append(id, action));
     }
 
+    /** The files the last {@link #loadActive()} couldn't read, for telling the operator. */
+    public List<File> unreadableFiles() {
+        return unreadable;
+    }
+
     /** The game that hasn't ended, most recently played first if a problem ever left more than one. */
     public Optional<CompanionGame> loadActive() {
+        unreadable = new ArrayList<>();
         File[] files = dir.listFiles((d, name) -> name.endsWith(EXTENSION));
         if (files == null) {
             return Optional.empty();
@@ -59,9 +67,15 @@ public class CompanionStore {
                     newest = file;
                     active = game;
                 }
-            } catch (IllegalArgumentException | JsonParseException | IllegalStateException e) {
-                // A damaged game mustn't stop the mode from opening. Its file stays, for recovery by hand.
-                System.err.println("Skipping unreadable companion game " + file + ": " + e);
+            } catch (IllegalArgumentException | JsonParseException | IllegalStateException | ClassCastException e) {
+                // A damaged game mustn't stop the mode from opening. Set its file aside, for recovery by hand.
+                System.err.println("Setting aside damaged companion game " + file + ": " + e);
+                File aside = new File(dir, name + DAMAGED_SUFFIX);
+                unreadable.add(file.renameTo(aside) ? aside : file);
+            } catch (UncheckedIOException e) {
+                // May be temporary, so the file stays where it is.
+                System.err.println("Can't read companion game " + file + ": " + e);
+                unreadable.add(file);
             }
         }
         return Optional.ofNullable(active);
@@ -83,11 +97,19 @@ public class CompanionStore {
             throw new UncheckedIOException(new IOException("Can't create " + dir));
         }
         byte[] line = (toJson(action) + "\n").getBytes(StandardCharsets.UTF_8);
-        try (FileOutputStream out = new FileOutputStream(fileFor(id), true)) {
+        File file = fileFor(id);
+        long lengthBefore = file.length();
+        try (FileOutputStream out = new FileOutputStream(file, true)) {
             out.write(line);
             out.flush();
             out.getFD().sync(); // the game has to survive the phone restarting, not just the app
         } catch (IOException e) {
+            // The action didn't count, so none of it may stay: a retry would join a fragment or repeat the line.
+            try (RandomAccessFile repair = new RandomAccessFile(file, "rw")) {
+                repair.setLength(lengthBefore);
+            } catch (IOException repairFailure) {
+                e.addSuppressed(repairFailure);
+            }
             throw new UncheckedIOException(e);
         }
     }
@@ -114,7 +136,7 @@ public class CompanionStore {
             }
             try {
                 log.add(fromJson(new String(bytes, start, end - start, StandardCharsets.UTF_8)));
-            } catch (JsonParseException | IllegalStateException | NullPointerException | UnsupportedOperationException e) {
+            } catch (JsonParseException | IllegalStateException | NullPointerException | UnsupportedOperationException | ClassCastException e) {
                 if (lastLine) {
                     break;
                 }

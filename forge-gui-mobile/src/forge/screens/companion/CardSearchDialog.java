@@ -9,9 +9,11 @@ import forge.gamemodes.companion.CompanionState;
 import forge.toolbox.FComboBox;
 import forge.toolbox.FDialog;
 import forge.toolbox.FList;
+import forge.toolbox.FOptionPane;
 import forge.toolbox.FTextField;
 import forge.util.Utils;
 
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -84,7 +86,12 @@ public class CardSearchDialog extends FDialog {
     }
 
     private void addCard(String name) {
-        game.addCard(cbPlayer.getSelectedIndex(), name);
+        try {
+            game.addCard(cbPlayer.getSelectedIndex(), name);
+        } catch (UncheckedIOException e) {
+            FOptionPane.showErrorDialog("The card couldn't be saved, so it wasn't added.\n" + e.getMessage());
+            return;
+        }
         hide();
         onAdded.run();
     }

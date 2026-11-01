@@ -28,6 +28,11 @@ public class CardNameMatcherShould {
     }
 
     @Test
+    public void tolerateATypoInALaterWord() {
+        assertThat(best("Bolr")).isEqualTo("Lightning Bolt");
+    }
+
+    @Test
     public void rankADroppedLetterAboveALookalike() {
         CardNameMatcher lookalikes = new CardNameMatcher(Arrays.asList("Fighting Drake", "Lightning Bolt"));
 

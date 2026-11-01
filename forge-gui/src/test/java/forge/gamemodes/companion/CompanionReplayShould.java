@@ -90,6 +90,23 @@ public class CompanionReplayShould {
     }
 
     @Test
+    public void setADamagedGameAsideAndReportIt() throws IOException {
+        CompanionGame game = store.createGame(PLAYERS);
+        game.addCard(0, "Forest");
+        List<String> lines = Files.readAllLines(fileOf(game));
+        lines.set(0, "not json");
+        Files.write(fileOf(game), lines);
+
+        assertThat(store.loadActive()).isEmpty();
+
+        assertThat(store.unreadableFiles()).hasSize(1);
+        assertThat(store.unreadableFiles().get(0)).exists();
+        assertThat(fileOf(game).toFile()).doesNotExist();
+        assertThat(store.loadActive()).isEmpty();
+        assertThat(store.unreadableFiles()).isEmpty();
+    }
+
+    @Test
     public void notResumeAnEndedGame() {
         CompanionGame game = store.createGame(PLAYERS);
         game.apply(new CompanionAction.GameEnded(game.log().size(), 1));
