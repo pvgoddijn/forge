@@ -53,13 +53,15 @@ public class CompanionSetupScreen extends LaunchScreen {
     public void onActivate() {
         super.onActivate();
         Optional<CompanionGame> active = store.loadActive();
-        for (File file : store.unreadableFiles()) {
-            FOptionPane.showErrorDialog("A saved game couldn't be read, so it wasn't resumed. Its file is kept at:\n" + file);
-        }
-        if (active.isPresent()) {
-            // later, because this runs while the screen change that got us here is still happening
-            FThreads.invokeInEdtLater(() -> openGame(active.get()));
-        }
+        List<File> unreadable = store.unreadableFiles();
+        // later, because this runs while the screen change that got us here is still happening
+        FThreads.invokeInEdtLater(() -> {
+            active.ifPresent(this::openGame);
+            // after opening the game, as a dialog belongs to the screen that was current when it was shown
+            for (File file : unreadable) {
+                FOptionPane.showErrorDialog("A saved game couldn't be read, so it wasn't resumed. Its file is kept at:\n" + file);
+            }
+        });
     }
 
     private void setMe(int row) {
