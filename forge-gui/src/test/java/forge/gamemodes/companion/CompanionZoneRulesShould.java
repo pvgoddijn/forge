@@ -135,6 +135,18 @@ public class CompanionZoneRulesShould {
     }
 
     @Test
+    public void takeATrackedCardOutOfTheChosenFromZone() {
+        game.addCard(0, "Sol Ring", HAND, GRAVEYARD);
+        int ring = lastCardId();
+
+        game.addCard(0, "Sol Ring", GRAVEYARD, BATTLEFIELD);
+
+        assertThat(ann().zone(GRAVEYARD)).isEmpty();
+        assertThat(ann().battlefield()).extracting(CompanionState.GameCard::instanceId).containsExactly(ring);
+        assertThat(ann().hiddenHand()).isEqualTo(6);
+    }
+
+    @Test
     public void moveACardBetweenPlayers() {
         game.addCard(0, "Sol Ring", HAND, BATTLEFIELD);
         int ring = lastCardId();

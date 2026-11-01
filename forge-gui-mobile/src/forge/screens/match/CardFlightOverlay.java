@@ -81,7 +81,10 @@ public final class CardFlightOverlay {
         Parsed(String raw, Style style) { this.raw = raw; this.style = style; }
     }
 
+    private static boolean suppressed;
+
     public static Style style() {
+        if (suppressed) { return Style.OFF; }
         String v = FModel.getPreferences().getPref(ForgePreferences.FPref.UI_CARD_PLAY_ANIMATION_STYLE);
         Parsed p = parsed;                       // one read, so raw and style always match
         if (v == p.raw || (v != null && v.equals(p.raw))) { return p.style; }
@@ -227,12 +230,12 @@ public final class CardFlightOverlay {
     }
 
     /**
-     * For showing card panels outside the match screen, whose draw() is what runs flights and refreshes this setting.
-     * A card waiting on a flight that never runs would stay hidden.
+     * Turns flights off while card panels are shown outside the match screen, whose draw() is what runs them. A card
+     * waiting on a flight that never runs would stay hidden. Must be turned back off on leaving.
      */
-    public static void disable() {
+    public static void setSuppressed(boolean suppressed0) {
+        suppressed = suppressed0;
         clear();
-        enabled = false;
     }
 
     /** Call on new game / leaving the match screen. */

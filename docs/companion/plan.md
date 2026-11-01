@@ -60,7 +60,7 @@ No UI or libGDX, so it can be tested on a plain JVM. This module already has Tes
 | `CompanionHistoryScreen` | Filter by player. Also opens ended games read-only (AC-28, AC-30). |
 
 - Card drawing comes with the panels. Board cards use `CardFactory.getCard` with the per-game instance ID, not `CardView.getCardForUi`, which shares one card per printing with ID -1 and so would merge copies.
-- Match view changes stay small: null guards for a missing `MatchScreen`, `VPlayerPanel.showOnlyZones`, and `CardFlightOverlay.disable`. Entering the screen resets the match controller and card panels, because a finished match leaves both behind.
+- Match view changes stay small: null guards for a missing `MatchScreen`, `VPlayerPanel.showOnlyZones`, and `CardFlightOverlay.setSuppressed`. Entering the screen resets the match controller and card panels, because a finished match leaves both behind.
 - The auto/confirm setting is a new `FPref` (AC-10).
 
 ## 3. Files touched outside new code

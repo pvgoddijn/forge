@@ -882,7 +882,7 @@ public class MatchController extends NetworkGuiGame {
     }
 
     public void showFullControl(PlayerView selected, float x, float y) {
-        if (selected.isAI()) {
+        if (selected.isAI() || getGameView() == null) { //no game behind the panel, as in Companion mode
             return;
         }
         Set<FullControlFlag> controlFlags = getGameView().getGame().getPlayer(selected).getController().getFullControl();

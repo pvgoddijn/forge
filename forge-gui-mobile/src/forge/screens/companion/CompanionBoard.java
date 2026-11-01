@@ -111,6 +111,10 @@ class CompanionBoard {
         IPaperCard paper = findPrinting(name);
         if (paper != null) {
             Card card = CardFactory.getCard(paper, null, instanceId, null);
+            if (paper.getRules() != null && paper.getRules().getOtherPart() != null
+                    && name.equals(paper.getRules().getOtherPart().getName())) {
+                card.setState(paper.getRules().getSplitType().getChangedStateName(), true); // show the face that was logged
+            }
             return card.getView();
         }
         return new CardView(instanceId, tracker, name);

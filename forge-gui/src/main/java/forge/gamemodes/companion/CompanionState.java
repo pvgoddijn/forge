@@ -49,15 +49,20 @@ public record CompanionState(List<PlayerState> players, boolean ended) {
             hiddenHand = Math.max(0, hiddenHand + delta);
         }
 
-        /** Takes the card out of the hand: a known one by that name if there is one, else one from the hidden count. */
-        GameCard takeFromHand(String cardName) {
-            List<GameCard> known = zones.get(CompanionZone.HAND);
-            for (int i = 0; i < known.size(); i++) {
-                if (known.get(i).name().equals(cardName)) {
-                    return known.remove(i);
+        /**
+         * Takes the tracked card by that name out of the zone, if there is one. A card leaving the hand that isn't
+         * known comes off the hidden count, and any other card not yet tracked simply wasn't logged there.
+         */
+        GameCard takeFrom(CompanionZone zone, String cardName) {
+            List<GameCard> tracked = zones.get(zone);
+            for (int i = 0; i < tracked.size(); i++) {
+                if (tracked.get(i).name().equals(cardName)) {
+                    return tracked.remove(i);
                 }
             }
-            changeHidden(-1);
+            if (zone == CompanionZone.HAND) {
+                changeHidden(-1);
+            }
             return null;
         }
 
@@ -99,8 +104,8 @@ public record CompanionState(List<PlayerState> players, boolean ended) {
                 }
             } else if (action instanceof CompanionAction.CardAdded added) {
                 Seat seat = seat(seats, added.player());
-                GameCard known = added.from() == CompanionZone.HAND ? seat.takeFromHand(added.cardName()) : null;
-                GameCard card = known != null ? known : new GameCard(added.seq(), added.cardName());
+                GameCard tracked = added.from() != null ? seat.takeFrom(added.from(), added.cardName()) : null;
+                GameCard card = tracked != null ? tracked : new GameCard(added.seq(), added.cardName());
                 seat.zones.get(added.to()).add(card);
             } else if (action instanceof CompanionAction.CardMoved moved) {
                 Seat target = seat(seats, moved.toPlayer());

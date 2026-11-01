@@ -71,17 +71,29 @@ public class CompanionGameScreen extends FScreen {
         super.onActivate();
         // the panels send taps to the match controller: with no match running, it hands them to ours
         MatchController.instance.resetForNewMatch();
+        MatchController.instance.setGameView(null);
         MatchController.instance.setSpectator(controller);
-        // a finished match leaves its card panels and animation settings behind
+        // a finished match leaves its card panels behind, and flights only run on the match screen
         VCardDisplayArea.CardAreaPanel.resetForNewGame();
-        CardFlightOverlay.disable();
+        CardFlightOverlay.setSuppressed(true);
         refresh();
     }
 
     @Override
     public void onSwitchAway(Consumer<Boolean> canSwitchCallback) {
-        MatchController.instance.setSpectator(null);
+        leave();
         super.onSwitchAway(canSwitchCallback);
+    }
+
+    @Override
+    public void onClose(Consumer<Boolean> canCloseCallback) {
+        leave();
+        super.onClose(canCloseCallback);
+    }
+
+    private void leave() {
+        MatchController.instance.setSpectator(null);
+        CardFlightOverlay.setSuppressed(false);
     }
 
     private void refresh() {
@@ -89,8 +101,12 @@ public class CompanionGameScreen extends FScreen {
         board.sync(state);
         for (int i = 0; i < panels.size(); i++) {
             CompanionState.PlayerState player = state.players().get(i);
-            names.get(i).setText(player.name() + (player.me() ? " (Me)" : "") + " - Hand: " + player.hiddenHand()
-                    + " hidden, " + player.knownHand().size() + " known");
+            StringBuilder text = new StringBuilder(player.name()).append(player.me() ? " (Me)" : "")
+                    .append(" - Hand: ").append(player.hiddenHand()).append(" hidden");
+            for (CompanionState.GameCard known : player.knownHand()) {
+                text.append("; ").append(known.name());
+            }
+            names.get(i).setText(text.toString());
             for (ZoneType zone : REFRESHED_ZONES) {
                 panels.get(i).updateZone(zone);
             }

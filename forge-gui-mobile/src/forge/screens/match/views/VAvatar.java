@@ -206,7 +206,7 @@ public class VAvatar extends FDisplayObject {
             FSelectionBox.draw(g, Math.max(Utils.scale(2), w / 20f), 0, 0, w, h);
         }
         //selector
-        if (Forge.hasGamepad()) {
+        if (Forge.hasGamepad() && MatchController.getView() != null) {
             if (MatchController.getView().selectedPlayerPanel() != null) {
                 if (MatchController.getView().selectedPlayerPanel().getPlayer() == player) {
                     FSelectionBox.draw(g, Color.ORANGE, w / 16f, 0, 0, w, h);
@@ -224,7 +224,7 @@ public class VAvatar extends FDisplayObject {
     public boolean keyDown(int keyCode) {
         if (keyCode == Input.Keys.PAGE_DOWN) { // left analog down to select current selected panel
             //must invoke in game thread in case a dialog needs to be shown
-            if (MatchController.getView().selectedPlayerPanel() != null) {
+            if (MatchController.getView() != null && MatchController.getView().selectedPlayerPanel() != null) {
                 PlayerView selected = MatchController.getView().selectedPlayerPanel().getPlayer();
                 if (selected != null)
                     ThreadUtil.invokeInGameThread(() -> MatchController.instance.getGameController().selectPlayer(selected, null));
