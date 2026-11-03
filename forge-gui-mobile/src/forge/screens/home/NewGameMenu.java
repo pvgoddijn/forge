@@ -78,6 +78,13 @@ public class NewGameMenu extends FPopupMenu {
     static {
         try {
             preferredScreen = NewGameScreen.valueOf(prefs.getPref(FPref.NEW_GAME_SCREEN));
+            if (preferredScreen == NewGameScreen.Companion) {
+                // An earlier build saved Companion here. It resumes its game straight away, so New Game would never
+                // show the mode selection again (Companion AC-1).
+                preferredScreen = NewGameScreen.Constructed;
+                prefs.setPref(FPref.NEW_GAME_SCREEN, preferredScreen.name());
+                prefs.save();
+            }
         }
         catch (Exception ex) {
             if (NewGameScreen.Constructed != null) { //if this is null it means newgamescreen is not initialized
