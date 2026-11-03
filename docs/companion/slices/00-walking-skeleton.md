@@ -50,6 +50,16 @@ See `plan.md` sections 1 and 2.
 - What a snapshot loses after a typical turn (list it in this file).
 - 6 players on a phone-sized window: screenshot.
 
+## Results of the early checks (2026-11-03, dev build, portrait 450×900)
+- **Several humans on one GUI:** works. Me is the bottom board, there's no rotated second prompt (`MatchExtension.showsTopPrompt()`), and the prompt always belongs to the active seat. Not yet changed: `HostedMatch` still subscribes one event handler per human; it caused no visible problem with 6 seats, so it waits until it does.
+- **Op queue:** Add card for a seat whose turn it isn't puts the spell on the stack. OK resolves it, then OK resolves the enters trigger. Life, hand and library update on every board.
+- **Spells for a seat whose turn it isn't:** the card's normal spell list drops spells that can't be cast at this time. `TableEditor` uses the play-effect spell list instead, as "cast it without paying its mana cost" effects do.
+- **Placeholder outside `CardDb`:** fine through the game state, rendering and the stack. A game state must give its set (`Set:???`), or loading looks the name up in `CardDb`. To show as a card back, the image key goes on the card's own state; `Card.setImageKey` sets the shared preview copy.
+- **Resume:** kill, then relaunch, gives the same boards, life and hands. The start still shows Forge's coin-flip animation; who goes first comes from the seat order.
+- **Next turn:** OK in main 1 and main 2 passes to the next seat, whose draw step draws an unknown card.
+- **6 players:** every board is on one screen, each with life, hand count and library, but cards are small. Legibility on a real phone is the open question for slice 2.
+- **What a snapshot loses:** commander damage and tax, monarch/initiative, day/night, effects lasting until end of turn, delayed triggers, per-turn counts, and emblems or effects (no `PaperCard`). The table effect is added again on load. Emblems typed in by the operator are lost on resume until `GameState` saves them (plan 2.1).
+
 ## Tests (CI)
 Through the **real main loop**, with a scripted `CompanionPlayerController` answering prompts:
 - Gray Merchant cast from a hidden hand drains opponents, and the hand goes 7 → 6.
