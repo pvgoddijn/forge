@@ -50,7 +50,7 @@ public class CompanionPlayerController extends PlayerControllerHuman {
             return null; // responses for other seats come with a later slice
         }
         boolean mainPhase = ph.getPhase() != null && ph.getPhase().isMain();
-        if (stackEmpty && !mainPhase && !isCombatStop(ph)) {
+        if (stackEmpty && !mainPhase && !isCombatStop(ph, ph.getPhase())) {
             return null;
         }
         if (stackEmpty && mainPhase) {
@@ -80,7 +80,7 @@ public class CompanionPlayerController extends PlayerControllerHuman {
      */
     @Override
     public boolean isUiSetToSkipPhase(PlayerView turnPlayer, PhaseType phase) {
-        if (phase.isMain() || isCombatStop(getGame().getPhaseHandler())) {
+        if (phase.isMain() || isCombatStop(getGame().getPhaseHandler(), phase)) {
             return false;
         }
         return super.isUiSetToSkipPhase(turnPlayer, phase);
@@ -114,19 +114,25 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         }
         if (!CombatUtil.validateAttackers(combat)) {
             // A creature must attack (goad, "attacks each combat if able"). Declaring nobody isn't legal, and the
-            // engine would ask again forever, so the operator declares through Forge's prompt this once.
+            // engine would ask again forever. So this combat goes through the engine like one turned on for the
+            // turn: attack and block prompts, stops for tricks, damage by the rules. The operator is told why, so
+            // they don't also set life for it by hand.
+            table.setEngineCombatForTurn(getGame().getPhaseHandler().getTurn(), true);
+            table.notify(new TableEditor.Result(true,
+                    "A creature must attack this turn, so this combat runs in the game: declare the attack."));
             super.declareAttackers(attackingPlayer, combat);
         }
         // otherwise combat happens at the table, and the operator records its outcome (spec Q21)
     }
 
     /**
-     * The combat steps where the active seat stops while the engine runs this turn's combat: after attackers, after
-     * blockers, and between first-strike and regular damage, so a trick or flash blocker can be logged in time.
+     * Whether {@code phase} is a combat step where the active seat stops while the engine runs this turn's combat:
+     * after attackers, after blockers, and between first-strike and regular damage, so a trick or flash blocker can
+     * be logged in time. Not when nobody attacked: Forge runs the declare-attackers step for every turn.
      */
-    private boolean isCombatStop(PhaseHandler ph) {
-        PhaseType phase = ph.getPhase();
-        if (phase == null || !ph.inCombat() || !table.engineCombat(ph.getTurn())) {
+    private boolean isCombatStop(PhaseHandler ph, PhaseType phase) {
+        Combat combat = ph.getCombat();
+        if (phase == null || combat == null || combat.getAttackers().isEmpty() || !table.engineCombat(ph.getTurn())) {
             return false;
         }
         return phase == PhaseType.COMBAT_DECLARE_ATTACKERS || phase == PhaseType.COMBAT_DECLARE_BLOCKERS

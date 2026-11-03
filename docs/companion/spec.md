@@ -97,7 +97,7 @@ In scope:
 - **AC-38** WHILE a card is on the stack THE SYSTEM SHALL let the operator add a response from any player before it resolves.
 - **AC-39** THE SYSTEM SHALL never refuse an operator action because of the rules: costs, timing and land limits are not enforced on what the operator logs. A spell still needs a legal target to be cast; when it has none, the operator puts the card in its zone instead. The operator can always override a result (AC-22, AC-25) or undo it (AC-27).
 - **AC-40** WHEN the operator adds a card with "put onto the battlefield" instead of "cast" THE SYSTEM SHALL place it without cast triggers, still resolving its enters-the-battlefield effects.
-- **AC-41** WHERE the operator has turned on combat through the engine, for the game or for the current turn, WHEN a player's combat comes THE SYSTEM SHALL let the operator declare that player's attackers and each defender's blockers, SHALL stop after attackers, after blockers and between first-strike and regular damage so responses can be logged, and SHALL resolve combat damage and combat triggers by the rules. WHERE it is off, combat SHALL be skipped, except that WHEN a creature must attack (for example goad) THE SYSTEM SHALL ask the operator to declare attackers. The operator SHALL be able to switch it at any time, either for the current turn only or for every turn. The choice SHALL count from the next combat. The every-turn choice SHALL be saved with the game.
+- **AC-41** WHERE the operator has turned on combat through the engine, for the game or for the current turn, WHEN a player's combat comes THE SYSTEM SHALL let the operator declare that player's attackers and each defender's blockers, SHALL stop after attackers, after blockers and, when a creature has first strike, between first-strike and regular damage, so responses can be logged, and SHALL resolve combat damage and combat triggers by the rules. WHERE it is off, combat SHALL be skipped, except that WHEN a creature must attack (for example goad) THE SYSTEM SHALL run that combat through the engine as if turned on for the turn, and tell the operator why. The operator SHALL be able to switch it at any time, either for the current turn only or for every turn. The choice SHALL count from the next combat; turning it off during a combat drops that combat's remaining stops. The every-turn choice SHALL be saved with the game.
 
 ### 5.6 History, undo, persistence
 - **AC-26** WHEN any action happens THE SYSTEM SHALL add it to the history with the turn number, the active player, the player affected, and what was done.
@@ -122,7 +122,7 @@ In scope:
 7. Exporting or sharing the history.
 8. Sync between several devices (much later).
 9. iOS.
-10. Enforcing the rules on the operator: costs, mana, timing and land limits are never checked on what the operator logs (AC-39). Combat goes through the engine only when the operator turns it on (AC-41); otherwise they set life after combat.
+10. Enforcing the rules on the operator: costs, mana, timing and land limits are never checked on what the operator logs (AC-39). Combat goes through the engine only when the operator turns it on, or when a creature must attack (AC-41); otherwise they set life after combat.
 
 ## 7. Constraints
 
