@@ -47,9 +47,46 @@ public class CompanionTable {
         return setup;
     }
 
-    /** Whether combat is declared through the engine. Read at each combat, so a change counts from the next one. */
+    /** Whether combat is declared through the engine every turn. A change counts from the next combat. */
     public boolean engineCombat() {
         return setup.engineCombat();
+    }
+
+    /** The turn the operator wants combat through the engine for, though it's off for the game; 0 for none. */
+    private volatile int combatTurn;
+
+    /** Whether combat in {@code turn} is declared through the engine: every turn, or just this one. */
+    public boolean engineCombat(int turn) {
+        return setup.engineCombat() || combatTurn == turn;
+    }
+
+    /**
+     * Turns combat through the engine on or off for {@code turn} only, for a fight the table wants resolved by the
+     * rules. Not saved: it ends with the turn, and a resume mid-turn is rare enough to just turn it on again.
+     */
+    public void setEngineCombatForTurn(int turn, boolean on) {
+        combatTurn = on ? turn : 0;
+    }
+
+    /** Whether combat goes through the engine in the turn being played now. Any thread. */
+    public boolean engineCombatThisTurn() {
+        return engineCombat(currentTurn());
+    }
+
+    /** Turns combat through the engine on or off for the turn being played now. Any thread. */
+    public void setEngineCombatThisTurn(boolean on) {
+        setEngineCombatForTurn(currentTurn(), on);
+    }
+
+    /**
+     * The game's own turn number. Not the game view's: after a game state is loaded, the view keeps the turn the
+     * match started on until the next turn begins.
+     */
+    private int currentTurn() {
+        for (CompanionPlayerController seat : seats) {
+            return seat.getGame().getPhaseHandler().getTurn();
+        }
+        return 0;
     }
 
     /** Turns combat through the engine on or off for this game, and saves the choice with it. Any thread. */

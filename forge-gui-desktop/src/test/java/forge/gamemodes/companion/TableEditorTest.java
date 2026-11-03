@@ -243,6 +243,18 @@ public class TableEditorTest extends AITest {
     }
 
     @Test
+    public void combatForOneTurnEndsWithThatTurn() {
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        table.setEngineCombatForTurn(3, true);
+        assertTrue(table.engineCombat(3));
+        assertTrue(!table.engineCombat(4), "the next turn is back to the game's setting");
+        table.setEngineCombatForTurn(3, false);
+        assertTrue(!table.engineCombat(3));
+    }
+
+    @Test
     public void theMatcherNeverSuggestsThePlaceholder() {
         CardNameMatcher matcher = CardNameMatcher.fromStaticData();
         assertTrue(matcher.match(CompanionCards.PLACEHOLDER_NAME, 5).stream()

@@ -182,10 +182,15 @@ public class CompanionSetupScreen extends LaunchScreen {
             MatchController.setGameMenuExtension(menu -> {
                 menu.addItem(new FMenuItem("Add card", FSkinImage.PLUS,
                         e -> new CardSearchDialog(table, MatchController.instance.getGameView()).show()));
-                // the menu is built each time it opens, so the label shows the current setting
-                boolean combat = table.engineCombat();
-                menu.addItem(new FMenuItem(combat ? "Combat in the game: on" : "Combat in the game: off", FSkinImage.ATTACK,
-                        e -> table.setEngineCombat(!combat)));
+                // the menu is built each time it opens, so the labels show the current settings
+                boolean everyTurn = table.engineCombat();
+                if (!everyTurn) {
+                    boolean thisTurn = table.engineCombatThisTurn();
+                    menu.addItem(new FMenuItem(thisTurn ? "Combat this turn: on" : "Combat this turn: off", FSkinImage.ATTACK,
+                            e -> table.setEngineCombatThisTurn(!thisTurn)));
+                }
+                menu.addItem(new FMenuItem(everyTurn ? "Combat every turn: on" : "Combat every turn: off", FSkinImage.ATTACK,
+                        e -> table.setEngineCombat(!everyTurn)));
             });
             CompanionMatch.start(match, GuiBase.getInterface().getNewGuiGame(), table);
         });
