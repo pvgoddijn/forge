@@ -105,18 +105,19 @@ Slice 0 lists what a typical Commander turn loses. If that is more than we expec
 | `CompanionSetupScreen` | As now, plus life and hand size defaults (AC-5). |
 | **`MatchScreen`** | The game view, with board, zone tabs, stack, prompts, card zoom and log. Companion adds its items through the `VGameMenu` hook. |
 | `CardSearchDialog` | As now: name, target player, from/to zone, plus "cast" or "put onto the battlefield" (AC-34, AC-40). |
-| `CardSuggestionDialog`, `CompanionHistoryScreen` | As before. History reads our log plus the engine's `GameLog`. |
+| `CompanionHistoryScreen` | As before. History reads our log plus the engine's `GameLog`. Photo suggestions go in `CardSearchDialog`, so there's no `CardSuggestionDialog`. |
 
 **AC-23:** mobile `MatchScreen` already stacks **every** player's panel vertically (`MatchScreen:1312-1350`). Avatars are halved above 2 players, and the hand is a tab on each panel. So every player is reachable on one screen. The risk is legibility with 6, which slice 0 measures with a screenshot. Slice 2's compact-panel work is the fallback.
 
 ### 2.5 Capture and recognition
-Unchanged from the first plan:
-- `IDeviceAdapter.captureCardPhoto`, with a default
-- a Camera2 `CardCaptureActivity` on Android, and a file chooser on the dev build
-- a `CardNameReader` interface
-- a new `forge-card-ocr` module, which `forge-gui-mobile` doesn't depend on
+Built in slice 1 (2026-11-03), from the camera PoC at `/mnt/wsl/git/forge-camera-poc`:
+- a `CardCamera` interface and its `CardCameras` registry, which the backends with a camera fill at startup: `AndroidCardCamera`, and `DesktopCardCamera` in the dev build's `src-companion/` behind the `companion-photos` profile, installed by reflection. Forge's device adapters don't change.
+- a Camera2 `CardCaptureActivity` on Android: the PoC's Assisted capture, which finds the card live, focuses on it and captures on its own. The dev build has a file chooser instead.
+- a `CardNameReader` interface, and `CardPhoto`, which carries the outline the camera tracked
+- a new `forge-card-ocr` module, which `forge-gui-mobile` doesn't depend on: the PoC's finder, capture logic and PP-OCR reader through ONNX Runtime
+- no separate suggestion dialog: `CardSearchDialog` shows the photo's suggestions (AC-8) or the partly read text (AC-11)
 
-See section 4 for the engine choice.
+See section 4 for the engine choice, and `slices/01-photo-capture.md` for what was checked.
 
 ## 3. Files touched outside new code
 
