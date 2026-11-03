@@ -1,5 +1,7 @@
 package forge.interfaces;
 
+import forge.gamemodes.companion.CardNameReader;
+import forge.gamemodes.companion.CardPhoto;
 import org.apache.commons.lang3.tuple.Pair;
 import org.jupnp.UpnpServiceConfiguration;
 
@@ -10,6 +12,7 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Set;
+import java.util.function.Consumer;
 
 public interface IDeviceAdapter {
     boolean isConnectedToInternet();
@@ -35,6 +38,25 @@ public interface IDeviceAdapter {
 
     /** Confine the mouse cursor to the window (desktop LibGDX only). Default no-op. */
     default void setMouseConfined(boolean confined) {
+    }
+
+    /** Whether {@link #photographCard} can take a photo here. Default false, so other backends need no changes. */
+    default boolean canPhotographCards() {
+        return false;
+    }
+
+    /**
+     * Lets the operator photograph one card (Companion AC-6): the camera on a phone, a file chooser on the dev build.
+     * {@code onResult} gets the photo, or null if there is none: cancelled, the camera refused, or not supported.
+     * It may be called on any thread.
+     */
+    default void photographCard(Consumer<CardPhoto> onResult) {
+        onResult.accept(null);
+    }
+
+    /** Reads card names from photos, or null where this backend has no reader. */
+    default CardNameReader getCardNameReader() {
+        return null;
     }
 
     Set<String> LWJGL_SUPPORTED_AUDIO_TYPES = Set.of(".wav", ".mp3", ".ogg");
