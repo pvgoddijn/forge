@@ -20,7 +20,8 @@ import java.util.List;
  * <li>Only the active seat is ever asked for priority, and only in a main phase or while something is on the stack.
  * Every other priority passes, so a turn runs its steps and their triggers without anyone tapping through them.</li>
  * <li>The operator's queued actions run here, on the game loop thread (see {@link CompanionTable}).</li>
- * <li>Nobody mulligans, attacks through the engine or is held to one land a turn: the table did those already.</li>
+ * <li>Nobody mulligans or is held to one land a turn: the table did those already. Nobody attacks through the engine
+ * either, unless the operator turned combat on for the game.</li>
  * </ul>
  */
 public class CompanionPlayerController extends PlayerControllerHuman {
@@ -87,7 +88,12 @@ public class CompanionPlayerController extends PlayerControllerHuman {
 
     @Override
     public void declareAttackers(Player attackingPlayer, Combat combat) {
-        // spec Q21: combat happens at the table, and the operator records its outcome
+        if (table.engineCombat()) {
+            // the operator declares for this seat; each defending seat is then asked for blocks in the same way,
+            // and damage, lifelink and combat triggers resolve by the rules (spec AC-41)
+            super.declareAttackers(attackingPlayer, combat);
+        }
+        // otherwise combat happens at the table, and the operator records its outcome (spec Q21)
     }
 
     @Override

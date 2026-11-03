@@ -12,8 +12,10 @@ import java.util.List;
  * @param life        starting life for everyone
  * @param handSize    unknown cards each player starts with in hand
  * @param librarySize unknown cards each library starts with, for the engine to draw from
+ * @param engineCombat whether combat is declared through the engine, so its damage and triggers resolve by the
+ *                     rules (spec AC-41); otherwise the operator records its outcome
  */
-public record CompanionSetup(List<Seat> seats, int life, int handSize, int librarySize) {
+public record CompanionSetup(List<Seat> seats, int life, int handSize, int librarySize, boolean engineCombat) {
     public static final int MIN_PLAYERS = 2;
     public static final int MAX_PLAYERS = 6;
     public static final int DEFAULT_LIFE = 40;
@@ -34,7 +36,11 @@ public record CompanionSetup(List<Seat> seats, int life, int handSize, int libra
     }
 
     public static CompanionSetup withDefaults(List<Seat> seats) {
-        return new CompanionSetup(seats, DEFAULT_LIFE, DEFAULT_HAND, DEFAULT_LIBRARY);
+        return new CompanionSetup(seats, DEFAULT_LIFE, DEFAULT_HAND, DEFAULT_LIBRARY, false);
+    }
+
+    public CompanionSetup withEngineCombat(boolean on) {
+        return new CompanionSetup(seats, life, handSize, librarySize, on);
     }
 
     public int meIndex() {

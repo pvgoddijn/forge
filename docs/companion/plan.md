@@ -38,7 +38,7 @@ Key decisions:
 1. **One real `Game` per tracked game, hosted by `HostedMatch` and shown on `MatchScreen`.** Every seat is a local `CompanionPlayerController` on the one mobile GUI. `HostedMatch` already opens a single view for them (`HostedMatch:219-264`). Mobile panels don't move when the acting player changes (`MatchController:124-130`), and every local hand is visible (`AbstractGuiGame:270`), which is what the operator needs. The seat list is rotated to start at Me, so Me is the bottom panel and turn order is unchanged.
 2. **Companion behaviour lives in a controller subclass and in effect cards, not in a rules flag.** The precedents are `WatchLocalGame extends PlayerControllerHuman` and `LobbyPlayerHuman.createIngamePlayer`. Existing hooks cover nearly everything:
    - `canPlayUnlimitedLands` (`PlayerController:402`), `mulliganKeepHand` (`:300`), `chooseStartingPlayer` (`:261`)
-   - `declareAttackers`, which returns none (Q21)
+   - `declareAttackers`: no attack unless the operator has turned combat on for the game (Q21, AC-41). When it's on, Forge's own attack and block prompts are used for every seat. The setting lives in `setup.json`, and a game-menu item switches it.
    - `chooseCardsToDiscardToMaximumHandSize`
    - costs and timing: a free cast from a play effect already waives them (`PlaySpellAbility:683`, `SpellAbility:2610`)
 
@@ -94,7 +94,7 @@ Even with the added fields, a snapshot loses three things:
 - delayed triggers
 - per-turn counts, such as spells cast this turn
 
-That affects both a resume and an undo within the turn. Q21 keeps combat out of the engine, so lost P/T pumps rarely matter. **Spec AC-27 and AC-29 are amended to say so.** They promise the board, hands, life, counters and turn exactly, and temporary effects only as far as the engine can save them.
+That affects both a resume and an undo within the turn. Combat is off by default (Q21), so lost P/T pumps rarely matter; with it on, a resume between a pump and combat damage can change the outcome. **Spec AC-27 and AC-29 are amended to say so.** They promise the board, hands, life, counters and turn exactly, and temporary effects only as far as the engine can save them.
 
 Slice 0 lists what a typical Commander turn loses. If that is more than we expect, extend `GameState` further rather than replaying the log. Replay would need every prompt answer recorded, and the engine's determinism is unproven.
 
