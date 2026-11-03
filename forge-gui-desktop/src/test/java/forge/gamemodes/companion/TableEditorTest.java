@@ -151,6 +151,17 @@ public class TableEditorTest extends AITest {
     }
 
     @Test
+    public void theCombatOptionIsSavedWithTheGame() {
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false)));
+        assertTrue(!setup.engineCombat(), "off unless the operator turns it on");
+        assertTrue(CompanionStore.fromJson(CompanionStore.toJson(setup.withEngineCombat(true))).engineCombat());
+        String older = CompanionStore.toJson(setup).replace(",\"combat\":false", "");
+        assertTrue(!older.contains("combat") && !CompanionStore.fromJson(older).engineCombat(),
+                "a game saved before the option has combat off");
+    }
+
+    @Test
     public void theMatcherNeverSuggestsThePlaceholder() {
         CardNameMatcher matcher = CardNameMatcher.fromStaticData();
         assertTrue(matcher.match(CompanionCards.PLACEHOLDER_NAME, 5).stream()

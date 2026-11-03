@@ -179,8 +179,14 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         LoadingOverlay.show("Setting up the table", true, () -> {
             HostedMatch match = MatchController.hostMatch();
-            MatchController.setGameMenuExtension(menu -> menu.addItem(new FMenuItem("Add card", FSkinImage.PLUS,
-                    e -> new CardSearchDialog(table, MatchController.instance.getGameView()).show())));
+            MatchController.setGameMenuExtension(menu -> {
+                menu.addItem(new FMenuItem("Add card", FSkinImage.PLUS,
+                        e -> new CardSearchDialog(table, MatchController.instance.getGameView()).show()));
+                // the menu is built each time it opens, so the label shows the current setting
+                boolean combat = table.engineCombat();
+                menu.addItem(new FMenuItem(combat ? "Combat in the game: on" : "Combat in the game: off", FSkinImage.ATTACK,
+                        e -> table.setEngineCombat(!combat)));
+            });
             CompanionMatch.start(match, GuiBase.getInterface().getNewGuiGame(), table);
         });
     }

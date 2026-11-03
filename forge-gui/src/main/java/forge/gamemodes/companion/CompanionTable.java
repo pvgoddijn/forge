@@ -25,7 +25,7 @@ public class CompanionTable {
     }
 
     private final String id;
-    private final CompanionSetup setup;
+    private volatile CompanionSetup setup; // the options in it can change during the game
     private final CompanionStore store;
     private final Queue<Op> pending = new ConcurrentLinkedQueue<>();
     private final List<CompanionPlayerController> seats = new CopyOnWriteArrayList<>();
@@ -45,6 +45,22 @@ public class CompanionTable {
 
     public CompanionSetup setup() {
         return setup;
+    }
+
+    /** Whether combat is declared through the engine. Read at each combat, so a change counts from the next one. */
+    public boolean engineCombat() {
+        return setup.engineCombat();
+    }
+
+    /** Turns combat through the engine on or off for this game, and saves the choice with it. Any thread. */
+    public void setEngineCombat(boolean on) {
+        CompanionSetup changed = setup.withEngineCombat(on);
+        setup = changed;
+        try {
+            store.saveSetup(id, changed);
+        } catch (java.io.UncheckedIOException e) {
+            onResult.accept(new TableEditor.Result(false, "The combat setting couldn't be saved: " + e.getMessage()));
+        }
     }
 
     /** Where results go, for example to tell the operator a card couldn't be cast. Called on the game thread. */

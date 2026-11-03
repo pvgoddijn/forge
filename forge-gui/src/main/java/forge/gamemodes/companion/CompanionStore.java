@@ -60,6 +60,11 @@ public class CompanionStore {
         return id;
     }
 
+    /** Replaces the game's setup, for the options the operator can change during the game. */
+    public void saveSetup(String id, CompanionSetup setup) {
+        writeWhole(new File(new File(dir, id), SETUP), toJson(setup));
+    }
+
     public void saveState(String id, String state) {
         writeWhole(new File(new File(dir, id), STATE), state);
     }
@@ -157,6 +162,7 @@ public class CompanionStore {
         json.addProperty("life", setup.life());
         json.addProperty("hand", setup.handSize());
         json.addProperty("library", setup.librarySize());
+        json.addProperty("combat", setup.engineCombat());
         JsonArray seats = new JsonArray();
         for (CompanionSetup.Seat seat : setup.seats()) {
             JsonObject s = new JsonObject();
@@ -176,6 +182,7 @@ public class CompanionStore {
             seats.add(new CompanionSetup.Seat(s.get("name").getAsString(), s.get("me").getAsBoolean()));
         }
         return new CompanionSetup(seats, json.get("life").getAsInt(), json.get("hand").getAsInt(),
-                json.get("library").getAsInt());
+                json.get("library").getAsInt(),
+                json.has("combat") && json.get("combat").getAsBoolean()); // games saved before the option had it off
     }
 }
