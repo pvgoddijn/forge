@@ -53,17 +53,37 @@ public class CompanionTable {
 
     void register(CompanionPlayerController seat) {
         seats.add(seat);
+        // An action can arrive just before a prompt opens. End that prompt as it opens, or the action would wait
+        // for the operator's next tap.
+        seat.getInputQueue().addObserver((queue, arg) -> {
+            if (!pending.isEmpty()) {
+                endPriorityPrompt(seat);
+            }
+        });
     }
 
     /** Queues {@code op}, and ends the priority prompt so the game runs it. Any thread. */
     public void submit(Op op) {
         pending.add(op);
         for (CompanionPlayerController seat : seats) {
-            Input input = seat.getInputQueue().getInput();
-            if (input instanceof InputPassPriority priority) {
-                priority.restartPrompt();
-            }
+            endPriorityPrompt(seat);
         }
+    }
+
+    private static void endPriorityPrompt(CompanionPlayerController seat) {
+        Input input = seat.getInputQueue().getInput();
+        if (input instanceof InputPassPriority priority) {
+            priority.restartPrompt();
+        }
+    }
+
+    boolean hasPending() {
+        return !pending.isEmpty();
+    }
+
+    /** The state to start the match from: the latest save, or the setup's start if there is none yet. */
+    public List<String> latestState() {
+        return store.loadState(id).orElseGet(setup::initialState);
     }
 
     /** Runs the queued ops. Game loop thread. Returns whether there were any. */
@@ -88,14 +108,16 @@ public class CompanionTable {
 
     /** Saves the game if it changed. Game loop thread, at a settled point: the stack empty, priority with the table. */
     void save(Game game) {
-        String state = CompanionGameState.capture(game);
-        if (state.equals(lastSaved)) {
-            return;
-        }
         try {
+            String state = CompanionGameState.capture(game);
+            if (state.equals(lastSaved)) {
+                return;
+            }
             store.saveState(id, state);
             lastSaved = state;
-        } catch (java.io.UncheckedIOException e) {
+        } catch (RuntimeException e) {
+            // the game goes on unsaved rather than stopping; the operator is told
+            e.printStackTrace();
             onResult.accept(new TableEditor.Result(false, "The game couldn't be saved: " + e.getMessage()));
         }
     }

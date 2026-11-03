@@ -874,28 +874,25 @@ public class MatchController extends NetworkGuiGame {
 
     public static HostedMatch hostMatch() {
         hostedMatch = new HostedMatch();
-        // these belong to one match, so a new match starts without them
-        singleOperator = false;
-        gameMenuExtension = null;
+        gameMenuExtension = null; // belongs to one match, so a new match starts without it
         return hostedMatch;
     }
 
-    /** True while one person answers for every local player, as in Companion mode, rather than players sharing a device. */
-    private static boolean singleOperator;
     /** Extra items a mode adds to the game menu for the current match, or null. */
     private static java.util.function.Consumer<forge.menu.FDropDownMenu> gameMenuExtension;
 
+    /**
+     * True while one person answers for every local player, as a scorekeeper does, rather than players sharing a
+     * device. Asked of the current game's controller, so it can't outlive the match that set it.
+     */
     public static boolean isSingleOperator() {
-        return singleOperator;
+        return instance.getGameController() instanceof forge.player.PlayerControllerHuman human
+                && human.answersForEveryLocalSeat();
     }
 
-    /** Call after {@link #hostMatch()} and before starting it. */
-    public static void setSingleOperator(boolean singleOperator0) {
-        singleOperator = singleOperator0;
-    }
-
+    /** The current match's extra menu items. Only a single-operator match has them; any other match doesn't. */
     public static java.util.function.Consumer<forge.menu.FDropDownMenu> getGameMenuExtension() {
-        return gameMenuExtension;
+        return isSingleOperator() ? gameMenuExtension : null;
     }
 
     /** Call after {@link #hostMatch()}: the current match's game menu gets these items first. */

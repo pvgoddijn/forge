@@ -4,7 +4,9 @@ import forge.LobbyPlayer;
 import forge.game.Game;
 import forge.game.combat.Combat;
 import forge.game.phase.PhaseHandler;
+import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.player.PlayerView;
 import forge.game.spellability.SpellAbility;
 import forge.player.PlayerControllerHuman;
 
@@ -33,10 +35,13 @@ public class CompanionPlayerController extends PlayerControllerHuman {
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         Game game = getGame();
+        PhaseHandler ph = game.getPhaseHandler();
         if (table.runPending(game)) {
+            // The active seat is asked next, whoever's priority this was, so the operator sees what the action put
+            // on the stack: a spell's caster would get priority anyway, but triggers would otherwise resolve unseen.
+            ph.setPriority(ph.getPlayerTurn());
             return Collections.emptyList(); // the loop checks state-based actions, then asks again
         }
-        PhaseHandler ph = game.getPhaseHandler();
         boolean stackEmpty = game.getStack().isEmpty();
         if (ph.getPlayerTurn() != getPlayer()) {
             return null; // responses for other seats come with a later slice
@@ -47,7 +52,31 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         if (stackEmpty) {
             table.save(game);
         }
-        return super.chooseSpellAbilityToPlay();
+        List<SpellAbility> chosen = super.chooseSpellAbilityToPlay();
+        if (chosen == null && table.hasPending()) {
+            return Collections.emptyList(); // an action came in instead of a pass: run it, don't move on
+        }
+        return chosen;
+    }
+
+    /**
+     * Only End Turn may skip the stops the table needs. "Auto-pass when no actions" would skip every main phase,
+     * as unknown cards have no actions, and the turns would run on with nobody asked.
+     */
+    @Override
+    public boolean mayAutoPass() {
+        return super.mayAutoPass() && getYieldController().shouldAutoYield();
+    }
+
+    /** Main phases are where the operator logs what was played, so a phase stop turned off doesn't skip them. */
+    @Override
+    public boolean isUiSetToSkipPhase(PlayerView turnPlayer, PhaseType phase) {
+        return !phase.isMain() && super.isUiSetToSkipPhase(turnPlayer, phase);
+    }
+
+    @Override
+    public boolean answersForEveryLocalSeat() {
+        return true;
     }
 
     @Override

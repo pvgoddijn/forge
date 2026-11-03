@@ -60,6 +60,22 @@ See `plan.md` sections 1 and 2.
 - **6 players:** every board is on one screen, each with life, hand count and library, but cards are small. Legibility on a real phone is the open question for slice 2.
 - **What a snapshot loses:** commander damage and tax, monarch/initiative, day/night, effects lasting until end of turn, delayed triggers, per-turn counts, and emblems or effects (no `PaperCard`). The table effect is added again on load. Emblems typed in by the operator are lost on resume until `GameState` saves them (plan 2.1).
 
+## Gate B (2026-11-03)
+The first review found one High and five Medium issues. Fixed:
+- **Auto-pass override:** Forge's auto-pass could skip the table's stops. Only End Turn may skip them now.
+- **Ops racing a prompt:** an op that arrives as a prompt opens ends that prompt, and after any op the active seat is asked first.
+- **Restart overwriting the save:** a restart reloads the latest save.
+- **Card backs:** they now survive zone changes.
+- **Companion flags in other matches:** the single-operator check is asked of the match's own controller.
+- **Small items:** saves can't stop the game thread, a bad save is set aside, and players are picked by name.
+
+Still open:
+- **Main-loop tests:** CI tests drive `TableEditor` with AI controllers, not the main loop with a scripted operator. The op queue and the priority policy are checked only on the dev build.
+- **Poison on load:** a loaded player with 10 poison loses before the table effect is back.
+- **New game after the first:** there's no way to start one until "end game" (slice 5). Until then, delete the game's folder in `companion/`.
+- **Single state file:** there's one `state.txt`, not numbered snapshots; that comes with undo (slice 4).
+- **Unrolled failures:** an op that fails halfway isn't rolled back.
+
 ## Tests (CI)
 Through the **real main loop**, with a scripted `CompanionPlayerController` answering prompts:
 - Gray Merchant cast from a hidden hand drains opponents, and the hand goes 7 → 6.

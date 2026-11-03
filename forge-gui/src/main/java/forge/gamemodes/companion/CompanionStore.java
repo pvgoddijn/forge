@@ -39,8 +39,8 @@ public class CompanionStore {
     private static final String ENDED = "ended";
     private static final String DAMAGED_SUFFIX = ".damaged";
 
-    /** A saved game: its setup, and its latest state, or none if it never got to its first save. */
-    public record Saved(String id, CompanionSetup setup, List<String> state) { }
+    /** A saved game. Its latest state is read when it starts, by {@link #loadState}. */
+    public record Saved(String id, CompanionSetup setup) { }
 
     private final File dir;
     private List<File> unreadable = new ArrayList<>();
@@ -62,6 +62,19 @@ public class CompanionStore {
 
     public void saveState(String id, String state) {
         writeWhole(new File(new File(dir, id), STATE), state);
+    }
+
+    /** The game's latest saved state, or none if it never got to its first save. */
+    public Optional<List<String>> loadState(String id) {
+        File state = new File(new File(dir, id), STATE);
+        return state.exists() ? Optional.of(Arrays.asList(read(state).split("\n"))) : Optional.empty();
+    }
+
+    /** Moves a game that can't be loaded out of the way, so Companion doesn't keep trying to resume it. */
+    public File setAside(String id) {
+        File game = new File(dir, id);
+        File aside = new File(dir, id + DAMAGED_SUFFIX);
+        return game.renameTo(aside) ? aside : game;
     }
 
     /** Adds a line to the game's log. A log that can't be written doesn't stop the game. */
@@ -112,10 +125,7 @@ public class CompanionStore {
     }
 
     private static Saved load(File game) {
-        CompanionSetup setup = fromJson(read(new File(game, SETUP)));
-        File stateFile = new File(game, STATE);
-        List<String> state = stateFile.exists() ? Arrays.asList(read(stateFile).split("\n")) : null;
-        return new Saved(game.getName(), setup, state);
+        return new Saved(game.getName(), fromJson(read(new File(game, SETUP))));
     }
 
     private static String read(File file) {

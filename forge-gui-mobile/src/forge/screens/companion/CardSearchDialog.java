@@ -47,7 +47,6 @@ public class CardSearchDialog extends FDialog {
         super("Add card", 2);
         table = table0;
 
-        // the game holds its players in this order, so a player's index here is its index in the game
         List<String> playerNames = new ArrayList<>();
         for (CompanionSetup.Seat seat : table.setup().gameOrder()) {
             playerNames.add(seat.name());
@@ -112,11 +111,13 @@ public class CardSearchDialog extends FDialog {
         if (name.isEmpty()) {
             return;
         }
-        int player = cbPlayer.getSelectedIndex();
+        String player = cbPlayer.getSelectedItem();
         boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
         TableEditor.Mode mode = PUT.equals(cbMode.getSelectedItem()) ? TableEditor.Mode.PUT_ONTO_BATTLEFIELD : TableEditor.Mode.CAST;
         hide();
-        table.submit(game -> TableEditor.addCard(game.getPlayers().get(player), name, fromHand, mode));
+        // by name, which setup keeps unique: a player's place in the game's list changes if anyone leaves the game
+        table.submit(game -> TableEditor.addCard(game.getPlayers().stream()
+                .filter(p -> p.getName().equals(player)).findFirst().orElseThrow(), name, fromHand, mode));
     }
 
     @Override

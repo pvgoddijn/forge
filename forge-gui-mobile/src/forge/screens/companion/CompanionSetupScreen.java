@@ -1,6 +1,7 @@
 package forge.screens.companion;
 
 import forge.assets.FSkinImage;
+import forge.gamemodes.companion.CompanionGameState;
 import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
@@ -64,8 +65,7 @@ public class CompanionSetupScreen extends LaunchScreen {
         List<File> unreadable = store.unreadableFiles();
         // later, because this runs while the screen change that got us here is still happening
         FThreads.invokeInEdtLater(() -> {
-            active.ifPresent(saved -> openGame(saved.id(), saved.setup(),
-                    saved.state() != null ? saved.state() : saved.setup().initialState()));
+            active.ifPresent(saved -> openGame(saved.id(), saved.setup()));
             // after opening the game, as a dialog belongs to the screen that was current when it was shown
             for (File file : unreadable) {
                 FOptionPane.showErrorDialog("A saved game couldn't be read, so it wasn't resumed. Its file is kept at:\n" + file);
@@ -153,11 +153,20 @@ public class CompanionSetupScreen extends LaunchScreen {
             FOptionPane.showErrorDialog("The game couldn't be saved, so it wasn't started.\n" + e.getMessage());
             return;
         }
-        openGame(id, setup, setup.initialState());
+        openGame(id, setup);
     }
 
-    private void openGame(String id, CompanionSetup setup, List<String> state) {
+    private void openGame(String id, CompanionSetup setup) {
         CompanionTable table = new CompanionTable(id, setup, store);
+        try {
+            // read it here, where a bad save can be set aside, rather than in the starting game where it can't
+            CompanionGameState.of(table.latestState());
+        } catch (RuntimeException e) {
+            File aside = store.setAside(id);
+            FOptionPane.showErrorDialog("The saved game couldn't be read, so it wasn't resumed. It's kept at:\n" + aside
+                    + "\n" + e.getMessage());
+            return;
+        }
         table.setOnResult(result -> {
             if (!result.done()) {
                 FThreads.invokeInEdtLater(() -> FOptionPane.showErrorDialog(result.message()));
@@ -165,10 +174,9 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         LoadingOverlay.show("Setting up the table", true, () -> {
             HostedMatch match = MatchController.hostMatch();
-            MatchController.setSingleOperator(true);
             MatchController.setGameMenuExtension(menu -> menu.addItem(new FMenuItem("Add card", FSkinImage.PLUS,
                     e -> new CardSearchDialog(table, MatchController.instance.getGameView()).show())));
-            CompanionMatch.start(match, GuiBase.getInterface().getNewGuiGame(), table, state);
+            CompanionMatch.start(match, GuiBase.getInterface().getNewGuiGame(), table);
         });
     }
 }

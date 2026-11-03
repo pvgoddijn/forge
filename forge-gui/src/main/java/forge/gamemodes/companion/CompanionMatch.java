@@ -18,10 +18,11 @@ public final class CompanionMatch {
     }
 
     /**
-     * Starts {@code table}'s game in {@code match}, shown on {@code gui}, from {@code state}: the saved state when
-     * resuming, or the setup's starting state for a new game.
+     * Starts {@code table}'s game in {@code match}, shown on {@code gui}, from its latest save, or from the setup for
+     * a new game. The save is read each time the game starts, so a restart from the match screen doesn't go back to
+     * an older state and then save over the newer one.
      */
-    public static void start(HostedMatch match, IGuiGame gui, CompanionTable table, List<String> state) {
+    public static void start(HostedMatch match, IGuiGame gui, CompanionTable table) {
         List<RegisteredPlayer> players = new ArrayList<>();
         Map<RegisteredPlayer, IGuiGame> guis = new LinkedHashMap<>();
         for (CompanionSetup.Seat seat : table.setup().gameOrder()) {
@@ -31,8 +32,7 @@ public final class CompanionMatch {
             players.add(rp);
             guis.put(rp, gui);
         }
-        CompanionGameState start = CompanionGameState.of(state);
-        match.setStartGameHook(() -> start.applyNow(match.getGame()));
+        match.setStartGameHook(() -> CompanionGameState.of(table.latestState()).applyNow(match.getGame()));
 
         GameRules rules = new GameRules(GameType.Constructed);
         rules.setGamesPerMatch(1);
