@@ -56,7 +56,8 @@ The operator taps Photo in the Add card dialog. On a phone, the camera finds the
 1. ✅ 2026-11-03, dev build. A real photo of Westfold Rider gave "Westfold Rider, Fault Riders, Hellrider", with the first one chosen. Add, then OK: it was cast and is on the target player's battlefield, and their hand went from 8 to 7.
 2. ✅ 2026-11-03, dev build. A blurred phone capture of Curious Colossus opened the search with "Cnas Cotes" filled in and nothing chosen.
 3. ✅ 2026-11-03, dev build. The back face of Delver of Secrets (Insectile Aberration, a Scryfall image) suggested Insectile Aberration. Put onto battlefield: a transformed 3/2.
-4. 📱 On a phone, in airplane mode: capture a real card → the right card appears in the suggestions.
+4. 📱 On a phone, in airplane mode: capture a real card → the right card appears in the suggestions. ✅ 2026-11-03, Motorola edge 60 neo, Android 16, debug APK installed beside release Forge, with Wi-Fi on, not airplane mode. Daxos, Blessed by the Sun was found, focused (216 ms), auto-captured (249 ms, tracked outline) and read; it was suggested first with two alternatives, then cast for Player 1, whose hand went 7 to 6. ONNX Runtime's native library loaded. Still to do: the same in airplane mode.
+   - Building the APK on Java 21: android-maven-plugin 4.6.2 fails at signing (`PKCS7.encodeSignedData` was removed after Java 17; CI uses 17). The unsigned APK it leaves is complete and can be signed with `apksigner`.
 5. 📱 Refuse camera permission → the name search stays open, no crash.
 6. 📱 The app still starts from a release-style APK, so ProGuard hasn't stripped the OCR classes. Check with `unzip -l` that the APK has `forge/cardocr/ocr/*.onnx` and `lib/*/libonnxruntime*.so`.
 8. 📱 Press Home during a capture, go back to Forge, tap Photo again → one capture screen, and the photo reaches the open dialog.
