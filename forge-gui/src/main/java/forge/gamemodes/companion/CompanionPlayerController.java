@@ -60,12 +60,13 @@ public class CompanionPlayerController extends PlayerControllerHuman {
     }
 
     /**
-     * Only End Turn may skip the stops the table needs. "Auto-pass when no actions" would skip every main phase,
-     * as unknown cards have no actions, and the turns would run on with nobody asked.
+     * Only the operator's own yields (End Turn, an auto-yielded ability) may skip the stops the table needs.
+     * "Auto-pass when no actions" would skip every main phase, as unknown cards have no actions, and the turns would
+     * run on with nobody asked.
      */
     @Override
     public boolean mayAutoPass() {
-        return super.mayAutoPass() && getYieldController().shouldAutoYield();
+        return !isMacroActive() && getYieldController().shouldAutoYield();
     }
 
     /** Main phases are where the operator logs what was played, so a phase stop turned off doesn't skip them. */

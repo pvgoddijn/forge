@@ -31,6 +31,7 @@ public class CompanionTable {
     private final List<CompanionPlayerController> seats = new CopyOnWriteArrayList<>();
     private volatile Consumer<TableEditor.Result> onResult = r -> { };
     private String lastSaved;
+    private boolean saveFailing;
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -52,6 +53,8 @@ public class CompanionTable {
     }
 
     void register(CompanionPlayerController seat) {
+        // a restart builds new seats: the old game's are done
+        seats.removeIf(old -> old.getGame() != seat.getGame());
         seats.add(seat);
         // An action can arrive just before a prompt opens. End that prompt as it opens, or the action would wait
         // for the operator's next tap.
@@ -115,10 +118,14 @@ public class CompanionTable {
             }
             store.saveState(id, state);
             lastSaved = state;
+            saveFailing = false;
         } catch (RuntimeException e) {
-            // the game goes on unsaved rather than stopping; the operator is told
+            // the game goes on unsaved rather than stopping; the operator is told once, not at every prompt
             e.printStackTrace();
-            onResult.accept(new TableEditor.Result(false, "The game couldn't be saved: " + e.getMessage()));
+            if (!saveFailing) {
+                saveFailing = true;
+                onResult.accept(new TableEditor.Result(false, "The game couldn't be saved: " + e.getMessage()));
+            }
         }
     }
 }

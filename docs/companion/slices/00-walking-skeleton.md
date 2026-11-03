@@ -62,7 +62,7 @@ See `plan.md` sections 1 and 2.
 
 ## Gate B (2026-11-03)
 The first review found one High and five Medium issues. Fixed:
-- **Auto-pass override:** Forge's auto-pass could skip the table's stops. Only End Turn may skip them now.
+- **Auto-pass override:** Forge's auto-pass could skip the table's stops. Now only the operator's own yields may skip them: End Turn, or an auto-yielded ability.
 - **Ops racing a prompt:** an op that arrives as a prompt opens ends that prompt, and after any op the active seat is asked first.
 - **Restart overwriting the save:** a restart reloads the latest save.
 - **Card backs:** they now survive zone changes.
@@ -75,6 +75,9 @@ Still open:
 - **New game after the first:** there's no way to start one until "end game" (slice 5). Until then, delete the game's folder in `companion/`.
 - **Single state file:** there's one `state.txt`, not numbered snapshots; that comes with undo (slice 4).
 - **Unrolled failures:** an op that fails halfway isn't rolled back.
+- **Yield suggestion prompt:** with non-default yield preferences (`YIELD_SUPPRESS_ON_OWN_TURN=false`), the main-phase prompt becomes a "no actions, yield?" suggestion. Tapping OK on it skips main 2.
+
+The re-review of the fixes found them ready. Its smaller points are fixed: a save with the wrong number of players is set aside before the game starts, a restart drops the old game's seats, and a failing save is reported once.
 
 ## Tests (CI)
 Through the **real main loop**, with a scripted `CompanionPlayerController` answering prompts:
