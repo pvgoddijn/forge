@@ -29,7 +29,18 @@ public class Main {
                this is an indicator if the LWJGL3 has booted up succesfully. */
             closeSplash();
         }
+        installCompanionCamera();
         new GameLauncher(versionString, args);
+    }
+    /** Companion's file-chooser camera, which only a build with the companion-photos Maven profile has. */
+    private static void installCompanionCamera() {
+        try {
+            Class.forName("forge.app.companion.DesktopCardCamera").getMethod("installIfEnabled").invoke(null);
+        } catch (ClassNotFoundException e) {
+            // built without the profile: no camera
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException(e);
+        }
     }
     public static void closeSplash() {
         try {

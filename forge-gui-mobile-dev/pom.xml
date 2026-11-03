@@ -245,4 +245,46 @@
             <version>6.9.0</version>
         </dependency>
     </dependencies>
+    <profiles>
+        <!-- Companion's card photos on the desktop (mvn -Pcompanion-photos): a file chooser for a camera, src-companion,
+             and the reader with ONNX Runtime's natives. Off by default, so the shipped PC build has none of them. -->
+        <profile>
+            <id>companion-photos</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>companion-photos-source</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>add-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src-companion</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+            <dependencies>
+                <dependency>
+                    <groupId>forge</groupId>
+                    <artifactId>forge-card-ocr</artifactId>
+                    <version>${project.version}</version>
+                </dependency>
+                <!-- MIT. The desktop build of ONNX Runtime, with natives for Windows, Linux and macOS. -->
+                <dependency>
+                    <groupId>com.microsoft.onnxruntime</groupId>
+                    <artifactId>onnxruntime</artifactId>
+                    <version>1.31.1</version>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

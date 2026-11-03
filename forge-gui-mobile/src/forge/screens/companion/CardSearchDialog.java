@@ -6,7 +6,12 @@ import forge.assets.FSkinColor;
 import forge.assets.FSkinFont;
 import forge.game.GameView;
 import forge.game.player.PlayerView;
+import forge.gamemodes.companion.CardCamera;
+import forge.gamemodes.companion.CardCameras;
 import forge.gamemodes.companion.CardNameMatcher;
+import forge.gamemodes.companion.CardNameReader;
+import forge.gui.FThreads;
+import forge.toolbox.FOptionPane;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.TableEditor;
@@ -41,10 +46,11 @@ public class CardSearchDialog extends FDialog {
     private final FTextField txtSearch = add(new FTextField());
     private final FList<CardNameMatcher.Suggestion> lstMatches = add(new FList<>());
     private String selectedCard; // a name from the database; null while the text is only what was typed
+    private boolean photographing; // a photo is being taken or read; UI thread only
 
     /** @param gameView the running game, for the active player, who is the default target (AC-17); may be null */
     public CardSearchDialog(CompanionTable table0, GameView gameView) {
-        super("Add card", 2);
+        super("Add card", canPhotograph() ? 3 : 2);
         table = table0;
 
         List<String> playerNames = new ArrayList<>();
@@ -83,6 +89,74 @@ public class CardSearchDialog extends FDialog {
 
         initButton(0, "Add as typed", e -> addCard());
         initButton(1, "Cancel", e -> hide());
+        if (canPhotograph()) {
+            initButton(2, "Photo", e -> photograph());
+        }
+    }
+
+    /** Whether this device can photograph a card and read its name (slice 1). Not on iOS, which has no reader. */
+    private static boolean canPhotograph() {
+        CardCamera camera = CardCameras.get();
+        return camera != null && camera.canPhotograph() && camera.reader() != null;
+    }
+
+    /**
+     * Takes a photo and reads it off the UI thread (AC-6, AC-7). A confident read lists the best card and its
+     * alternatives here, the best already chosen, so it takes one tap to add (AC-8). Otherwise the text read is left in
+     * the search box, to finish by typing (AC-11). No photo, as when the camera is refused, leaves the search as it was.
+     */
+    private void photograph() {
+        if (photographing) {
+            return; // one photo at a time: a second one would overwrite the first one's suggestions
+        }
+        photographing = true;
+        CardCamera camera = CardCameras.get();
+        CardNameReader reader = camera.reader();
+        camera.photograph(photo -> {
+            if (photo == null) {
+                FThreads.invokeInEdtLater(() -> photographing = false);
+                return;
+            }
+            FThreads.invokeInEdtLater(() -> getButton(2).setText("Reading..."));
+            FThreads.invokeInBackgroundThread(() -> {
+                CardNameReader.Reading reading;
+                try {
+                    reading = reader.read(photo);
+                } catch (Throwable e) {
+                    // Not only exceptions: native OCR that won't load, or running out of memory, throws errors. On
+                    // this bare thread an uncaught one would end the app mid-game.
+                    e.printStackTrace();
+                    reading = CardNameReader.Reading.NOTHING;
+                }
+                CardNameReader.Reading read = reading;
+                FThreads.invokeInEdtLater(() -> showReading(read));
+            });
+        });
+    }
+
+    private void showReading(CardNameReader.Reading reading) {
+        photographing = false;
+        getButton(2).setText("Photo");
+        if (!isVisible()) {
+            return; // the operator moved on while it was reading
+        }
+        if (reading.confident() && !reading.cards().isEmpty()) {
+            List<CardNameMatcher.Suggestion> suggestions = new ArrayList<>();
+            for (String card : reading.cards()) {
+                suggestions.add(new CardNameMatcher.Suggestion(card, 1));
+            }
+            txtSearch.setText(reading.cards().get(0));
+            lstMatches.setListData(suggestions);
+            lstMatches.setScrollTop(0);
+            lstMatches.revalidate();
+            select(reading.cards().get(0));
+            return;
+        }
+        txtSearch.setText(reading.textRead());
+        updateMatches();
+        if (reading.textRead().isEmpty()) {
+            FOptionPane.showMessageDialog("The card's name couldn't be read. Try another photo, or type the name.");
+        }
     }
 
     private void updateMatches() {
