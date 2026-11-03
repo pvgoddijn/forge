@@ -1,7 +1,12 @@
 package forge.gamemodes.companion;
 
 import forge.ai.AITest;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import forge.game.Game;
+import forge.game.card.Card;
+import forge.game.combat.Combat;
+import forge.game.combat.CombatUtil;
 import forge.game.player.Player;
 import forge.game.zone.ZoneType;
 
@@ -213,7 +218,7 @@ public class TableEditorTest extends AITest {
     public void nobodyLosesDrawingFromAnEmptyLibrary() {
         Game game = startTable();
         Player p = game.getPlayers().get(1);
-        for (forge.game.card.Card c : p.getCardsIn(ZoneType.Library)) {
+        for (Card c : p.getCardsIn(ZoneType.Library)) {
             game.getAction().ceaseToExist(c, true);
         }
         p.drawCards(1);
@@ -227,7 +232,7 @@ public class TableEditorTest extends AITest {
         Player p = game.getPlayers().get(0);
         p.drawCards(1); // the card is rebuilt from its printing as it moves
         String back = forge.ImageKeys.getTokenKey(forge.ImageKeys.HIDDEN_CARD);
-        for (forge.game.card.Card c : p.getCardsIn(ZoneType.Hand)) {
+        for (Card c : p.getCardsIn(ZoneType.Hand)) {
             assertEquals(c.getCurrentState().getImageKey(), back);
         }
     }
@@ -238,7 +243,7 @@ public class TableEditorTest extends AITest {
                 new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false)));
         assertFalse(setup.engineCombat(), "off unless the operator turns it on");
         assertTrue(CompanionStore.fromJson(CompanionStore.toJson(setup.withEngineCombat(true))).engineCombat());
-        com.google.gson.JsonObject older = com.google.gson.JsonParser.parseString(
+        JsonObject older = JsonParser.parseString(
                 CompanionStore.toJson(setup.withEngineCombat(true))).getAsJsonObject();
         older.remove("combat");
         assertFalse(CompanionStore.fromJson(older.toString()).engineCombat(),
@@ -263,28 +268,28 @@ public class TableEditorTest extends AITest {
      * again forever, so the operator is prompted instead. This is the check that tells the two apart.
      */
     @Test
-    public void declaringNobodyIsIllegalOnlyWhenACreatureMustAttack() {
+    public void forgeRejectsAnEmptyAttackOnlyWhenACreatureMustAttack() {
         Game game = startTable();
         Player active = game.getPhaseHandler().getPlayerTurn();
         assertTrue(TableEditor.addCard(active, "Grizzly Bears", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
         resolveAll(game);
-        for (forge.game.card.Card c : active.getCreaturesInPlay()) {
+        for (Card c : active.getCreaturesInPlay()) {
             c.setSickness(false);
         }
-        assertTrue(forge.game.combat.CombatUtil.validateAttackers(startCombat(game, active)), "nobody has to attack");
+        assertTrue(CombatUtil.validateAttackers(startCombat(game, active)), "nobody has to attack");
 
         assertTrue(TableEditor.addCard(active, "Juggernaut", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
         resolveAll(game);
-        for (forge.game.card.Card c : active.getCreaturesInPlay()) {
+        for (Card c : active.getCreaturesInPlay()) {
             c.setSickness(false);
         }
-        assertFalse(forge.game.combat.CombatUtil.validateAttackers(startCombat(game, active)),
+        assertFalse(CombatUtil.validateAttackers(startCombat(game, active)),
                 "Juggernaut attacks each combat if able");
     }
 
     /** A combat as the declare-attackers step has it: the game's own, which attack requirements read. */
-    private static forge.game.combat.Combat startCombat(Game game, Player attacker) {
-        forge.game.combat.Combat combat = new forge.game.combat.Combat(attacker);
+    private static Combat startCombat(Game game, Player attacker) {
+        Combat combat = new Combat(attacker);
         game.getPhaseHandler().setCombat(combat);
         return combat;
     }

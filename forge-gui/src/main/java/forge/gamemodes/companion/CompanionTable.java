@@ -64,7 +64,8 @@ public class CompanionTable {
     /**
      * Turns combat through the engine on or off for {@code turn} only, for a fight the table wants resolved by the
      * rules. It ends with the turn. It isn't written to disk, so it lasts through a restart from the menu but not a
-     * resume after the app was closed; a resume mid-turn is rare enough to just turn it on again.
+     * resume after the app was closed; a resume mid-turn is rare enough to just turn it on again. Turning it on for
+     * {@link #NO_TURN} stores nothing, which only matters before a game runs, when there's no menu to do it from.
      */
     public void setEngineCombatForTurn(int turn, boolean on) {
         combatTurn = on ? turn : NO_TURN;
@@ -102,6 +103,11 @@ public class CompanionTable {
     /** Where results go, for example to tell the operator a card couldn't be cast. Called on the game thread. */
     public void setOnResult(Consumer<TableEditor.Result> onResult0) {
         onResult = onResult0;
+    }
+
+    /** Tells the operator something the game decided, through the same channel as action results. */
+    void notify(TableEditor.Result message) {
+        onResult.accept(message);
     }
 
     void register(CompanionPlayerController seat) {
