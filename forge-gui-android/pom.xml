@@ -145,6 +145,19 @@
             <artifactId>forge-gui-mobile</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- Companion's card photos: finding the card and reading its name on the device. -->
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-card-ocr</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- MIT. ONNX Runtime's Android build, with its native libraries, for forge-card-ocr. -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime-android</artifactId>
+            <version>1.31.1</version>
+            <type>aar</type>
+        </dependency>
         <dependency>
             <groupId>com.badlogicgames.gdx</groupId>
             <artifactId>gdx-backend-android</artifactId>
