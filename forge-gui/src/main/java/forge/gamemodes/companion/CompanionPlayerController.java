@@ -113,8 +113,8 @@ public class CompanionPlayerController extends PlayerControllerHuman {
             // turn: attack and block prompts, stops for tricks, damage by the rules. The operator is told why, so
             // they don't also set life for it by hand.
             table.setEngineCombatForTurn(getGame().getPhaseHandler().getTurn(), true);
-            table.notify(new TableEditor.Result(true,
-                    "A creature must attack this turn, so this combat runs in the game: declare the attack."));
+            table.tell("A creature must attack this turn, so this combat runs in the game: declare the attack. "
+                    + "Blocks and damage are done by the game too, so don't also set life for it.");
             super.declareAttackers(attackingPlayer, combat);
         }
         // otherwise combat happens at the table, and the operator records its outcome (spec Q21)
@@ -123,7 +123,7 @@ public class CompanionPlayerController extends PlayerControllerHuman {
     /**
      * Whether {@code phase} is a combat step where the active seat stops while the engine runs this turn's combat:
      * after attackers, after blockers, and between first-strike and regular damage, so a trick or flash blocker can
-     * be logged in time. Not when nobody attacked: Forge runs the declare-attackers step for every turn.
+     * be logged in time. Not when nobody attacked: Forge still gives priority in the declare-attackers step then.
      */
     private boolean isCombatStop(PhaseHandler ph, PhaseType phase) {
         Combat combat = ph.getCombat();

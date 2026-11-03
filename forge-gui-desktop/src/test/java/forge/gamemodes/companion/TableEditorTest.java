@@ -263,9 +263,27 @@ public class TableEditorTest extends AITest {
         assertFalse(table.engineCombatThisTurn(), "no game running yet is no turn, not turn 0");
     }
 
+    /** What the game decides for the operator reaches the screen, and the game's log. */
+    @Test
+    public void aNoticeReachesTheOperatorAndTheLog() throws java.io.IOException {
+        java.io.File dir = java.nio.file.Files.createTempDirectory("companion").toFile();
+        assertTrue(new java.io.File(dir, "t").mkdir());
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(dir));
+        List<String> shown = new java.util.ArrayList<>();
+        table.setOnNotice(shown::add);
+        table.tell("A creature must attack");
+        assertEquals(shown, List.of("A creature must attack"));
+        java.io.File[] logs = new java.io.File(dir, "t").listFiles();
+        assertTrue(logs != null && logs.length == 1);
+        assertTrue(java.nio.file.Files.readString(logs[0].toPath()).contains("A creature must attack"));
+    }
+
     /**
      * With combat at the table, the controller declares nobody, unless that isn't legal: then the engine would ask
-     * again forever, so the operator is prompted instead. This is the check that tells the two apart.
+     * again forever, so that combat runs through the engine for the turn instead. This checks Forge's rule that
+     * tells the two apart, not the controller.
      */
     @Test
     public void forgeRejectsAnEmptyAttackOnlyWhenACreatureMustAttack() {
