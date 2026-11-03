@@ -32,6 +32,10 @@ public class CompanionTable {
     private volatile Consumer<TableEditor.Result> onResult = r -> { };
     private String lastSaved;
     private boolean saveFailing;
+    /** No turn: no game is running yet, or combat isn't wanted for a single turn. Turns count from 1. */
+    private static final int NO_TURN = -1;
+    /** The turn the operator wants combat through the engine for, though it's off for the game. */
+    private volatile int combatTurn = NO_TURN;
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -52,20 +56,18 @@ public class CompanionTable {
         return setup.engineCombat();
     }
 
-    /** The turn the operator wants combat through the engine for, though it's off for the game; 0 for none. */
-    private volatile int combatTurn;
-
     /** Whether combat in {@code turn} is declared through the engine: every turn, or just this one. */
     public boolean engineCombat(int turn) {
-        return setup.engineCombat() || combatTurn == turn;
+        return setup.engineCombat() || (turn != NO_TURN && combatTurn == turn);
     }
 
     /**
      * Turns combat through the engine on or off for {@code turn} only, for a fight the table wants resolved by the
-     * rules. Not saved: it ends with the turn, and a resume mid-turn is rare enough to just turn it on again.
+     * rules. It ends with the turn. It isn't written to disk, so it lasts through a restart from the menu but not a
+     * resume after the app was closed; a resume mid-turn is rare enough to just turn it on again.
      */
     public void setEngineCombatForTurn(int turn, boolean on) {
-        combatTurn = on ? turn : 0;
+        combatTurn = on ? turn : NO_TURN;
     }
 
     /** Whether combat goes through the engine in the turn being played now. Any thread. */
@@ -83,10 +85,7 @@ public class CompanionTable {
      * match started on until the next turn begins.
      */
     private int currentTurn() {
-        for (CompanionPlayerController seat : seats) {
-            return seat.getGame().getPhaseHandler().getTurn();
-        }
-        return 0;
+        return seats.stream().findFirst().map(seat -> seat.getGame().getPhaseHandler().getTurn()).orElse(NO_TURN);
     }
 
     /** Turns combat through the engine on or off for this game, and saves the choice with it. Any thread. */
