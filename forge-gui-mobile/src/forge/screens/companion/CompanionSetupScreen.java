@@ -177,6 +177,8 @@ public class CompanionSetupScreen extends LaunchScreen {
                 FThreads.invokeInEdtLater(() -> FOptionPane.showErrorDialog(result.message()));
             }
         });
+        // over the prompt the game shows next; dismissing it leaves that prompt as it was
+        table.setOnNotice(notice -> FThreads.invokeInEdtLater(() -> FOptionPane.showMessageDialog(notice)));
         LoadingOverlay.show("Setting up the table", true, () -> {
             HostedMatch match = MatchController.hostMatch();
             MatchController.setGameMenuExtension(menu -> {

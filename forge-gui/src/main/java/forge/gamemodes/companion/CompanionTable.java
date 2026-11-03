@@ -30,6 +30,7 @@ public class CompanionTable {
     private final Queue<Op> pending = new ConcurrentLinkedQueue<>();
     private final List<CompanionPlayerController> seats = new CopyOnWriteArrayList<>();
     private volatile Consumer<TableEditor.Result> onResult = r -> { };
+    private volatile Consumer<String> onNotice = n -> { };
     private String lastSaved;
     private boolean saveFailing;
     /** No turn: no game is running yet, or combat isn't wanted for a single turn. Turns count from 1. */
@@ -105,9 +106,15 @@ public class CompanionTable {
         onResult = onResult0;
     }
 
-    /** Tells the operator something the game decided, through the same channel as action results. */
-    void notify(TableEditor.Result message) {
-        onResult.accept(message);
+    /** Where notices go: things the game decided that the operator should know about. Called on the game thread. */
+    public void setOnNotice(Consumer<String> onNotice0) {
+        onNotice = onNotice0;
+    }
+
+    /** Tells the operator something the game decided, and keeps it in the game's log. */
+    void tell(String notice) {
+        store.appendLog(id, notice);
+        onNotice.accept(notice);
     }
 
     void register(CompanionPlayerController seat) {
