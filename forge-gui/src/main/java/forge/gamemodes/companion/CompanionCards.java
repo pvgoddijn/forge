@@ -30,7 +30,13 @@ public final class CompanionCards {
             "Name:" + PLACEHOLDER_NAME,
             "ManaCost:no cost",
             "Types:Card",
-            "Oracle:A card nobody at the table has seen.")), CardEdition.UNKNOWN_CODE, CardRarity.Special);
+            "Oracle:A card nobody at the table has seen.")), CardEdition.UNKNOWN_CODE, CardRarity.Special) {
+        // A card is rebuilt from its printing whenever it changes zone, so the card back has to come from here.
+        @Override
+        public String getImageKey(boolean altState) {
+            return ImageKeys.getTokenKey(ImageKeys.HIDDEN_CARD);
+        }
+    };
 
     private CompanionCards() {
     }

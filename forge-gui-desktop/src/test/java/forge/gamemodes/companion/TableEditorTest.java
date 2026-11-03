@@ -209,6 +209,29 @@ public class TableEditorTest extends AITest {
     }
 
     @Test
+    public void nobodyLosesDrawingFromAnEmptyLibrary() {
+        Game game = startTable();
+        Player p = game.getPlayers().get(1);
+        for (forge.game.card.Card c : p.getCardsIn(ZoneType.Library)) {
+            game.getAction().ceaseToExist(c, true);
+        }
+        p.drawCards(1);
+        game.getAction().checkStateEffects(true);
+        assertTrue(!p.hasLost() && !game.isGameOver());
+    }
+
+    @Test
+    public void aDrawnUnknownCardStillShowsAsACardBack() {
+        Game game = startTable();
+        Player p = game.getPlayers().get(0);
+        p.drawCards(1); // the card is rebuilt from its printing as it moves
+        String back = forge.ImageKeys.getTokenKey(forge.ImageKeys.HIDDEN_CARD);
+        for (forge.game.card.Card c : p.getCardsIn(ZoneType.Hand)) {
+            assertEquals(c.getCurrentState().getImageKey(), back);
+        }
+    }
+
+    @Test
     public void theMatcherNeverSuggestsThePlaceholder() {
         CardNameMatcher matcher = CardNameMatcher.fromStaticData();
         assertTrue(matcher.match(CompanionCards.PLACEHOLDER_NAME, 5).stream()
