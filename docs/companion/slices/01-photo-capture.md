@@ -1,9 +1,11 @@
 # Slice 1 — Photo capture
 
-**Depends on:** slice 0, and the engine chosen in the spike (see `plan.md` section 4). **Proves:** the native OCR build works on Android, which is the riskiest integration.
+**Depends on:** slice 0 (redone on the engine), and the OCR engine chosen in the spike (see `plan.md` section 4). **Proves:** the native OCR build works on Android, which is the riskiest integration.
+
+**Built from the camera PoC (2026-11-03).** The PoC is a standalone Android app at `/mnt/wsl/git/forge-camera-poc`, outside Forge. It was tried on the owner's phone with PP-OCR models through ONNX Runtime. Its plain-Java code (card finder, Assisted capture logic, reader) is ported as-is, with its tests, into the new `forge-card-ocr` module. The Android capture screen is cut down from its Assisted mode.
 
 ## Result
-The operator taps capture, frames the card in the guide, takes a photo, and picks the card from suggestions.
+The operator taps Photo in the Add card dialog. On a phone, the camera finds the card, focuses on it and takes the photo on its own (a shutter button is still there). The operator then picks the card from suggestions.
 
 ## Acceptance criteria
 - **AC-6** WHEN the operator starts a capture THE SYSTEM SHALL show a camera view and take a photo of one card.
@@ -13,32 +15,57 @@ The operator taps capture, frames the card in the guide, takes a photo, and pick
 - **AC-13** WHEN the card is double-faced THE SYSTEM SHALL recognize it from either face's name.
 
 ## Build
-- **`IDeviceAdapter`:** add `default void captureCardPhoto(Consumer<File> onResult)`. The default reports "unsupported", so iOS needs no changes.
-- **`forge-gui`:** `CardNameReader` interface: `OcrResult read(File photo)`, returning text and confidence.
-- **New module `forge-card-ocr`:** the implementation. Add it to the root `pom.xml`. Only `forge-gui-android` and `forge-gui-mobile-dev` depend on it. **`forge-gui-mobile` must not**, or native code reaches the iOS build. The backend passes the reader in.
+- **`forge-gui`:**
+  - `CardNameReader`: `Reading read(CardPhoto)`, which returns the text read, up to 4 card face names (the OCR reader keeps 3, so the best and 2 alternatives), and whether the best one is confident.
+  - `CardPhoto`: a JPEG, plus the card outline the camera tracked, if any.
+  - `IDeviceAdapter`: `canPhotographCards()`, `photographCard(Consumer<CardPhoto>)` and `getCardNameReader()`. The defaults say "unsupported", so iOS needs no changes.
+- **New module `forge-card-ocr`** (`forge.cardocr`):
+  - The PoC's `finder`, `assist` and `reader` packages, with 359 of its unit tests on JUnit 5. The PoC's photo-based evaluations are left out.
+  - `OcrCardNameReader` uses the PoC's default budget. Models and names load on the first read. Names come from Forge's card faces (`CardNameMatcher.cardFaceNames()`), so a back face is matched too.
+  - `PhotoDecoder` is the backend's JPEG decoder.
+  - Models in `src/main/resources/forge/cardocr/ocr/`: PP-OCR v3 detection plus English recognition, Apache-2.0, 10.3 MB.
+  - ONNX Runtime 1.31.1 (MIT) is `provided`: each backend brings its own build.
+  - Only `forge-gui-android` and `forge-gui-mobile-dev` depend on it. **`forge-gui-mobile` must not**, or native code reaches the iOS build.
 - **`forge-gui-android`:**
-  - `CardCaptureActivity`: platform Camera2, preview, guide overlay, returns a JPEG file.
-  - `AndroidManifest.xml`: the `CAMERA` permission and the activity.
-  - `Main.java`: start the activity, handle `onActivityResult`.
-  - `proguard.cfg`: keep rules for OCR classes used through JNI.
-  - The model file goes in `assets`.
-- **`forge-gui-mobile-dev`:** a file chooser instead of the camera.
-- **`forge-gui-mobile`:** `CardSuggestionDialog`, and a capture button on `CompanionGameScreen`.
-- Run OCR off the UI thread. Load the model on first capture. Delete photos after reading.
-- If camera permission is refused, go to the name search.
+  - `forge.app.camera.CardCaptureActivity` is the PoC's Assisted capture: Camera2, live card outline, focus and exposure on the card, auto capture, shutter, torch.
+  - It returns the photo path and the tracked outline.
+  - It depends on `onnxruntime-android` (AAR).
+  - `AndroidCardPhotos` starts the activity, decodes photos with `BitmapFactory` and holds the reader. `Main`'s adapter calls it.
+  - Manifest: `CAMERA` permission, and the activity as `singleTask` in its own task, kept out of Recents (`Main` is `singleInstance`). The result comes back through a static callback, not `onActivityResult`.
+  - ProGuard keeps `ai.onnxruntime`.
+  - Photos nobody will read are deleted, and photos older than 10 minutes are cleared when the capture screen opens.
+- **`forge-gui-mobile-dev`:**
+  - A file chooser instead of the camera. It's off unless `-Dforge.companion.photos=true` is set, because this jar is also the shipped PC build.
+  - The system property `forge.companion.cardPhoto=<file>` skips the chooser, for scripted checks.
+  - The decoder uses ImageIO. It depends on the desktop `onnxruntime` jar.
+- **`forge-gui-mobile`:** `CardSearchDialog` gets a Photo button where the device can photograph cards.
+  - A confident read lists the best card and its alternatives, with the best one chosen, so one tap adds it.
+  - Otherwise the text read is left in the search box.
+  - No photo, for example when the camera is refused, leaves the search as it was.
+- Reading runs off the UI thread. Photos from the camera are deleted after reading. Photos the operator picked on the dev build are kept.
 
 ## Tests (CI)
-- Matcher: noisy OCR-style text ("So1 Rinq") finds the right card; low confidence is reported as low.
-- No OCR engine tests in CI, because they'd need native code and photos.
+- `forge-card-ocr`: the PoC's unit tests (finder, tracking, gyroscope, capture logic, reader scoring). Also `OcrCardNameReaderTest`:
+  - a blank photo isn't confident;
+  - a temporary photo is deleted;
+  - a photo that can't be decoded reads as nothing.
+- The real-model photo tests run only where the spike's photos are, so not in CI.
 
 ## Oracle
-1. On the dev build: choose a photo of a real card → suggestions appear with the right card in them → confirm → it's on the target player's battlefield.
-2. Choose a photo with an unreadable name → the search opens with the partial text filled in.
-3. Choose a photo of the back face of a double-faced card → that card is suggested.
+1. ✅ 2026-11-03, dev build. A real photo of Westfold Rider gave "Westfold Rider, Fault Riders, Hellrider", with the first one chosen. Add, then OK: it was cast and is on the target player's battlefield, and their hand went from 8 to 7.
+2. ✅ 2026-11-03, dev build. A blurred phone capture of Curious Colossus opened the search with "Cnas Cotes" filled in and nothing chosen.
+3. ✅ 2026-11-03, dev build. The back face of Delver of Secrets (Insectile Aberration, a Scryfall image) suggested Insectile Aberration. Put onto battlefield: a transformed 3/2.
 4. 📱 On a phone, in airplane mode: capture a real card → the right card appears in the suggestions.
-5. 📱 Refuse camera permission → the name search opens, no crash.
-6. 📱 The app still starts from a release-style APK, so ProGuard hasn't stripped the OCR classes.
+5. 📱 Refuse camera permission → the name search stays open, no crash.
+6. 📱 The app still starts from a release-style APK, so ProGuard hasn't stripped the OCR classes. Check with `unzip -l` that the APK has `forge/cardocr/ocr/*.onnx` and `lib/*/libonnxruntime*.so`.
+8. 📱 Press Home during a capture, go back to Forge, tap Photo again → one capture screen, and the photo reaches the open dialog.
 7. `ios-compat-gate.yml` stays green.
+
+## Known gaps
+- If a read fails, the PoC asked for the card again and retook the photo once. Forge drops that: the operator taps Photo again.
+- The reader always returns its best names, even with no card in view. A score below 0.10 counts as not confident.
+- The PC build (the `forge-gui-mobile-dev` jar, which the installer ships) grows by about 61 MB: 51 MB of ONNX Runtime plus the models. The Photo button is off there unless asked for.
+- APK size: the PoC measured +44 MB for arm64 (ONNX Runtime 34 MB uncompressed, models 10 MB). Forge's APK carries 4 ABIs, so the native part grows about fourfold unless ABIs are split.
 
 ## Out of scope
 Auto mode (slice 7), deck ranking (slice 6), accuracy targets (slice 8).
