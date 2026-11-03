@@ -1,48 +1,69 @@
-# Slice 0 — Walking skeleton
+# Slice 0 — Walking skeleton (redone on the rules engine, 2026-11-03)
 
-**Depends on:** spike passed, maintainers asked. **Proves:** menu → screens → domain → disk, on the dev build and in an APK.
+**Depends on:** nothing. The OCR spike gates slice 1, not this one. **Proves:** menu → setup → a real `Game` on `MatchScreen` → an operator op through the engine → snapshot → resume, on the dev build and in an APK.
+
+The first slice 0 (branch `feature/companion-slice-0`) replayed our own action log. It is replaced by this one, for spec Q20. Kept: `CardNameMatcher`, `CardSearchDialog`, `CompanionSetupScreen`, the menu entry.
 
 ## Result
-The operator opens Companion, enters players, adds a card by typing, sees it on that player's battlefield, closes the app, and finds it still there.
+The operator opens Companion and enters 3–6 players. Forge's match screen opens with every player's board, each hand holding 7 hidden cards. The operator adds Gray Merchant of Asphodel by typing, cast from player 2's hand. The opponents' life goes down and player 2's hand goes to 6. They kill the app, relaunch, and find it all still there.
 
 ## Acceptance criteria
 - **AC-1** WHEN the user opens the mode selection in Forge mobile THE SYSTEM SHALL offer a "Companion" entry.
 - **AC-2** WHEN the user starts a new game THE SYSTEM SHALL let them enter 2–6 players with a name and seat order, and mark exactly one as Me.
-- **AC-14** THE SYSTEM SHALL let the operator add a card by typing at any time, without having to capture first.
-- **AC-15** WHEN the operator types at least 2 characters THE SYSTEM SHALL show matching card names that tolerate typos. (Deck ranking comes in slice 6.)
-- **AC-16** THE SYSTEM SHALL let tokens and emblems be added by name.
-- **AC-29** WHEN the app is closed, killed or the phone restarts during a game THE SYSTEM SHALL resume that game in exactly the state it was left.
-- **Part of AC-17:** the operator picks the target player before confirming.
-- **Part of AC-23:** every player's name and Battlefield are visible at once.
-- **Part of AC-30:** one active game at a time, resumed when Companion opens.
+- **AC-5** WHEN a game starts THE SYSTEM SHALL set every player's hidden hand count to 7 and life to 40. (Changing them before turn 1 comes in slice 2/3.)
+- **AC-14, AC-15, AC-16** Add by typing, typo-tolerant, tokens and emblems by name. Already built; keep working.
+- **AC-29** Resume after a kill, within the limits of spec Q22.
+- **AC-34** A card added from Hand is cast without paying its costs, and its effects resolve.
+- **AC-40** "Put onto the battlefield" places it without cast triggers, and ETB effects still resolve.
+- **Part of AC-17:** the operator picks the target player.
+- **Part of AC-23:** every player's board is on the one screen.
+- **Part of AC-30:** one active game, resumed when Companion opens.
 
 ## Build
-**`forge-gui`, package `forge.gamemodes.companion`** (no UI or libGDX; TestNG, AssertJ and Gson are available):
-- `CompanionAction`: sealed interface of records, each with sequence number and timestamp. This slice needs `GameStarted` and `CardAdded`.
-- `CompanionState`: immutable result of replaying the log. Cards have per-game instance IDs.
-- `CompanionGame`: `apply(action)`, `state()`. State always comes from replaying the log. This is the core design, so don't mutate state directly.
-- `CompanionStore`: one file per game at `ForgeConstants.USER_DIR/companion/<gameId>.jsonl`. Append and flush one line per action. Ignore a torn last line. A game with no `GameEnded` is active.
-- `CardNameMatcher`: indexes `StaticData.instance().getCommonCards().getAllFaces()`, plus tokens. Uses Levenshtein from `commons-text`. Returns ranked `Suggestion(card, confidence)`.
+See `plan.md` sections 1 and 2.
 
-**`forge-gui-mobile`, package `forge.screens.companion`:**
-- `NewGameMenu.NewGameScreen.Companion` enum entry with an existing `FSkinImage` icon. Add a `lblCompanion` string.
-- `CompanionSetupScreen`, `CompanionGameScreen`, `CardSearchDialog`. Subclass `FScreen`, and use the `forge.toolbox` widgets.
+**`forge-gui`, `forge.gamemodes.companion`:**
+- `CompanionSetup` (record).
+- `CompanionCards`: the placeholder `PaperCard` (from `CardRules.fromScript`, never in `CardDb`), the placeholder deck, and the per-player effect card (`SetMaxHandSize$ Unlimited`, can't lose the game).
+- `CompanionLobbyPlayer` + `CompanionPlayerController extends PlayerControllerHuman`:
+  - keeps the opening hand, and picks the starting player from the seat order
+  - declares no attackers, and allows unlimited lands
+  - non-active seats pass priority; the active seat stops in main phase, or whenever the stack isn't empty
+  - holds an operator-op queue, run on the loop thread via `InputPassPriority.restartPrompt()` and `chooseSpellAbilityToPlay`
+- `TableEditor`: `cast(player, paperCard)` (a placeholder leaves the hand first, then a free cast), and `putOntoBattlefield(player, paperCard)`.
+- `CompanionStore`: after each settled op, write `companion/<id>/<n>.state` (`GameState` text, temp file then rename) and append to `companion/<id>.log`. Resume: latest snapshot, applied through `HostedMatch.setStartGameHook`.
+- Remove `CompanionAction`, `CompanionState`, `CompanionGame`, `CompanionZone`, and the replay code in `CompanionStore`.
+
+**`forge-game`:** `GameState` resolver hook for the placeholder name.
+
+**`forge-gui`:** `HostedMatch` subscribes one `FControlGameEventHandler` per GUI.
+
+**`forge-gui-mobile`:**
+- `MatchScreen`: a single-operator flag replaces the hot-seat preference check at line 134.
+- `VGameMenu` hook with an "Add card" item.
+- Remove `CompanionGameScreen`, `CompanionBoard`, `CompanionController`, `CardMoveDialog`, and slice 2's `VPlayerPanel`/`CardFlightOverlay`/`VAvatar`/`MatchController` seams, unless the real match still needs one.
 
 ## Check early
-- Whether `CardRenderer` and `CardView.getCardForUi` work with no match running. They contain some `MatchController` references. Fix only what actually gets hit. The fallback is image plus name.
-- Whether Gson handles the sealed records. Write a small type adapter if needed.
-- Whether 6 players fit on a phone screen. If not, use compact rows with tap to expand.
-- Whether matching about 30k names feels instant while typing.
+- Several `PlayerControllerHuman`s on one mobile GUI: Me at the bottom, no rotated prompt, buttons reach the right seat.
+- `restartPrompt` + op queue: the op runs on the loop thread, and SBA and triggers settle before the next prompt.
+- Whether a `PaperCard` outside `CardDb` survives `Match.prepareAllZones`, the card renderer and image lookup.
+- What a snapshot loses after a typical turn (list it in this file).
+- 6 players on a phone-sized window: screenshot.
 
 ## Tests (CI)
-- Replay: the same log gives the same state; a torn last line is ignored.
-- Matcher: exact name, typo, either face of a double-faced card, token, under 2 characters gives nothing.
+Through the **real main loop**, with a scripted `CompanionPlayerController` answering prompts:
+- Gray Merchant cast from a hidden hand drains opponents, and the hand goes 7 → 6.
+- Elvish Visionary's ETB draw leaves the hand count unchanged.
+- "Put onto the battlefield" with Gray Merchant still drains.
+- A `GameState` round trip keeps placeholders, life and the battlefield.
+- The matcher never suggests the placeholder.
 
 ## Oracle
-1. On the dev build (`forge-gui-mobile-dev`): New Game → Companion → enter 3 players → add "Sol Rng" by typing → pick Sol Ring for player 2 → it shows on player 2's battlefield.
-2. Kill the process and relaunch. Companion resumes with the card there.
-3. Repeat with 6 players, and add a token by name.
-4. 📱 The same on an APK from the `android-debug` profile. This needs the Android SDK installed here.
+1. Dev build: New Game → Companion → 3 players → the match screen shows 3 boards, each hand 7 hidden.
+2. Add "Gray Mercant" by typing, for player 2, cast: both other players lose 2, player 2 gains 4, and player 2's hand is 6.
+3. Kill the process and relaunch: same state.
+4. 6 players: screenshot, all boards on one screen.
+5. 📱 The same on an APK.
 
 ## Out of scope
-Camera, other zones, hand counts, turns, life, undo, history screen, decks.
+Moves between zones, hand ±1, next turn, set life, undo, history, decks, seat names in prompts.
