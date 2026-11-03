@@ -10,6 +10,7 @@ import org.testng.annotations.Test;
 import java.util.List;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
 /**
@@ -154,10 +155,12 @@ public class TableEditorTest extends AITest {
     public void theCombatOptionIsSavedWithTheGame() {
         CompanionSetup setup = CompanionSetup.withDefaults(List.of(
                 new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false)));
-        assertTrue(!setup.engineCombat(), "off unless the operator turns it on");
+        assertFalse(setup.engineCombat(), "off unless the operator turns it on");
         assertTrue(CompanionStore.fromJson(CompanionStore.toJson(setup.withEngineCombat(true))).engineCombat());
-        String older = CompanionStore.toJson(setup).replace(",\"combat\":false", "");
-        assertTrue(!older.contains("combat") && !CompanionStore.fromJson(older).engineCombat(),
+        com.google.gson.JsonObject older = com.google.gson.JsonParser.parseString(
+                CompanionStore.toJson(setup.withEngineCombat(true))).getAsJsonObject();
+        older.remove("combat");
+        assertFalse(CompanionStore.fromJson(older.toString()).engineCombat(),
                 "a game saved before the option has combat off");
     }
 
@@ -168,9 +171,41 @@ public class TableEditorTest extends AITest {
         CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
         table.setEngineCombatForTurn(3, true);
         assertTrue(table.engineCombat(3));
-        assertTrue(!table.engineCombat(4), "the next turn is back to the game's setting");
+        assertFalse(table.engineCombat(4), "the next turn is back to the game's setting");
         table.setEngineCombatForTurn(3, false);
-        assertTrue(!table.engineCombat(3));
+        assertFalse(table.engineCombat(3));
+        assertFalse(table.engineCombatThisTurn(), "no game running yet is no turn, not turn 0");
+    }
+
+    /**
+     * With combat at the table, the controller declares nobody, unless that isn't legal: then the engine would ask
+     * again forever, so the operator is prompted instead. This is the check that tells the two apart.
+     */
+    @Test
+    public void declaringNobodyIsIllegalOnlyWhenACreatureMustAttack() {
+        Game game = startTable();
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        assertTrue(TableEditor.addCard(active, "Grizzly Bears", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
+        resolveAll(game);
+        for (forge.game.card.Card c : active.getCreaturesInPlay()) {
+            c.setSickness(false);
+        }
+        assertTrue(forge.game.combat.CombatUtil.validateAttackers(startCombat(game, active)), "nobody has to attack");
+
+        assertTrue(TableEditor.addCard(active, "Juggernaut", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
+        resolveAll(game);
+        for (forge.game.card.Card c : active.getCreaturesInPlay()) {
+            c.setSickness(false);
+        }
+        assertFalse(forge.game.combat.CombatUtil.validateAttackers(startCombat(game, active)),
+                "Juggernaut attacks each combat if able");
+    }
+
+    /** A combat as the declare-attackers step has it: the game's own, which attack requirements read. */
+    private static forge.game.combat.Combat startCombat(Game game, Player attacker) {
+        forge.game.combat.Combat combat = new forge.game.combat.Combat(attacker);
+        game.getPhaseHandler().setCombat(combat);
+        return combat;
     }
 
     @Test

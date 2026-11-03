@@ -3,6 +3,7 @@ package forge.gamemodes.companion;
 import forge.LobbyPlayer;
 import forge.game.Game;
 import forge.game.combat.Combat;
+import forge.game.combat.CombatUtil;
 import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
@@ -17,11 +18,12 @@ import java.util.List;
  * A seat at a tracked table. The operator answers for every seat, so each one is a human controller on the same
  * screen. What makes it a tracker rather than a match:
  * <ul>
- * <li>Only the active seat is ever asked for priority, and only in a main phase or while something is on the stack.
- * Every other priority passes, so a turn runs its steps and their triggers without anyone tapping through them.</li>
+ * <li>Only the active seat is ever asked for priority: in a main phase, while something is on the stack, and in the
+ * combat steps of a combat the engine runs. Every other priority passes, so a turn runs its steps and their triggers
+ * without anyone tapping through them.</li>
  * <li>The operator's queued actions run here, on the game loop thread (see {@link CompanionTable}).</li>
  * <li>Nobody mulligans or is held to one land a turn: the table did those already. Nobody attacks through the engine
- * either, unless the operator turned combat on for the game.</li>
+ * either, unless the operator turned combat on for the game or for this turn, or a creature must attack.</li>
  * </ul>
  */
 public class CompanionPlayerController extends PlayerControllerHuman {
@@ -47,10 +49,12 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         if (ph.getPlayerTurn() != getPlayer()) {
             return null; // responses for other seats come with a later slice
         }
-        if (stackEmpty && (ph.getPhase() == null || !ph.getPhase().isMain())) {
+        boolean mainPhase = ph.getPhase() != null && ph.getPhase().isMain();
+        if (stackEmpty && !mainPhase && !isCombatStop(ph)) {
             return null;
         }
-        if (stackEmpty) {
+        if (stackEmpty && mainPhase) {
+            // only main phases are saved: a game state can't hold a combat in progress
             table.save(game);
         }
         List<SpellAbility> chosen = super.chooseSpellAbilityToPlay();
@@ -70,10 +74,16 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         return !isMacroActive() && getYieldController().shouldAutoYield();
     }
 
-    /** Main phases are where the operator logs what was played, so a phase stop turned off doesn't skip them. */
+    /**
+     * Main phases are where the operator logs what was played, and the combat stops where tricks are logged, so a
+     * phase stop turned off doesn't skip them.
+     */
     @Override
     public boolean isUiSetToSkipPhase(PlayerView turnPlayer, PhaseType phase) {
-        return !phase.isMain() && super.isUiSetToSkipPhase(turnPlayer, phase);
+        if (phase.isMain() || isCombatStop(getGame().getPhaseHandler())) {
+            return false;
+        }
+        return super.isUiSetToSkipPhase(turnPlayer, phase);
     }
 
     @Override
@@ -94,11 +104,33 @@ public class CompanionPlayerController extends PlayerControllerHuman {
     @Override
     public void declareAttackers(Player attackingPlayer, Combat combat) {
         if (table.engineCombat(getGame().getPhaseHandler().getTurn())) {
+            // The operator chose to run this combat through the engine, so End Turn doesn't skip the declaration
+            // the way it would in a match: it stops here and asks.
+            getYieldController().applyInterrupt();
             // the operator declares for this seat; each defending seat is then asked for blocks in the same way,
             // and damage, lifelink and combat triggers resolve by the rules (spec AC-41)
             super.declareAttackers(attackingPlayer, combat);
+            return;
+        }
+        if (!CombatUtil.validateAttackers(combat)) {
+            // A creature must attack (goad, "attacks each combat if able"). Declaring nobody isn't legal, and the
+            // engine would ask again forever, so the operator declares through Forge's prompt this once.
+            super.declareAttackers(attackingPlayer, combat);
         }
         // otherwise combat happens at the table, and the operator records its outcome (spec Q21)
+    }
+
+    /**
+     * The combat steps where the active seat stops while the engine runs this turn's combat: after attackers, after
+     * blockers, and between first-strike and regular damage, so a trick or flash blocker can be logged in time.
+     */
+    private boolean isCombatStop(PhaseHandler ph) {
+        PhaseType phase = ph.getPhase();
+        if (phase == null || !ph.inCombat() || !table.engineCombat(ph.getTurn())) {
+            return false;
+        }
+        return phase == PhaseType.COMBAT_DECLARE_ATTACKERS || phase == PhaseType.COMBAT_DECLARE_BLOCKERS
+                || phase == PhaseType.COMBAT_FIRST_STRIKE_DAMAGE;
     }
 
     @Override
