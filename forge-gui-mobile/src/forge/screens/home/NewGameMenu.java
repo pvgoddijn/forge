@@ -9,6 +9,7 @@ import forge.menu.FMenuItem;
 import forge.menu.FPopupMenu;
 import forge.model.FModel;
 import forge.screens.FScreen;
+import forge.screens.companion.CompanionSetupScreen;
 import forge.screens.constructed.ConstructedScreen;
 import forge.screens.gauntlet.NewGauntletScreen;
 import forge.screens.home.puzzle.PuzzleScreen;
@@ -27,7 +28,8 @@ public class NewGameMenu extends FPopupMenu {
         PuzzleMode(Forge.getLocalizer().getMessageorUseDefault("lblPuzzleMode", "Puzzle Mode"), FSkinImage.MENU_PUZZLE, PuzzleScreen.class),
         PlanarConquest(Forge.getLocalizer().getMessageorUseDefault("lblPlanarConquest", "Planar Conquest"), FSkinImage.MENU_GALAXY, NewConquestScreen.class),
         Gauntlet(Forge.getLocalizer().getMessageorUseDefault("lblGauntlet", "Gauntlet"), FSkinImage.MENU_GAUNTLET, NewGauntletScreen.class),
-        Adventure(Forge.getLocalizer().getMessageorUseDefault("lblAdventureMode", "Adventure Mode"), FSkinImage.MENU_ADVLOGO, AdventureScreen.class);
+        Adventure(Forge.getLocalizer().getMessageorUseDefault("lblAdventureMode", "Adventure Mode"), FSkinImage.MENU_ADVLOGO, AdventureScreen.class),
+        Companion(Forge.getLocalizer().getMessageorUseDefault("lblCompanion", "Companion"), FSkinImage.MENU_STATS, CompanionSetupScreen.class);
 
         private final FMenuItem item;
         private final Class<? extends FScreen> screenClass;
@@ -76,6 +78,13 @@ public class NewGameMenu extends FPopupMenu {
     static {
         try {
             preferredScreen = NewGameScreen.valueOf(prefs.getPref(FPref.NEW_GAME_SCREEN));
+            if (preferredScreen == NewGameScreen.Companion) {
+                // An earlier build saved Companion here. It resumes its game straight away, so New Game would never
+                // show the mode selection again (Companion AC-1).
+                preferredScreen = NewGameScreen.Constructed;
+                prefs.setPref(FPref.NEW_GAME_SCREEN, preferredScreen.name());
+                prefs.save();
+            }
         }
         catch (Exception ex) {
             if (NewGameScreen.Constructed != null) { //if this is null it means newgamescreen is not initialized
@@ -93,6 +102,8 @@ public class NewGameMenu extends FPopupMenu {
     }
     public static void setPreferredScreen(NewGameScreen preferredScreen0) {
         if (preferredScreen == preferredScreen0) { return; }
+        //companion resumes its active game and has no setup to come back to, so New Game mustn't default to it
+        if (NewGameScreen.Companion.equals(preferredScreen0)) { return; }
         preferredScreen = preferredScreen0;
         String prefName = preferredScreen.name();
         //don't save adventure mode launchscreen, default to constructed

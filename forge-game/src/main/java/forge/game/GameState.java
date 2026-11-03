@@ -1153,6 +1153,14 @@ public class GameState {
         // TODO: Merged commanders aren't supported yet
     }
 
+    /**
+     * Finds the printing a saved card name refers to. A subclass can resolve names that aren't in the card database,
+     * such as a game mode's own placeholder cards.
+     */
+    protected PaperCard findPaperCard(final String name, final String setCode, final int artID) {
+        return StaticData.instance().getCommonCards().getCard(name, setCode, artID);
+    }
+
     private void applyCountersToGameEntity(GameEntity entity, String counterString) {
         entity.setCounters(HashMultiset.create());
         String[] allCounterStrings = counterString.split(",");
@@ -1302,7 +1310,7 @@ public class GameState {
                 }
                 c = CardFactory.getCard(token, player, player.getGame());
             } else {
-                PaperCard pc = StaticData.instance().getCommonCards().getCard(cardinfo[0], setCode, artID);
+                PaperCard pc = findPaperCard(cardinfo[0], setCode, artID);
                 if (pc == null) {
                     System.err.println("ERROR: Tried to create a non-existent card named " + cardinfo[0] + " (set: " + (setCode == null ? "any" : setCode) + ") when loading game state!");
                     continue;

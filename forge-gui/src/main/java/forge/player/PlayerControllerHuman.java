@@ -3995,6 +3995,14 @@ public class PlayerControllerHuman extends PlayerController implements IGameCont
         yieldController.setDisableAutoTriggers(disable);
     }
 
+    /**
+     * True when one person answers for every local seat, as a scorekeeper does, rather than players taking turns on a
+     * shared device. The match screen then keeps a single prompt the right way up.
+     */
+    public boolean answersForEveryLocalSeat() {
+        return false;
+    }
+
     public boolean isUiSetToSkipPhase(final PlayerView turnPlayer, final PhaseType phase) {
         if (macros != null && macros.isReplaying()) {
             return false;

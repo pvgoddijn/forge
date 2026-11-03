@@ -131,7 +131,8 @@ public class MatchScreen extends FScreen {
 
         bottomPlayerPrompt.setOverMatch(true);
 
-        if (humanCount < 2 || MatchController.instance.hotSeatMode() || GuiBase.isNetPlay(MatchController.instance))
+        if (humanCount < 2 || MatchController.instance.hotSeatMode() || MatchController.isSingleOperator()
+                || GuiBase.isNetPlay(MatchController.instance))
             topPlayerPrompt = null;
         else {
             //show top prompt if multiple human players and not playing in Hot Seat mode and not in network play
