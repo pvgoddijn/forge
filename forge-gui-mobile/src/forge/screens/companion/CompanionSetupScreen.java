@@ -159,8 +159,13 @@ public class CompanionSetupScreen extends LaunchScreen {
     private void openGame(String id, CompanionSetup setup) {
         CompanionTable table = new CompanionTable(id, setup, store);
         try {
-            // read it here, where a bad save can be set aside, rather than in the starting game where it can't
-            CompanionGameState.of(table.latestState());
+            // check it here, where a bad save can be set aside, rather than in the starting game where it can't
+            List<String> state = table.latestState();
+            setup.checkState(state);
+            CompanionGameState.of(state); // throws on bad numbers only; other problems are printed and skipped
+        } catch (UncheckedIOException e) {
+            FOptionPane.showErrorDialog("The saved game couldn't be read, so it wasn't resumed.\n" + e.getMessage());
+            return;
         } catch (RuntimeException e) {
             File aside = store.setAside(id);
             FOptionPane.showErrorDialog("The saved game couldn't be read, so it wasn't resumed. It's kept at:\n" + aside

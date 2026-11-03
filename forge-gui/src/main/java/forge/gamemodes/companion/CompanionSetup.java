@@ -78,6 +78,17 @@ public record CompanionSetup(List<Seat> seats, int life, int handSize, int libra
         return lines;
     }
 
+    /**
+     * Throws if {@code state} can't belong to this game. Forge's state loader prints most problems and carries on, but
+     * a wrong number of players fails once the game has started, where nothing can be set aside any more.
+     */
+    public void checkState(List<String> state) {
+        long players = state.stream().filter(line -> line.matches("p\\d+life=.*")).count();
+        if (players != seats.size()) {
+            throw new IllegalArgumentException("The save has " + players + " players, the game " + seats.size());
+        }
+    }
+
     private static String placeholders(int count) {
         // with its set, or loading looks the name up in the card database for one
         return String.join(";", java.util.Collections.nCopies(count, CompanionCards.PLACEHOLDER_NAME + "|Set:" + CardEdition.UNKNOWN_CODE));
