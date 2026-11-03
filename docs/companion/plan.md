@@ -38,7 +38,7 @@ Key decisions:
 1. **One real `Game` per tracked game, hosted by `HostedMatch` and shown on `MatchScreen`.** Every seat is a local `CompanionPlayerController` on the one mobile GUI. `HostedMatch` already opens a single view for them (`HostedMatch:219-264`). Mobile panels don't move when the acting player changes (`MatchController:124-130`), and every local hand is visible (`AbstractGuiGame:270`), which is what the operator needs. The seat list is rotated to start at Me, so Me is the bottom panel and turn order is unchanged.
 2. **Companion behaviour lives in a controller subclass and in effect cards, not in a rules flag.** The precedents are `WatchLocalGame extends PlayerControllerHuman` and `LobbyPlayerHuman.createIngamePlayer`. Existing hooks cover nearly everything:
    - `canPlayUnlimitedLands` (`PlayerController:402`), `mulliganKeepHand` (`:300`), `chooseStartingPlayer` (`:261`)
-   - `declareAttackers`: no attack unless the operator has turned combat on for the game (Q21, AC-41). When it's on, Forge's own attack and block prompts are used for every seat. The setting lives in `setup.json`, and a game-menu item switches it.
+   - `declareAttackers`: no attack unless the operator has turned combat on for the game (Q21, AC-41). When it's on, Forge's own attack and block prompts are used for every seat. Two game-menu items switch it: "Combat this turn" lasts for the turn being played and isn't saved; "Combat every turn" is saved in `setup.json`. The table reads the turn from the game, not the game view: the view keeps the match's first turn until a new turn begins after a load.
    - `chooseCardsToDiscardToMaximumHandSize`
    - costs and timing: a free cast from a play effect already waives them (`PlaySpellAbility:683`, `SpellAbility:2610`)
 

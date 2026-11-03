@@ -93,7 +93,7 @@ public class CompanionPlayerController extends PlayerControllerHuman {
 
     @Override
     public void declareAttackers(Player attackingPlayer, Combat combat) {
-        if (table.engineCombat()) {
+        if (table.engineCombat(getGame().getPhaseHandler().getTurn())) {
             // the operator declares for this seat; each defending seat is then asked for blocks in the same way,
             // and damage, lifelink and combat triggers resolve by the rules (spec AC-41)
             super.declareAttackers(attackingPlayer, combat);

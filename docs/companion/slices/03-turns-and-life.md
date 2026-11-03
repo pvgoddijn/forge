@@ -10,7 +10,9 @@ A "next turn" button tracks whose turn it is. New cards default to that player. 
 - **AC-17** WHEN a card is added THE SYSTEM SHALL target the active player by default and let the operator change the target player before confirming.
 - **AC-24** WHEN the operator taps "next turn" THE SYSTEM SHALL make the next player in seat order active, and increase the turn number when play comes back around to the first player.
 - **AC-25** THE SYSTEM SHALL let the operator change any player's life total.
-- **AC-41** Optional combat through the engine, per game. **Built early, on 2026-11-03, at the owner's request.** A game-menu item switches it, and the choice is saved in `setup.json`. When it's on, Forge's own attack and block prompts appear for the seats. Checked on the dev build: Grizzly Bears attacked Player 1, who didn't block and went from 40 to 38. What's left for this slice: a creature logged this turn is summoning-sick, so it can't attack unless it has haste. Add a way to clear that, for creatures that were really on the table earlier.
+- **AC-41** Optional combat through the engine, per game. **Built early, on 2026-11-03, at the owner's request.** There are two game-menu items. "Combat this turn" is for one fight. "Combat every turn" is saved in `setup.json`. When either is on, Forge's own attack and block prompts appear for the seats. Checked on the dev build:
+- With every turn on, Grizzly Bears attacked Player 1, who didn't block and went from 40 to 38.
+- With this turn on for turn 2, the attack prompt came on turn 2 and not on turn 3, though turn 3's player had a creature that could attack. What's left for this slice: a creature logged this turn is summoning-sick, so it can't attack unless it has haste. Add a way to clear that, for creatures that were really on the table earlier.
 
 ## Build
 - **Domain:** `TurnPassed` and `LifeChanged` actions. Turn number and active player in `CompanionState`. No phases or steps (Q16).
