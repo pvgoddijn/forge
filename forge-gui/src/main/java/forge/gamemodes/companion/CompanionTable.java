@@ -176,8 +176,25 @@ public class CompanionTable {
 
     /** Tells the operator something the game decided, and keeps it in the game's log. */
     void tell(String notice) {
-        store.appendLog(id, notice);
+        tell(notice, List.of());
+    }
+
+    /** {@link #tell(String)}, about the seats {@code affected}. */
+    private void tell(String notice, List<String> affected) {
+        store.appendLog(id, entry(CompanionLogEntry.Kind.NOTICE, affected, notice));
         onNotice.accept(notice);
+    }
+
+    /**
+     * A log entry under the step the next save writes, with the running game's turn and active seat. Before a
+     * game runs, the turn is 0 and the active seat unknown.
+     */
+    private CompanionLogEntry entry(CompanionLogEntry.Kind kind, List<String> affected, String text) {
+        Game game = seats.stream().findFirst().map(CompanionPlayerController::getGame).orElse(null);
+        int turn = game == null ? 0 : Math.max(game.getPhaseHandler().getTurn(), 0);
+        Player active = game == null ? null : game.getPhaseHandler().getPlayerTurn();
+        return CompanionLogEntry.of(kind, store.latestStep(id) + 1, turn, active == null ? null : active.getName(),
+                affected, text);
     }
 
     void register(CompanionPlayerController seat) {
@@ -188,12 +205,14 @@ public class CompanionTable {
         // has returned, so that loop has made its last parkedReady/runParked call. The event's hand-off to the UI
         // thread, and the new loop's start through game.getAction().invoke, order the writes. A game opened from the
         // setup screen gets a new table.
-        if (seats.removeIf(old -> old.getGame() != seat.getGame()) && !parked.isEmpty()) {
+        boolean restarted = seats.removeIf(old -> old.getGame() != seat.getGame());
+        seats.add(seat); // first, so the notice below is logged with the new game's turn
+        if (restarted && !parked.isEmpty()) {
             // they were for the old game; the restart is from a save made before they were submitted
-            tell("The game was restarted: " + nameOf(parked.get(0)) + " and anything after it wasn't added");
+            tell("The game was restarted: " + nameOf(parked.get(0)) + " and anything after it wasn't added",
+                    affectedBy(parked.get(0)));
             parked.clear();
         }
-        seats.add(seat);
         // An action can arrive just before a prompt opens. End that prompt as it opens, or the action would wait
         // for the operator's next tap.
         seat.getInputQueue().addObserver((queue, arg) -> {
@@ -268,7 +287,7 @@ public class CompanionTable {
             any = true;
             if (!parked.isEmpty() && op.waitsBehindParked()) {
                 // the order stays the table's, but the operator should know why nothing happened yet
-                tell(nameOf(op) + " waits behind " + nameOf(parked.get(0)));
+                tell(nameOf(op) + " waits behind " + nameOf(parked.get(0)), affectedBy(op));
                 parked.add(op);
                 continue;
             }
@@ -349,7 +368,7 @@ public class CompanionTable {
         parked.add(op);
         parkedFor = target;
         parkedTurn = game.getPhaseHandler().getTurn();
-        tell(nameOf(op) + " waits for " + mainName(target));
+        tell(nameOf(op) + " waits for " + mainName(target), affectedBy(op));
     }
 
     private static PhaseType mainPhaseNeeded(Game game, Op op) {
@@ -371,8 +390,20 @@ public class CompanionTable {
             e.printStackTrace();
             result = new TableEditor.Result(false, "That didn't work: " + e);
         }
-        store.appendLog(id, result.message());
+        // chunk 3: the affected seat and what left the hand come from the result; until then, from the op
+        CompanionLogEntry entry = entry(!result.done() ? CompanionLogEntry.Kind.NOTICE
+                : op instanceof AddCard ? CompanionLogEntry.Kind.ADD : CompanionLogEntry.Kind.ACTION,
+                affectedBy(op), result.message());
+        if (result.done() && op instanceof AddCard add) {
+            entry = entry.withCard(add.name(), add.fromHand() ? null : CompanionLogEntry.FromHand.NONE);
+        }
+        store.appendLog(id, entry);
         onResult.accept(result);
+    }
+
+    /** The seats an op is about, as far as the op says: the player an add is for. */
+    private static List<String> affectedBy(Op op) {
+        return op instanceof AddCard add ? List.of(add.player()) : List.of();
     }
 
     private static String nameOf(Op op) {
