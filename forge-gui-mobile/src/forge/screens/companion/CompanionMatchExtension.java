@@ -109,6 +109,12 @@ class CompanionMatchExtension implements MatchExtension {
                 });
     }
 
+    /** A concede doesn't end the save, so the game would be back on the next launch: "End game…" is the way out. */
+    @Override
+    public boolean offersConcede() {
+        return false;
+    }
+
     @Override
     public boolean leavesWhenGameOver() {
         return ending;
