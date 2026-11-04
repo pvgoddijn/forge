@@ -234,7 +234,8 @@ public class MatchController extends NetworkGuiGame {
         boolean init = false;
         for (final PlayerView p : players) {
             final boolean isLocal = isLocalPlayer(p);
-            final VPlayerPanel playerPanel = new VPlayerPanel(p, isLocal || noHumans, players.size());
+            final boolean handOpen = (isLocal || noHumans) && (extension == null || extension.showsHandsAtStart());
+            final VPlayerPanel playerPanel = new VPlayerPanel(p, handOpen, players.size());
             if (isLocal && !init) {
                 playerPanels.add(0, playerPanel); //ensure local player always first among player panels
                 playerPanel.setBottomPlayer(true);
@@ -874,12 +875,12 @@ public class MatchController extends NetworkGuiGame {
 
     public static HostedMatch hostMatch() {
         hostedMatch = new HostedMatch();
-        gameMenuExtension = null; // belongs to one match, so a new match starts without it
+        extension = null; // belongs to one match, so a new match starts without it
         return hostedMatch;
     }
 
-    /** Extra items a mode adds to the game menu for the current match, or null. */
-    private static java.util.function.Consumer<forge.menu.FDropDownMenu> gameMenuExtension;
+    /** What the current match's mode adds to the match screen, or null. */
+    private static MatchExtension extension;
 
     /**
      * True while one person answers for every local player, as a scorekeeper does, rather than players sharing a
@@ -890,14 +891,19 @@ public class MatchController extends NetworkGuiGame {
                 && human.answersForEveryLocalSeat();
     }
 
-    /** The current match's extra menu items. Only a single-operator match has them; any other match doesn't. */
-    public static java.util.function.Consumer<forge.menu.FDropDownMenu> getGameMenuExtension() {
-        return isSingleOperator() ? gameMenuExtension : null;
+    /** The current match's extension, or null. */
+    public static MatchExtension getExtension() {
+        return extension;
     }
 
-    /** Call after {@link #hostMatch()}: the current match's game menu gets these items first. */
-    public static void setGameMenuExtension(java.util.function.Consumer<forge.menu.FDropDownMenu> extension) {
-        gameMenuExtension = extension;
+    /** The current match's extra menu items. Only a single-operator match has them; any other match doesn't. */
+    public static MatchExtension getGameMenuExtension() {
+        return isSingleOperator() ? extension : null;
+    }
+
+    /** Call after {@link #hostMatch()}, before the match starts: the match screen is built with it. */
+    public static void setExtension(MatchExtension extension0) {
+        extension = extension0;
     }
 
     public static HostedMatch getHostedMatch() {

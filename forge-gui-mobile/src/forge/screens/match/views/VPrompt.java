@@ -58,6 +58,8 @@ public class VPrompt extends FContainer {
     }
 
     private final FButton btnOk, btnCancel;
+    private static final float ACTION_MESSAGE_HEIGHT = Utils.scale(34); //two lines of the frosted message
+    private FButton btnAction; //a mode's main action in the message's place, the message moved above; null if none
     private final MessageLabel lblMessage;
     private String message;
     private CardView card;
@@ -167,6 +169,23 @@ public class VPrompt extends FContainer {
         btnCancel.setCorner(Corner.BottomRight);
         btnOk.setEnabled(false); //disable buttons until first input queued
         btnCancel.setEnabled(false);
+    }
+
+    /**
+     * Puts a button for the match's main action between OK and Cancel, where the message was, and moves the message
+     * onto a strip above the buttons. The prompt is then {@link #getBarHeight()} tall.
+     */
+    public void setAction(String label, Runnable action) {
+        if (btnAction == null) {
+            btnAction = add(new FButton(label, e -> action.run()));
+            btnAction.setCorner(Corner.None);
+        }
+        revalidate();
+    }
+
+    /** The prompt's height: one row of buttons, plus the message strip above them when there is a main action. */
+    public float getBarHeight() {
+        return btnAction == null ? HEIGHT : HEIGHT + ACTION_MESSAGE_HEIGHT;
     }
 
     public FButton getBtnOk() {
@@ -347,6 +366,10 @@ public class VPrompt extends FContainer {
 
     @Override
     protected void doLayout(float width, float height) {
+        final float top = btnAction == null ? 0 : ACTION_MESSAGE_HEIGHT; //the buttons' row, under the message strip
+        final float rowHeight = height - top;
+        btnOk.setTop(top);
+        btnCancel.setTop(top);
         boolean showUndo = undoShown;
         btnUndo.setVisible(showUndo);
         float undoSpace = showUndo ? UNDO_SIZE + 2 * UNDO_GAP : 0;
@@ -373,10 +396,15 @@ public class VPrompt extends FContainer {
         float menuX;
         if (Forge.reversedPrompt) { menuX = width - BTN_WIDTH - UNDO_GAP - UNDO_SIZE; }
         else { menuX = BTN_WIDTH + UNDO_GAP; labelLeft += menuSpace; }
-        btnMenu.setBounds(menuX, (height - UNDO_SIZE) / 2, UNDO_SIZE, UNDO_SIZE);
-        lblMessage.setLeft(labelLeft);
-        lblMessage.setWidth(width - 2 * BTN_WIDTH - undoSpace - menuSpace);
-        btnUndo.setBounds(undoX, (height - UNDO_SIZE) / 2, UNDO_SIZE, UNDO_SIZE);
+        btnMenu.setBounds(menuX, top + (rowHeight - UNDO_SIZE) / 2, UNDO_SIZE, UNDO_SIZE);
+        final float middleWidth = width - 2 * BTN_WIDTH - undoSpace - menuSpace;
+        if (btnAction != null) {
+            btnAction.setBounds(labelLeft, top, middleWidth, rowHeight);
+            lblMessage.setBounds(0, 0, width, top);
+        } else {
+            lblMessage.setBounds(labelLeft, 0, middleWidth, height);
+        }
+        btnUndo.setBounds(undoX, top + (rowHeight - UNDO_SIZE) / 2, UNDO_SIZE, UNDO_SIZE);
     }
 
     @Override

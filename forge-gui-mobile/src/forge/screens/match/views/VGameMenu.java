@@ -28,7 +28,7 @@ public class VGameMenu extends FDropDownMenu {
             return;
         }
         if (MatchController.getGameMenuExtension() != null) {
-            MatchController.getGameMenuExtension().accept(this);
+            MatchController.getGameMenuExtension().addGameMenuItems(this);
         }
         addItem(new FMenuItem(MatchController.instance.getConcedeCaption(), FSkinImage.CONCEDE, e ->
                 ThreadUtil.invokeInGameThread(MatchController.instance::concede)

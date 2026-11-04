@@ -752,6 +752,21 @@ public class Main extends AndroidApplication {
         }
 
         @Override
+        public boolean canPhotographCards() {
+            return forge.app.camera.AndroidCardPhotos.canPhotograph(Main.this);
+        }
+
+        @Override
+        public void photographCard(java.util.function.Consumer<forge.gamemodes.companion.CardPhoto> onResult) {
+            forge.app.camera.AndroidCardPhotos.photograph(Main.this, onResult);
+        }
+
+        @Override
+        public forge.gamemodes.companion.CardNameReader getCardNameReader() {
+            return forge.app.camera.AndroidCardPhotos.reader();
+        }
+
+        @Override
         public void requestFileAcces() {
             /* This is needed for Android 11 and upwards to have access on external storage (direct file path)
             ie adventure mode -> data -> restore. Though it's not fast like the app-specific storage...*/

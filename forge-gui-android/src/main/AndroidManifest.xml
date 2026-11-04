@@ -27,6 +27,10 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-feature android:name="android.hardware.gamepad" android:required="false"/>
+    <!-- Companion Mode photographs cards to read their names. Asked for on first use; Forge works without it. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera.any" android:required="false"/>
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false"/>
 
     <application
         android:allowBackup="true"
@@ -59,6 +63,17 @@
             android:configChanges="density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
             android:launchMode="singleInstance"
             android:theme="@style/NormalTheme"
+            android:exported="false">
+        </activity>
+        <!-- Companion Mode: photographs one card. Portrait, as the capture logic maps the preview in portrait.
+             Main is singleInstance, so this gets a task of its own: kept out of Recents, and one at a time. -->
+        <activity
+            android:name="forge.app.camera.CardCaptureActivity"
+            android:screenOrientation="portrait"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Material.NoActionBar"
             android:exported="false">
         </activity>
         <meta-data android:name="io.sentry.dsn" android:value="https://a0b8dbad9b8a49cfa51bf65d462e8dae:b3f27d7461224cb8836eb5c6050c666c@sentry.asgardsrealm.net/2?buffer.enabled=false" />

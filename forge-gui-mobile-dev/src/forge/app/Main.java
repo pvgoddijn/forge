@@ -45,6 +45,23 @@ public class Main {
             switchOrientationFile = switchOrientationFile0;
         }
 
+        /** Only when asked for: this jar is also the shipped PC build, where a file chooser isn't a camera. */
+        @Override
+        public boolean canPhotographCards() {
+            return DesktopCardPhotos.enabled();
+        }
+
+        /** No camera here: a file chooser picks the photo. */
+        @Override
+        public void photographCard(java.util.function.Consumer<forge.gamemodes.companion.CardPhoto> onResult) {
+            DesktopCardPhotos.choose(onResult);
+        }
+
+        @Override
+        public forge.gamemodes.companion.CardNameReader getCardNameReader() {
+            return DesktopCardPhotos.reader();
+        }
+
         //just assume desktop always connected to wifi
         @Override
         public boolean isConnectedToInternet() {
