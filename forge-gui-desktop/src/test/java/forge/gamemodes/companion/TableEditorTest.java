@@ -1405,11 +1405,9 @@ public class TableEditorTest extends AITest {
 
     // ---- Undo (slice 4, AC-27) ----
 
-    /** Saves as the active seat's controller does before its prompt: in a main phase with an empty stack. */
+    /** What the active seat's controller does before its prompt: saves in a main phase with an empty stack. */
     private static void saveAsTheTableDoes(Recorded rec, Game game) {
-        if (game.getStack().isEmpty() && game.getPhaseHandler().getPhase().isMain()) {
-            rec.table.save(game);
-        }
+        rec.table.atPrompt(game);
     }
 
     /** Runs {@code op} and then the save the next prompt would make. */
@@ -1515,6 +1513,42 @@ public class TableEditorTest extends AITest {
         rec.table.undo();
         rec.table.runPending(game);
         assertEquals(rec.results, List.of("Nothing to undo yet"));
+    }
+
+    /**
+     * The game menu's Undo is enabled from {@link CompanionTable#canUndo}, as of the latest prompt: off before the
+     * first save and at the start of the game, on once there's a step to go back to, and on at step 0 with a spell on
+     * the stack, as the cast can be taken back.
+     */
+    @Test
+    public void canUndoFollowsThePromptsSteps() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        assertFalse(rec.table.canUndo(), "no prompt, no save yet");
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.store.latestStep("t"), 0);
+        assertFalse(rec.table.canUndo(), "the start of the game");
+
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.runPending(game);
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.store.latestStep("t"), 0, "nothing saved with a spell on the stack");
+        assertTrue(rec.table.canUndo(), "the cast can be taken back");
+        undo(rec, game);
+        assertFalse(rec.table.canUndo(), "back at the start");
+
+        rec.table.submit(g -> TableEditor.setLife(bo, 30, false));
+        rec.table.runPending(game);
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.store.latestStep("t"), 1);
+        assertTrue(rec.table.canUndo());
+        undo(rec, game);
+        assertFalse(rec.table.canUndo());
+        undo(rec, game);
+        assertEquals(rec.results.get(rec.results.size() - 1), "Nothing to undo: this is the start of the game",
+                "an undo sent anyway is refused");
     }
 
     /** The undone entries stay in the log, marked by the undo; a new action after it writes the step again, unmarked. */

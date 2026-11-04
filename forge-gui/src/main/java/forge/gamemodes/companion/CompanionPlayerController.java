@@ -67,15 +67,27 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         if (stackEmpty && !mainPhase && !isCombatStop(ph, ph.getPhase())) {
             return null;
         }
-        if (stackEmpty && mainPhase) {
-            // only main phases are saved: a game state can't hold a combat in progress
-            table.save(game);
-        }
+        table.atPrompt(game); // saves in a main phase with an empty stack
         List<SpellAbility> chosen = super.chooseSpellAbilityToPlay();
         if (chosen == null && table.hasPending()) {
             return Collections.emptyList(); // an action came in instead of a pass: run it, don't move on
         }
         return chosen;
+    }
+
+    /**
+     * Forge's own undo stays off (plan decision 6): its {@code UndoManager} is in memory only, with a barrier at every
+     * draw, phase and reveal. With nothing to undo, the prompt shows no undo button and Cancel stays End Turn.
+     */
+    @Override
+    public boolean canUndoLastAction() {
+        return false;
+    }
+
+    /** The prompt's undo (Ctrl+Z) takes back the table's last step instead, as the game menu's Undo does. */
+    @Override
+    public void undoLastAction() {
+        table.undo();
     }
 
     /**
