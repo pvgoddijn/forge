@@ -100,6 +100,8 @@ public class CompanionTable {
     private static final int NO_TURN = -1;
     /** The turn the operator wants combat through the engine for, though it's off for the game. */
     private volatile int combatTurn = NO_TURN;
+    /** Whether {@link #undo} had something to take back at the latest priority prompt. See {@link #canUndo}. */
+    private volatile boolean canUndo;
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -496,6 +498,33 @@ public class CompanionTable {
 
     private static String mainName(PhaseType main) {
         return main == PhaseType.MAIN1 ? "Main 1" : "Main 2";
+    }
+
+    /**
+     * Before each priority prompt the operator sees: saves the game in a main phase with an empty stack (a game state
+     * can't hold a combat in progress), then works out {@link #canUndo} for that prompt. Game loop thread.
+     */
+    void atPrompt(Game game) {
+        PhaseType phase = game.getPhaseHandler().getPhase();
+        boolean settledPoint = game.getStack().isEmpty() && phase != null && phase.isMain();
+        if (settledPoint) {
+            save(game);
+        }
+        int latest = store.latestStep(id);
+        // as Undo decides: past step 0 there's always a save to go back to; at step 0 only when the game has moved
+        // on from it (something on the stack, a combat stop, a save that failed), as then step 0 itself is the target
+        boolean asSaved = settledPoint && !saveFailing && !game.getStack().hasSimultaneousStackEntries();
+        canUndo = latest > 0 || (latest == 0 && !asSaved);
+    }
+
+    /**
+     * Whether an undo would take something back, as of the latest priority prompt: false before the first save and
+     * at the start of the game (AC-27's step 0). Cheap and safe from any thread (the UI's game menu reads it). It can
+     * be out of date only while the game runs between prompts, when undo waits for the next prompt anyway; an undo
+     * submitted then is refused with a message if it has nothing to take back.
+     */
+    public boolean canUndo() {
+        return canUndo;
     }
 
     /** Saves the game if it changed. Game loop thread, at a settled point: the stack empty, priority with the table. */
