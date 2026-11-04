@@ -1,5 +1,6 @@
 package forge.screens.match;
 
+import forge.game.player.PlayerView;
 import forge.menu.FDropDownMenu;
 
 /**
@@ -30,5 +31,14 @@ public interface MatchExtension {
 
     /** Runs the main action, on the UI thread. */
     default void runPromptAction() {
+    }
+
+    /**
+     * Handles a tap on a player's life total, on the UI thread. Only a single-operator match asks.
+     *
+     * @return true if the mode handled the tap, so the usual player selection is skipped
+     */
+    default boolean tapLife(PlayerView player) {
+        return false;
     }
 }
