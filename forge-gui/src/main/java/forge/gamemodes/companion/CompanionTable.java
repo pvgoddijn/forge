@@ -1,6 +1,7 @@
 package forge.gamemodes.companion;
 
 import forge.game.Game;
+import forge.game.card.Card;
 import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
@@ -79,8 +80,44 @@ public class CompanionTable {
         }
 
         private Player find(Game game) {
-            return game.getPlayers().stream().filter(p -> p.getName().equals(player)).findFirst().orElse(null);
+            return seat(game, player);
         }
+    }
+
+    /**
+     * The "wrong player" correction (AC-22a): the card {@code card} logged for {@code from} goes to {@code to},
+     * through {@link TableEditor#reassign}, found wherever it is now ({@link TableEditor#findToReassign}). By names,
+     * as the log has them: card ids don't survive a load, so not an undo either. {@code fromHand} is the add entry's,
+     * what left {@code from}'s hand. Written to the log as a {@code correction}.
+     */
+    public record Reassign(String from, String card, String to, CompanionLogEntry.FromHand fromHand) implements Op {
+        @Override
+        public TableEditor.Result run(Game game) {
+            List<String> seats = List.of(from, to);
+            if (from.equals(to)) {
+                return new TableEditor.Result(false, card + " is already " + to + "'s: nothing was changed", seats,
+                        card, null);
+            }
+            Player original = seat(game, from);
+            Player target = seat(game, to);
+            if (original == null || target == null) {
+                return new TableEditor.Result(false, (original == null ? from : to) + " isn't in the game: " + card
+                        + " wasn't given to " + to, seats, card, null);
+            }
+            Card found = TableEditor.findToReassign(original, card);
+            if (found == null) {
+                return new TableEditor.Result(false, from + "'s " + card + " wasn't found: nothing was changed", seats,
+                        card, null);
+            }
+            TableEditor.Result result = TableEditor.reassign(found, target, fromHand);
+            // the log's name for it, which slice 5 matches against the add entry
+            return new TableEditor.Result(result.done(), result.message(), result.affected(), card, result.fromHand());
+        }
+    }
+
+    /** The player whose setup name is {@code name}, or null when they aren't in the game. */
+    private static Player seat(Game game, String name) {
+        return game.getPlayers().stream().filter(p -> p.getName().equals(name)).findFirst().orElse(null);
     }
 
     private final String id;
@@ -476,9 +513,11 @@ public class CompanionTable {
             return;
         }
         List<String> affected = result.affected().isEmpty() ? affectedBy(op) : result.affected();
-        String card = result.card() != null ? result.card() : op instanceof AddCard add ? add.name() : null;
+        String card = result.card() != null ? result.card() : op instanceof AddCard add ? add.name()
+                : op instanceof Reassign fix ? fix.card() : null;
         CompanionLogEntry entry = entry(!result.done() ? CompanionLogEntry.Kind.NOTICE
-                : op instanceof AddCard ? CompanionLogEntry.Kind.ADD : CompanionLogEntry.Kind.ACTION,
+                : op instanceof AddCard ? CompanionLogEntry.Kind.ADD
+                : op instanceof Reassign ? CompanionLogEntry.Kind.CORRECTION : CompanionLogEntry.Kind.ACTION,
                 affected, result.message());
         if (card != null) {
             entry = entry.withCard(card, result.fromHand());
@@ -487,13 +526,14 @@ public class CompanionTable {
         onResult.accept(result);
     }
 
-    /** The seats an op is about, as far as the op says: the player an add is for. */
+    /** The seats an op is about, as far as the op says: the player an add is for, both seats of a correction. */
     private static List<String> affectedBy(Op op) {
-        return op instanceof AddCard add ? List.of(add.player()) : List.of();
+        return op instanceof AddCard add ? List.of(add.player())
+                : op instanceof Reassign fix ? List.of(fix.from(), fix.to()) : List.of();
     }
 
     private static String nameOf(Op op) {
-        return op instanceof AddCard add ? add.name() : "The action";
+        return op instanceof AddCard add ? add.name() : op instanceof Reassign fix ? fix.card() : "The action";
     }
 
     private static String mainName(PhaseType main) {

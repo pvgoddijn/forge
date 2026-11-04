@@ -16,6 +16,7 @@ import forge.game.player.PlaySpellAbility;
 import forge.game.spellability.SpellAbility;
 import forge.game.trigger.TriggerHandler;
 import forge.game.trigger.TriggerType;
+import forge.game.zone.Zone;
 import forge.game.zone.ZoneType;
 import forge.item.PaperCard;
 import forge.item.PaperToken;
@@ -138,6 +139,132 @@ public final class TableEditor {
                 : hidden != null ? CompanionLogEntry.FromHand.PLACEHOLDER : CompanionLogEntry.FromHand.NONE;
         return Result.add(seat, name, left, true,
                 player.getName() + (mode == Mode.CAST ? " casts " : " puts in ") + name);
+    }
+
+    /** Where {@link #findToReassign} looks, in order: the stack first, so a spell still on it is refused, not missed. */
+    private static final List<ZoneType> REASSIGN_ZONES = List.of(ZoneType.Stack, ZoneType.Battlefield,
+            ZoneType.Graveyard, ZoneType.Exile, ZoneType.Command, ZoneType.Hand, ZoneType.Library);
+
+    /** The trigger modes moving a card to another player could set off; {@link #reassign} sets off none. */
+    private static final TriggerType[] REASSIGN_TRIGGERS = {
+            TriggerType.ChangesZone, TriggerType.ChangesZoneAll, TriggerType.ChangesController
+    };
+
+    /**
+     * The card named {@code name} that {@code owner} owns, wherever it is now, for {@link #reassign}: the log names
+     * cards by name, and the card may have moved since it was logged (it died, it bounced). The first zone that has
+     * one wins, in the order of {@link #REASSIGN_ZONES}, and in that zone the one that got there last. Unknown cards
+     * never match. Null when there's none: for example a token that ceased to exist.
+     */
+    public static Card findToReassign(Player owner, String name) {
+        Game game = owner.getGame();
+        for (ZoneType zone : REASSIGN_ZONES) {
+            Card found = null;
+            for (Card card : game.getCardsIn(zone)) {
+                if (card.getOwner() == owner && !CompanionCards.isPlaceholder(card) && isNamed(card, name)) {
+                    found = card;
+                }
+            }
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isNamed(Card card, String name) {
+        return name.equals(card.getName())
+                || (card.getPaperCard() != null && name.equals(card.getPaperCard().getName()));
+    }
+
+    /**
+     * The "wrong player" correction (AC-22a): {@code card} goes to the same zone of {@code to}, and {@code to} owns and
+     * controls it. Its owner, the player it was logged for, gets back what left their hand ({@code fromHand}, from the
+     * add's log entry): an unknown card for {@code placeholder}; the known copy, as a known card, for {@code known}
+     * (the operator says they never played it, so it's still in their hand); nothing for {@code none} (not from the
+     * hand, or their hand was empty then; null reads as none). Then AC-19/AC-20 for {@code to}: their known copy of
+     * that name leaves their hand if they have one, otherwise one unknown card, otherwise nothing.
+     * <p>
+     * Nothing triggers: it's a correction of the log, not something that happened at the table. The card isn't moved
+     * through the game's zone changes; it's taken out of one zone and put into the other as a game load does, with
+     * zone-change and control-change triggers suppressed for the move as well. Effects that already resolved stay
+     * (an ETB isn't redone or taken back); to replay them for the right player the operator undoes and logs again.
+     * It keeps its tapped state and summoning sickness.
+     * <p>
+     * Refused, changing nothing, when {@code to} already owns it, when it's on the stack (correct it once it has
+     * resolved, or undo the cast), and when it's in no zone of the game.
+     *
+     * @return about both seats, the original player first, with {@code to}'s side of the hand in {@code fromHand}
+     */
+    public static Result reassign(Card card, Player to, CompanionLogEntry.FromHand fromHand) {
+        Game game = to.getGame();
+        Player from = card.getOwner();
+        String name = card.getName();
+        List<String> seats = List.of(from.getName(), to.getName());
+        if (from == to) {
+            return new Result(false, name + " is already " + to.getName() + "'s: nothing was changed", seats, name,
+                    null);
+        }
+        Zone zone = game.getZoneOf(card);
+        if (zone == null || !zone.contains(card) || zone.is(ZoneType.None)) {
+            return new Result(false, name + " isn't in the game any more: nothing was changed", seats, name, null);
+        }
+        if (zone.is(ZoneType.Stack)) {
+            return new Result(false, name + " is still on the stack: correct it once it has resolved, or undo the cast",
+                    seats, name, null);
+        }
+
+        TriggerHandler triggers = game.getTriggerHandler();
+        boolean[] wasSuppressed = new boolean[REASSIGN_TRIGGERS.length];
+        for (int i = 0; i < REASSIGN_TRIGGERS.length; i++) {
+            wasSuppressed[i] = triggers.isTriggerSuppressed(REASSIGN_TRIGGERS[i]);
+            if (!wasSuppressed[i]) {
+                triggers.suppressMode(REASSIGN_TRIGGERS[i]);
+            }
+        }
+        CompanionLogEntry.FromHand toSide;
+        try {
+            // to's hand first, so the card itself, if it's in a hand, isn't taken for their known copy
+            Card known = findKnownInHand(to, name);
+            Card hidden = known == null ? firstPlaceholderInHand(to) : null;
+            if (known != null) {
+                game.getAction().ceaseToExist(known, true);
+            } else if (hidden != null) {
+                game.getAction().ceaseToExist(hidden, true);
+            }
+            toSide = known != null ? CompanionLogEntry.FromHand.KNOWN
+                    : hidden != null ? CompanionLogEntry.FromHand.PLACEHOLDER : CompanionLogEntry.FromHand.NONE;
+
+            if (fromHand == CompanionLogEntry.FromHand.PLACEHOLDER) {
+                from.getZone(ZoneType.Hand).add(CompanionCards.newPlaceholder(from));
+            } else if (fromHand == CompanionLogEntry.FromHand.KNOWN) {
+                from.getZone(ZoneType.Hand).add(knownCopy(card, from));
+            }
+
+            if (zone.is(ZoneType.Battlefield) && game.getCombat() != null) {
+                game.getCombat().removeFromCombat(card);
+            }
+            zone.remove(card);
+            card.setOwner(to);
+            card.clearControllers();
+            // as a load or rollback puts it there: no sickness, tapping, "descended" or entered-this-turn bookkeeping
+            to.getZone(zone.getZoneType()).add(card, null, null, true);
+        } finally {
+            for (int i = 0; i < REASSIGN_TRIGGERS.length; i++) {
+                if (!wasSuppressed[i]) {
+                    triggers.clearSuppression(REASSIGN_TRIGGERS[i]);
+                }
+            }
+        }
+        settle(game);
+        return new Result(true, name + " is " + to.getName() + "'s, not " + from.getName() + "'s", seats, name, toSide);
+    }
+
+    /** A fresh known copy of {@code card}'s printing for {@code player}'s hand, front face up as in any hand. */
+    private static Card knownCopy(Card card, Player player) {
+        Card copy = Card.fromPaperCard(card.getPaperCard(), player);
+        copy.setGameTimestamp(player.getGame().getNextTimestamp());
+        return copy;
     }
 
     /** The trigger modes a life change sets off. */
