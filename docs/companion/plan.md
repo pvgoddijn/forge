@@ -107,7 +107,7 @@ Slice 0 lists what a typical Commander turn loses. If that is more than we expec
 | `CardSearchDialog` | As now: name, target player, from/to zone, plus "cast" or "put onto the battlefield" (AC-34, AC-40). |
 | `CompanionHistoryScreen` | As before. History reads our log plus the engine's `GameLog`. Photo suggestions go in `CardSearchDialog`, so there's no `CardSuggestionDialog`. |
 
-**AC-23:** mobile `MatchScreen` already stacks **every** player's panel vertically (`MatchScreen:1312-1350`). Avatars are halved above 2 players, and the hand is a tab on each panel. So every player is reachable on one screen. The risk is legibility with 6, which slice 0 measures with a screenshot. Slice 2's compact-panel work is the fallback.
+**AC-23:** mobile `MatchScreen` already stacks **every** player's panel vertically (`MatchScreen:1312-1350`). Avatars are halved above 2 players, and the hand is a tab on each panel. So every player is reachable on one screen. The risk is legibility with 6, which slice 0 measures with a screenshot. Slice 2's compact-panel work (deferred) is the fallback.
 
 ### 2.5 Capture and recognition
 Built in slice 1 (2026-11-03), from the camera PoC at `/mnt/wsl/git/forge-camera-poc`:
@@ -150,7 +150,7 @@ Measure: top-3 accuracy through `CardNameMatcher` (AC-32), time per photo, and A
 | 1–5 | Setup screen, controller, placeholder deck | Dev build. Engine test for the starting state. |
 | 6 | `CardCaptureActivity` | Real phone. |
 | 7, 13 | Reader + matcher | Benchmark photo set, airplane mode. |
-| 8–11 | `CardSuggestionDialog`, `FPref` | Dev build with image files. |
+| 8–11 | `CardSearchDialog` (photo suggestions), `FPref` | Dev build with image files. |
 | 12, 14–16 | `CardNameMatcher`, `CardSearchDialog` | Matcher tests. |
 | 17–22, 22a | `TableEditor`, placeholders | Engine tests through the **real main loop** with a scripted `CompanionPlayerController` (not the AI): hand counts through cast, bounce, draw and discard. |
 | 23 | `MatchScreen` | 6 players on a phone. |
@@ -175,7 +175,7 @@ Measure: top-3 accuracy through `CardNameMatcher` (AC-32), time per photo, and A
 |---|---|
 | Several local humans on one GUI misbehave (rotated prompt, duplicate events, wrong bottom panel) | The fixes in 2.1, then a run in slice 0 with 3 and 6 seats. |
 | Ops through `restartPrompt` interact badly with prompts other than priority (a target choice open when the operator taps Add) | Ops are offered only at priority prompts. The menu disables them otherwise. |
-| Placeholders made public, or searched for, show "Unknown Card" | The controller asks the operator to name the card (decision 3). Slice 2 covers discard, mill and search. |
+| Placeholders made public, or searched for, show "Unknown Card" | The controller asks the operator to name the card (decision 3). Slice 2 (deferred) covers discard, mill and search. |
 | Snapshots lose temporary effects on resume or undo | Spec amended (2.3). Slice 0 measures what's lost. |
 | A snapshot per op costs time or storage on a phone | A snapshot is a few KB of text. Measure in slice 0. Keep the last 500 per game and prune older ones. |
 | An effect the engine resolves differs from what happened at the table | Override (AC-22, AC-25) and undo (AC-27) are always there. The engine assists the operator and never has the last word. |
@@ -200,14 +200,14 @@ Slice files in [`slices/`](slices/) have the detail.
   - a headless test drives the real main loop
   - it measures the hot-seat, AC-23 and `GameState` risks
 - **Slice 1:** capture → OCR → suggestions on Android.
-- **Slice 2 (redone), zones and hand:** move any card anywhere, hand ±1, naming placeholders that become public, known cards visible to the operator.
+- **Slice 2, zones and hand: deferred (2026-11-04)** until the owner decides what to do with it. The engine already covers most of it: a cast card goes where the rules send it, a card leaves the hand as a known card or a placeholder, and bounces make known cards. What's left is moving a card by hand, hand ±1, and naming placeholders that become public. No planned slice needs it: slice 4's correction and slice 6's commander cast each bring their own narrow `TableEditor` change.
+- **Slice 3, turns and life:** stacked on slice 1, not slice 2. It depends on slices 0 and 1.
 - **Then:**
-  - turns and life (next-turn flag, set life)
-  - undo and correction (snapshot n−1)
-  - history
-  - decks and commanders (Commander rules come from the engine)
-  - auto mode
-  - quality pass
+  - **Slice 4, undo and correction** (snapshot n−1): needs only slice 0's save mechanism; stacked on 3.
+  - **Slice 5, history:** needs slice 4's structured log.
+  - **Slice 6, decks and commanders** (Commander rules come from the engine): needs slice 1's capture flow and slice 3's parked ops (the turn skip waits like a parked sorcery). Adds a per-game "Commander mode", on by default, that refuses a card outside the player's commander's colour identity, and offers to move the turn ahead when the card fits a later player. This refuses some operator actions, which spec AC-39 rules out; the spec needs a new AC and decision before the slice is built.
+  - **Slice 7, auto mode:** needs slices 1 and 4.
+  - **Slice 8, quality pass:** accuracy and speed after slice 6; the offline game after everything that ships.
 
 ## 9. Sources
 
