@@ -2,7 +2,12 @@ package forge.gamemodes.companion;
 
 import forge.StaticData;
 import forge.card.CardRules;
+import forge.card.CardSplitType;
 import forge.card.GamePieceType;
+import forge.card.ICardFace;
+import forge.card.mana.ManaAtom;
+import forge.card.mana.ManaCost;
+import forge.card.mana.ManaCostShard;
 import forge.game.Game;
 import forge.game.ability.AbilityKey;
 import forge.game.ability.AbilityUtils;
@@ -22,6 +27,7 @@ import forge.item.PaperCard;
 import forge.item.PaperToken;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -427,6 +433,192 @@ public final class TableEditor {
             }
         }
         return sick;
+    }
+
+    /**
+     * A seat's mana sources on the battlefield (item 11): one entry per card with a mana ability, holding the
+     * {@link ManaAtom} colors it can make ({@link ManaAtom#COLORLESS} for {C}), or 0 when it makes only mana the
+     * engine can't name a color for. Any source pays generic mana.
+     */
+    public record ManaSources(String seat, List<Integer> sources) {
+        public ManaSources {
+            sources = List.copyOf(sources);
+        }
+    }
+
+    /** Every seat's {@link #manaSources(Player)}, in the game's order. */
+    public static List<ManaSources> manaSources(Game game) {
+        List<ManaSources> all = new ArrayList<>();
+        for (Player player : game.getPlayers()) {
+            all.add(manaSources(player));
+        }
+        return List.copyOf(all);
+    }
+
+    /**
+     * What {@code player}'s battlefield can make, by the engine's own check ({@link Card#getProducibleColors}, which
+     * walks the card's mana abilities, reflected ones too). Tapped or not, and whatever the ability costs: at the
+     * table casts are free, so no land is ever tapped for one, and this asks which colors a seat has, not whether
+     * they're free right now.
+     */
+    public static ManaSources manaSources(Player player) {
+        List<Integer> sources = new ArrayList<>();
+        for (Card card : player.getCardsIn(ZoneType.Battlefield)) {
+            if (card.getManaAbilities().isEmpty()) {
+                continue;
+            }
+            int colors = 0;
+            for (String color : card.getProducibleColors()) {
+                colors |= ManaAtom.fromName(color);
+            }
+            sources.add(colors);
+        }
+        return new ManaSources(player.getName(), sources);
+    }
+
+    /**
+     * The players who could have cast {@code name} from their mana sources (item 11), when it's an instant or has
+     * flash on a face that can be cast; for any other card, or a name that isn't a card, every player, as only
+     * instant-speed spells are narrowed down. The list can be empty: then nobody could have, and the operator is
+     * offered every seat anyway (AC-39). Game loop thread. See {@link #couldPay} for what it approximates.
+     */
+    public static List<Player> couldHaveCast(Game game, String name) {
+        List<String> seats = couldHaveCast(manaSources(game), name);
+        List<Player> players = new ArrayList<>();
+        for (Player player : game.getPlayers()) {
+            if (seats.contains(player.getName())) {
+                players.add(player);
+            }
+        }
+        return players;
+    }
+
+    /**
+     * {@link #couldHaveCast(Game, String)} from sources already gathered, so the UI can ask with what the latest
+     * prompt published ({@link CompanionTable#couldHaveCast}). Touches no game: any thread.
+     */
+    public static List<String> couldHaveCast(List<ManaSources> seats, String name) {
+        List<ManaCost> costs = instantSpeedCosts(name);
+        List<String> could = new ArrayList<>();
+        for (ManaSources seat : seats) {
+            if (costs == null || costs.stream().anyMatch(cost -> couldPay(cost, seat.sources()))) {
+                could.add(seat.seat());
+            }
+        }
+        return could;
+    }
+
+    /**
+     * The mana costs of {@code name}'s faces that can be cast at instant speed (an instant, or with flash), or
+     * {@code null} when there are none, or it isn't a card: only those faces are narrowed down. The faces that can be
+     * cast are the front and, for a split, adventure, omen or modal double-faced card, the other one; flash granted by
+     * another card on the table isn't seen. Card data only: any thread.
+     */
+    static List<ManaCost> instantSpeedCosts(String name) {
+        PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(name);
+        if (printing == null) {
+            return null;
+        }
+        CardRules rules = printing.getRules();
+        List<ICardFace> faces = new ArrayList<>();
+        faces.add(rules.getMainPart());
+        CardSplitType split = rules.getSplitType();
+        if (rules.getOtherPart() != null && (split == CardSplitType.Split || split == CardSplitType.Adventure
+                || split == CardSplitType.Omen || split == CardSplitType.Modal)) {
+            faces.add(rules.getOtherPart());
+        }
+        List<ManaCost> costs = new ArrayList<>();
+        for (ICardFace face : faces) {
+            if (face.getType().isInstant() || hasFlash(face)) {
+                costs.add(face.getManaCost());
+            }
+        }
+        return costs.isEmpty() ? null : costs;
+    }
+
+    private static boolean hasFlash(ICardFace face) {
+        if (face.getKeywords() == null) {
+            return false;
+        }
+        for (String keyword : face.getKeywords()) {
+            if (keyword.equals("Flash")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether {@code sources} could pay {@code cost}, each source making one mana: every colored or {C} pip gets a
+     * source of its own that makes it (a matching, so a source that makes any color isn't counted twice), and the
+     * sources left over cover the generic part. An approximation: X is 0; a hybrid pip takes either color, and {2/W}
+     * either W or two generic; a Phyrexian pip is paid with life, so needs no source; snow counts as generic; a source
+     * that makes two mana (Sol Ring) or only for some spells counts as one; cost changes and extra costs aren't seen.
+     * A card with no mana cost can't be cast.
+     */
+    static boolean couldPay(ManaCost cost, List<Integer> sources) {
+        if (cost.isNoCost()) {
+            return false;
+        }
+        int generic = cost.getGenericCost();
+        List<Integer> pips = new ArrayList<>();
+        List<Integer> orTwo = new ArrayList<>(); // {2/W}: a pip, or two generic
+        for (ManaCostShard shard : cost) {
+            int colors = shard.getShard() & (ManaAtom.ALL_MANA_COLORS | ManaAtom.COLORLESS);
+            if (shard.isOfKind(ManaAtom.IS_X) || shard.isPhyrexian()) {
+                continue;
+            }
+            if (colors == 0) {
+                generic += shard.getCmc(); // snow, or a generic shard
+            } else if (shard.isOr2Generic()) {
+                orTwo.add(colors);
+            } else {
+                pips.add(colors);
+            }
+        }
+        // a cost has few {2/W} pips, so trying each way to pay them is cheap
+        for (int asPips = 0; asPips < 1 << orTwo.size(); asPips++) {
+            List<Integer> needed = new ArrayList<>(pips);
+            int extraGeneric = 0;
+            for (int i = 0; i < orTwo.size(); i++) {
+                if ((asPips & 1 << i) != 0) {
+                    needed.add(orTwo.get(i));
+                } else {
+                    extraGeneric += 2;
+                }
+            }
+            if (sources.size() >= needed.size() + generic + extraGeneric && allMatched(needed, sources)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether each pip gets a different source that makes one of its colors (Kuhn's augmenting paths). */
+    private static boolean allMatched(List<Integer> pips, List<Integer> sources) {
+        int[] pipOfSource = new int[sources.size()];
+        Arrays.fill(pipOfSource, -1);
+        for (int pip = 0; pip < pips.size(); pip++) {
+            if (!augment(pip, pips, sources, pipOfSource, new boolean[sources.size()])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean augment(int pip, List<Integer> pips, List<Integer> sources, int[] pipOfSource,
+                                   boolean[] seen) {
+        for (int s = 0; s < sources.size(); s++) {
+            if (seen[s] || (sources.get(s) & pips.get(pip)) == 0) {
+                continue;
+            }
+            seen[s] = true;
+            if (pipOfSource[s] < 0 || augment(pipOfSource[s], pips, sources, pipOfSource, seen)) {
+                pipOfSource[s] = pip;
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
