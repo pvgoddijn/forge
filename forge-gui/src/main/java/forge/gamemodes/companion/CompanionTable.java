@@ -139,6 +139,8 @@ public class CompanionTable {
     private volatile int combatTurn = NO_TURN;
     /** Whether {@link #undo} had something to take back at the latest priority prompt. See {@link #canUndo}. */
     private volatile boolean canUndo;
+    /** The cards "wrong player" could correct at the latest priority prompt. See {@link #addedThisTurn}. */
+    private volatile List<CompanionLogEntry.Added> addedThisTurn = List.of();
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -555,6 +557,36 @@ public class CompanionTable {
         // on from it (something on the stack, a combat stop, a save that failed), as then step 0 itself is the target
         boolean asSaved = settledPoint && !saveFailing && !game.getStack().hasSimultaneousStackEntries();
         canUndo = latest > 0 || (latest == 0 && !asSaved);
+        addedThisTurn = findAddedThisTurn(game);
+    }
+
+    /** This turn's adds from the log that are still in the game, where {@link Reassign} would find them. */
+    private List<CompanionLogEntry.Added> findAddedThisTurn(Game game) {
+        try {
+            List<CompanionLogEntry.Added> found = new ArrayList<>();
+            int turn = game.getPhaseHandler().getTurn();
+            for (CompanionLogEntry.Added added : CompanionLogEntry.addedInTurn(store.loadLog(id), turn)) {
+                Player owner = seat(game, added.player());
+                if (owner != null && TableEditor.findToReassign(owner, added.card()) != null) {
+                    found.add(added);
+                }
+            }
+            return List.copyOf(found);
+        } catch (RuntimeException e) {
+            // an unreadable log mustn't stop the prompt; the menu just has nothing to correct
+            e.printStackTrace();
+            return List.of();
+        }
+    }
+
+    /**
+     * The cards added this turn that "wrong player" can give to another seat, oldest first, as of the latest priority
+     * prompt: not undone, and still in the game (a token that ceased to exist isn't). Safe from any thread (the UI's
+     * game menu reads it). Like {@link #canUndo}, it can be out of date only while the game runs between prompts;
+     * the {@link Reassign} op looks the card up again and refuses with a message if it's gone.
+     */
+    public List<CompanionLogEntry.Added> addedThisTurn() {
+        return addedThisTurn;
     }
 
     /**

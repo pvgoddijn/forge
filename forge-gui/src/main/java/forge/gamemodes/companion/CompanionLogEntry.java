@@ -111,6 +111,52 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         return Collections.unmodifiableSet(undone);
     }
 
+    /**
+     * A card added in a turn, as the "wrong player" correction offers it: whose it is now, and what left that
+     * player's hand for it, ready for {@link CompanionTable.Reassign}.
+     *
+     * @param seq      the add entry's seq
+     * @param player   the seat it's logged to now: the add's, or the latest correction's
+     * @param card     its name
+     * @param fromHand what left {@code player}'s hand for it, or null when not known
+     */
+    public record Added(long seq, String player, String card, FromHand fromHand) {
+        /** The correction that gives this card to {@code to}. */
+        public CompanionTable.Reassign reassignTo(String to) {
+            return new CompanionTable.Reassign(player, card, to, fromHand);
+        }
+    }
+
+    /**
+     * The cards added in {@code turn} that aren't undone, oldest first, for the "wrong player" correction (AC-22a).
+     * A correction that isn't undone moves its card to the seat it gave it to, with that seat's side of the hand, so
+     * the card can be corrected again from there; it applies to the latest add before it of that card and seat. Adds
+     * with no card or seat (a line from before entries) are left out. Whether each card can still be found is the
+     * game's business, not the log's.
+     */
+    public static List<Added> addedInTurn(List<CompanionLogEntry> log, int turn) {
+        Set<Long> undone = undone(log);
+        List<Added> added = new ArrayList<>();
+        for (CompanionLogEntry entry : log) {
+            if (undone.contains(entry.seq) || entry.card == null) {
+                continue;
+            }
+            if (entry.kind == Kind.ADD && entry.turn == turn && !entry.affected.isEmpty()) {
+                added.add(new Added(entry.seq, entry.affected.get(0), entry.card, entry.fromHand));
+            } else if (entry.kind == Kind.CORRECTION && entry.affected.size() == 2) {
+                String from = entry.affected.get(0);
+                for (int i = added.size() - 1; i >= 0; i--) {
+                    Added a = added.get(i);
+                    if (a.player.equals(from) && a.card.equals(entry.card)) {
+                        added.set(i, new Added(a.seq, entry.affected.get(1), a.card, entry.fromHand));
+                        break;
+                    }
+                }
+            }
+        }
+        return Collections.unmodifiableList(added);
+    }
+
     /** This entry as one line of JSON, with no newline in it. Unknown fields are left out. */
     String toLine() {
         JsonObject json = new JsonObject();

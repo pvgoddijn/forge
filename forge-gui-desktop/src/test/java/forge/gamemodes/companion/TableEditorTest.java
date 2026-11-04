@@ -1983,6 +1983,47 @@ public class TableEditorTest extends AITest {
         assertEquals(CompanionCards.hiddenInHand(bo), 7);
     }
 
+    /**
+     * What the game menu's "Wrong player…" offers, worked out at each prompt: this turn's adds still in the game, a
+     * token that ceased to exist left out, and a corrected card under its new seat, ready to be corrected again.
+     */
+    @Test
+    public void wrongPlayerOffersThisTurnsAddsThatAreStillInTheGame() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        // a seat, so the entries carry the game's turn as they do in a match
+        new CompanionPlayerController(game, ann, new forge.ai.LobbyPlayerAi("Ann", null), rec.table)
+                .getInputQueue().deleteObservers();
+        saveAsTheTableDoes(rec, game);
+        assertTrue(rec.table.addedThisTurn().isEmpty(), "nothing added yet");
+
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Treasure Token", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.table.addedThisTurn().stream().map(CompanionLogEntry.Added::card).toList(),
+                List.of("Grizzly Bears", "Treasure Token"));
+
+        Card treasure = ann.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isToken).findFirst().orElseThrow();
+        game.getAction().ceaseToExist(treasure, true);
+        saveAsTheTableDoes(rec, game);
+        List<CompanionLogEntry.Added> offered = rec.table.addedThisTurn();
+        assertEquals(offered.size(), 1, offered.toString());
+        assertEquals(offered.get(0).player(), ann.getName());
+        assertEquals(offered.get(0).fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        rec.table.submit(offered.get(0).reassignTo(bo.getName()));
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+        assertEquals(rec.table.addedThisTurn(), List.of(new CompanionLogEntry.Added(offered.get(0).seq(),
+                bo.getName(), "Grizzly Bears", CompanionLogEntry.FromHand.PLACEHOLDER)), "Bo's now");
+    }
+
     private static void assertEntry(CompanionLogEntry entry, CompanionLogEntry.Kind kind, String seat, String card,
                                     CompanionLogEntry.FromHand fromHand) {
         assertEquals(entry.kind(), kind, entry.toString());

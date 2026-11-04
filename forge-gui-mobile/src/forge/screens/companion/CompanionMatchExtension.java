@@ -45,6 +45,10 @@ class CompanionMatchExtension implements MatchExtension {
                 e -> CardSearchDialog.addByName(table, MatchController.instance.getGameView())));
         // as of the prompt the menu was opened from; a refusal still shows its message if the game moved on since
         menu.addItem(new FMenuItem("Undo", e -> table.undo(), table.canUndo()));
+        // the cards added this turn, as of that prompt too; disabled when there's nothing to correct
+        menu.addItem(new FMenuItem("Wrong player…",
+                e -> WrongPlayerDialog.show(table, MatchController.instance.getGameView()),
+                !table.addedThisTurn().isEmpty()));
         // the menu is built each time it opens, so the labels show the current settings
         boolean everyTurn = table.engineCombat();
         if (!everyTurn) {
