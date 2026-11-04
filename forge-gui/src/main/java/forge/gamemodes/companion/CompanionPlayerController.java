@@ -67,12 +67,21 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         if (stackEmpty && !mainPhase && !isCombatStop(ph, ph.getPhase())) {
             return null;
         }
-        table.atPrompt(game); // saves in a main phase with an empty stack
-        List<SpellAbility> chosen = super.chooseSpellAbilityToPlay();
+        if (!mayAutoPass()) {
+            // saves in a main phase with an empty stack. Not while a yield (End Turn) passes through Main 2 with no
+            // prompt: one undo after End Turn then goes back to where it was tapped, not to that Main 2
+            table.atPrompt(game);
+        }
+        List<SpellAbility> chosen = prompt();
         if (chosen == null && table.hasPending()) {
             return Collections.emptyList(); // an action came in instead of a pass: run it, don't move on
         }
         return chosen;
+    }
+
+    /** Forge's priority prompt, or its pass while a yield runs. A test answers it in place of a screen. */
+    List<SpellAbility> prompt() {
+        return super.chooseSpellAbilityToPlay();
     }
 
     /**
