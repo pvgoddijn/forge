@@ -430,6 +430,11 @@ public class MatchController extends NetworkGuiGame {
 
     @Override
     public void finishGame() {
+        if (extension != null && extension.leavesWhenGameOver()) {
+            // the game thread is done with this game: the mode ended it to leave, so no results screen
+            hostedMatch.endCurrentGame();
+            return;
+        }
         if (Forge.isMobileAdventureMode) {
             if (Config.instance().getSettingData().disableWinLose) {
                 MatchController.writeMatchPreferences();
