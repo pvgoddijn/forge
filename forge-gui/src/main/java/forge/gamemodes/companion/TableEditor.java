@@ -23,8 +23,10 @@ import forge.item.PaperToken;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * What the operator says happened at the table, done to the real game. The engine never refuses the operator: a card
@@ -41,8 +43,38 @@ public final class TableEditor {
         PUT_ONTO_BATTLEFIELD
     }
 
-    /** What happened, for the operator and the log. */
-    public record Result(boolean done, String message) { }
+    /**
+     * What happened, for the operator and the log.
+     *
+     * @param done     whether the action was made
+     * @param message  the readable line
+     * @param affected the seats it was about, by setup name, maybe none
+     * @param card     the card it was about, by name, or null
+     * @param fromHand for an added card, what left the hand (AC-19/AC-20, for AC-22a); null when not an add, or when
+     *                 the add wasn't made (nothing left the hand then, but it isn't an add either)
+     */
+    public record Result(boolean done, String message, List<String> affected, String card,
+                         CompanionLogEntry.FromHand fromHand) {
+        public Result {
+            affected = affected == null ? List.of() : List.copyOf(affected);
+        }
+
+        /** About nobody in particular. */
+        public Result(boolean done, String message) {
+            this(done, message, List.of(), null, null);
+        }
+
+        /** About {@code seat}, and no card. */
+        static Result about(String seat, boolean done, String message) {
+            return new Result(done, message, List.of(seat), null, null);
+        }
+
+        /** An add of {@code card} for {@code seat}. */
+        static Result add(String seat, String card, CompanionLogEntry.FromHand fromHand, boolean done,
+                          String message) {
+            return new Result(done, message, List.of(seat), card, fromHand);
+        }
+    }
 
     private TableEditor() {
     }
@@ -54,18 +86,21 @@ public final class TableEditor {
      */
     public static Result addCard(Player player, String name, boolean fromHand, Mode mode) {
         Game game = player.getGame();
+        String seat = player.getName();
         PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(name);
         if (printing == null) {
             PaperToken token = findToken(name);
             if (token == null) {
                 addEmblem(player, name);
-                return new Result(true, player.getName() + " gets the emblem " + name);
+                // tokens and emblems never come from a hand
+                return Result.add(seat, name, CompanionLogEntry.FromHand.NONE, true,
+                        player.getName() + " gets the emblem " + name);
             }
             Card made = CardFactory.getCard(token, player, game);
             made.setGameTimestamp(game.getNextTimestamp());
             game.getAction().moveTo(ZoneType.Battlefield, made, null, AbilityKey.newMap());
             settle(game);
-            return new Result(true, player.getName() + " makes " + name);
+            return Result.add(seat, name, CompanionLogEntry.FromHand.NONE, true, player.getName() + " makes " + name);
         }
 
         Card known = fromHand ? findKnownInHand(player, name) : null;
@@ -94,11 +129,15 @@ public final class TableEditor {
         if (!done) {
             undoAdd(player, card, known, hidden);
             settle(game);
-            return new Result(false, name + " wasn't added: "
+            return Result.add(seat, name, null, false, name + " wasn't added: "
                     + (mode == Mode.CAST ? "it couldn't be cast, or the cast was cancelled." : "it isn't a permanent."));
         }
         settle(game);
-        return new Result(true, player.getName() + (mode == Mode.CAST ? " casts " : " puts in ") + name);
+        // AC-19/AC-20: the known copy, else an unknown card, else nothing (not from the hand, or the hand was empty)
+        CompanionLogEntry.FromHand left = known != null ? CompanionLogEntry.FromHand.KNOWN
+                : hidden != null ? CompanionLogEntry.FromHand.PLACEHOLDER : CompanionLogEntry.FromHand.NONE;
+        return Result.add(seat, name, left, true,
+                player.getName() + (mode == Mode.CAST ? " casts " : " puts in ") + name);
     }
 
     /** The trigger modes a life change sets off. */
@@ -166,10 +205,10 @@ public final class TableEditor {
         }
         settle(game);
         if (player.getLife() != life) {
-            return new Result(false, player.getName() + "'s life is " + player.getLife() + ", not " + life
-                    + ": something on the table changes life gain or loss");
+            return Result.about(player.getName(), false, player.getName() + "'s life is " + player.getLife() + ", not "
+                    + life + ": something on the table changes life gain or loss");
         }
-        return new Result(true, player.getName() + "'s life is set to " + life);
+        return Result.about(player.getName(), true, player.getName() + "'s life is set to " + life);
     }
 
     /**
@@ -232,6 +271,7 @@ public final class TableEditor {
     public static Result readyCreatures(Game game, Collection<Integer> cardIds) {
         List<String> readied = new ArrayList<>();
         List<String> skipped = new ArrayList<>();
+        Set<String> controllers = new LinkedHashSet<>();
         for (int id : cardIds) {
             Card card = game.findById(id);
             if (card == null || !card.isInPlay() || !card.isCreature()) {
@@ -240,13 +280,15 @@ public final class TableEditor {
             }
             card.setSickness(false);
             readied.add(card.getName());
+            controllers.add(card.getController().getName());
         }
         String skippedNote = skipped.isEmpty() ? ""
                 : " (skipped, not a creature on the battlefield: " + String.join(", ", skipped) + ")";
         if (readied.isEmpty()) {
             return new Result(false, "Nothing to ready" + skippedNote);
         }
-        return new Result(true, "Ready to attack: " + String.join(", ", readied) + skippedNote);
+        return new Result(true, "Ready to attack: " + String.join(", ", readied) + skippedNote,
+                List.copyOf(controllers), null, null);
     }
 
     /** {@code player}'s creatures that can't attack this turn because of summoning sickness, for the operator to pick. */

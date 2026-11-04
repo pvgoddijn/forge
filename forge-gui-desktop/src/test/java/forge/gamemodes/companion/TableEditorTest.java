@@ -762,6 +762,7 @@ public class TableEditorTest extends AITest {
     /** A table with a real store in a temp directory, collecting what it reports. */
     private static final class Recorded {
         final CompanionTable table;
+        final CompanionStore store;
         final List<String> notices = new ArrayList<>();
         final List<String> results = new ArrayList<>();
 
@@ -771,7 +772,8 @@ public class TableEditorTest extends AITest {
                 assertTrue(new java.io.File(dir, "t").mkdir());
                 CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
                         new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
-                table = new CompanionTable("t", setup, new CompanionStore(dir));
+                store = new CompanionStore(dir);
+                table = new CompanionTable("t", setup, store);
             } catch (java.io.IOException e) {
                 throw new java.io.UncheckedIOException(e);
             }
@@ -1278,5 +1280,126 @@ public class TableEditorTest extends AITest {
         CardNameMatcher matcher = CardNameMatcher.fromStaticData();
         assertTrue(matcher.match(CompanionCards.PLACEHOLDER_NAME, 5).stream()
                 .noneMatch(s -> s.card().equals(CompanionCards.PLACEHOLDER_NAME)));
+    }
+    /** AC-19: with no known copy, one of the unknown cards leaves the hand, and the result says so. */
+    @Test
+    public void anAddFromHandSaysAPlaceholderLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        TableEditor.Result result = TableEditor.addCard(p, "Sol Ring", true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEquals(result.affected(), List.of(p.getName()));
+        assertEquals(result.card(), "Sol Ring");
+        assertEquals(CompanionCards.hiddenInHand(p), 6);
+    }
+
+    /** AC-20: the player's known copy leaves the hand instead of an unknown card. */
+    @Test
+    public void anAddFromHandSaysTheKnownCopyLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        addCardToZone("Sol Ring", p, ZoneType.Hand);
+        TableEditor.Result result = TableEditor.addCard(p, "Sol Ring", true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(CompanionCards.hiddenInHand(p), 7);
+    }
+
+    /** AC-19 clamped: an empty hand gives nothing up, so nothing would be given back. */
+    @Test
+    public void anAddFromAnEmptyHandSaysNothingLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        for (Card c : new ArrayList<>(p.getCardsIn(ZoneType.Hand))) {
+            game.getAction().ceaseToExist(c, true);
+        }
+        TableEditor.Result result = TableEditor.addCard(p, "Sol Ring", true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.NONE);
+        assertEquals(p.getCardsIn(ZoneType.Hand).size(), 0);
+    }
+
+    @Test
+    public void anAddNotFromHandOrOfATokenSaysNothingLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        addCardToZone("Sol Ring", p, ZoneType.Hand);
+        TableEditor.Result put = TableEditor.addCard(p, "Sol Ring", false, TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertEquals(put.fromHand(), CompanionLogEntry.FromHand.NONE, "the known copy stays in the hand");
+        assertEquals(countCardsWithName(game, "Sol Ring", ZoneType.Hand), 1);
+        TableEditor.Result token = TableEditor.addCard(p, "Treasure", true, TableEditor.Mode.CAST);
+        assertTrue(token.done(), token.message());
+        assertEquals(token.fromHand(), CompanionLogEntry.FromHand.NONE, "a token never comes from a hand");
+        assertEquals(CompanionCards.hiddenInHand(p), 7);
+    }
+
+    @Test
+    public void aFailedAddSaysNothingAboutTheHand() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        TableEditor.Result result = TableEditor.addCard(p, "Lightning Bolt", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertFalse(result.done());
+        assertNull(result.fromHand());
+        assertEquals(result.affected(), List.of(p.getName()));
+        assertEquals(CompanionCards.hiddenInHand(p), 7, "the unknown card went back");
+    }
+
+    @Test
+    public void lifeAndReadyResultsNameTheSeat() {
+        Game game = startTable();
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Player other = game.getNextPlayerAfter(active);
+        assertEquals(TableEditor.setLife(other, 30, false).affected(), List.of(other.getName()));
+        Card bears = putIn(game, other, "Grizzly Bears");
+        Card ring = putIn(game, active, "Sol Ring");
+        TableEditor.Result ready = TableEditor.readyCreatures(game, List.of(bears.getId(), ring.getId()));
+        assertTrue(ready.done(), ready.message());
+        assertEquals(ready.affected(), List.of(other.getName()), "only the readied creature's controller");
+        assertNull(ready.fromHand());
+    }
+
+    /** The log entries the table writes carry the seat, the card and what left the hand, from the result. */
+    @Test
+    public void theTableLogsTheSeatCardAndHandFromTheResult() {
+        Game game = startTable();
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Player other = game.getNextPlayerAfter(active);
+        addCardToZone("Sol Ring", other, ZoneType.Hand);
+        Recorded rec = new Recorded();
+        rec.table.submit(new CompanionTable.AddCard(active.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.submit(new CompanionTable.AddCard(other.getName(), "Sol Ring", true, TableEditor.Mode.CAST));
+        rec.table.submit(new CompanionTable.AddCard(other.getName(), "Grizzly Bears", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        rec.table.submit(g -> TableEditor.setLife(other, 30, false));
+        rec.table.submit(new CompanionTable.AddCard("Nobody", "Sol Ring", true, TableEditor.Mode.CAST));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.size(), 5, log.toString());
+        assertEntry(log.get(0), CompanionLogEntry.Kind.ADD, active.getName(), "Grizzly Bears",
+                CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEntry(log.get(1), CompanionLogEntry.Kind.ADD, other.getName(), "Sol Ring",
+                CompanionLogEntry.FromHand.KNOWN);
+        assertEntry(log.get(2), CompanionLogEntry.Kind.ADD, other.getName(), "Grizzly Bears",
+                CompanionLogEntry.FromHand.NONE);
+        assertEntry(log.get(3), CompanionLogEntry.Kind.ACTION, other.getName(), null, null);
+        assertEntry(log.get(4), CompanionLogEntry.Kind.NOTICE, "Nobody", "Sol Ring", null);
+
+        Card bears = other.getCardsIn(ZoneType.Battlefield).stream()
+                .filter(c -> c.getName().equals("Grizzly Bears")).findFirst().orElseThrow();
+        rec.table.submit(g -> TableEditor.readyCreatures(g, List.of(bears.getId())));
+        rec.table.runPending(game);
+        List<CompanionLogEntry> after = rec.store.loadLog("t");
+        assertEntry(after.get(after.size() - 1), CompanionLogEntry.Kind.ACTION, other.getName(), null, null);
+    }
+
+    private static void assertEntry(CompanionLogEntry entry, CompanionLogEntry.Kind kind, String seat, String card,
+                                    CompanionLogEntry.FromHand fromHand) {
+        assertEquals(entry.kind(), kind, entry.toString());
+        assertEquals(entry.affected(), List.of(seat), entry.toString());
+        assertEquals(entry.card(), card, entry.toString());
+        assertEquals(entry.fromHand(), fromHand, entry.toString());
     }
 }
