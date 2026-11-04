@@ -54,10 +54,16 @@ class CompanionMatchExtension implements MatchExtension {
         if (!everyTurn) {
             boolean thisTurn = table.engineCombatThisTurn();
             menu.addItem(new FMenuItem(thisTurn ? "Combat this turn: on" : "Combat this turn: off",
-                    FSkinImage.ATTACK, e -> table.setEngineCombatThisTurn(!thisTurn)));
+                    FSkinImage.ATTACK, e -> {
+                        table.setEngineCombatThisTurn(!thisTurn);
+                        combatSwitched(!thisTurn);
+                    }));
         }
         menu.addItem(new FMenuItem(everyTurn ? "Combat every turn: on" : "Combat every turn: off",
-                FSkinImage.ATTACK, e -> table.setEngineCombat(!everyTurn)));
+                FSkinImage.ATTACK, e -> {
+                    table.setEngineCombat(!everyTurn);
+                    combatSwitched(!everyTurn);
+                }));
         // read from the views on the UI thread; the op re-checks each card on the game thread
         List<CardView> sick = new ArrayList<>();
         for (PlayerView p : MatchController.instance.getGameView().getPlayers()) {
@@ -69,17 +75,53 @@ class CompanionMatchExtension implements MatchExtension {
         }
         if (!sick.isEmpty()) {
             menu.addItem(new FMenuItem("Ready creatures…", FSkinImage.ATTACK,
-                    e -> GuiChoose.many("Ready creatures",
-                            "Pick the ones that were on the table before this turn", 0, sick.size(), sick,
-                            null, chosen -> {
-                                if (chosen == null || chosen.isEmpty()) {
-                                    return;
-                                }
-                                List<Integer> ids = chosen.stream().map(CardView::getId).toList();
-                                table.submit(game -> TableEditor.readyCreatures(game, ids));
-                            })));
+                    e -> chooseToReady(READY_PICK, sick)));
         }
         menu.addItem(new FMenuItem("End game…", FSkinImage.CONCEDE, e -> confirmEnd()));
+    }
+
+    private static final String READY_PICK = "Pick the ones that were on the table before this turn";
+
+    /**
+     * After combat is switched: the prompt shows it again with its combat line, and if it's now on and the active
+     * seat has creatures that can't attack because they were logged this turn, the engine would skip combat without a
+     * word, so "Ready creatures…" opens for them straight away. Which creatures comes from the latest prompt, worked
+     * out on the game thread ({@link CompanionTable#sickBeforeCombat}).
+     */
+    private void combatSwitched(boolean on) {
+        table.refreshPrompt();
+        List<Integer> ids = table.sickBeforeCombat();
+        if (!on || ids.isEmpty()) {
+            return;
+        }
+        List<CardView> sick = new ArrayList<>();
+        for (PlayerView p : MatchController.instance.getGameView().getPlayers()) {
+            for (CardView c : p.getBattlefield()) {
+                if (ids.contains(c.getId())) {
+                    sick.add(c);
+                }
+            }
+        }
+        if (!sick.isEmpty()) {
+            chooseToReady("Combat is on, but creatures logged this turn can't attack, so the game would skip combat. "
+                    + READY_PICK + ".", sick);
+        }
+    }
+
+    private void chooseToReady(String message, List<CardView> sick) {
+        GuiChoose.many("Ready creatures", message, 0, sick.size(), sick, null, chosen -> {
+            if (chosen == null || chosen.isEmpty()) {
+                return;
+            }
+            List<Integer> ids = chosen.stream().map(CardView::getId).toList();
+            table.submit(game -> TableEditor.readyCreatures(game, ids));
+        });
+    }
+
+    /** Whether combat goes through the engine this turn, in the active seat's Main 1; not under a target prompt. */
+    @Override
+    public String promptNote(PlayerView player) {
+        return table.atPriorityPrompt() ? table.promptNote() : null;
     }
 
     private void confirmEnd() {

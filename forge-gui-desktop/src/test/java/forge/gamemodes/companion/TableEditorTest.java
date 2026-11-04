@@ -2182,4 +2182,69 @@ public class TableEditorTest extends AITest {
         assertEquals(entry.card(), card, entry.toString());
         assertEquals(entry.fromHand(), fromHand, entry.toString());
     }
+
+    // ---- Combat hint (slice 4, item 10) ----
+
+    /**
+     * The active seat's Main 1 prompt says whether combat goes through the engine, and with it on, how many of its
+     * creatures can't attack for being logged this turn: those the game menu offers to ready when combat is switched
+     * on. Another seat's sick creature and a haste creature aren't among them.
+     */
+    @Test
+    public void theMain1PromptSaysWhetherCombatIsOnAndWhichCreaturesAreSick() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        new CompanionPlayerController(game, ann, new forge.ai.LobbyPlayerAi("Ann", null), rec.table)
+                .getInputQueue().deleteObservers();
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        Card elves = putIn(game, ann, "Llanowar Elves");
+        putIn(game, ann, "Raging Goblin"); // haste
+        putIn(game, bo, "Grizzly Bears");
+        saveAsTheTableDoes(rec, game);
+
+        assertEquals(rec.table.sickBeforeCombat(), List.of(bears.getId(), elves.getId()));
+        assertEquals(rec.table.promptNote(), "Combat: off (game menu → Combat this turn)");
+
+        rec.table.setEngineCombatThisTurn(true); // read live: the refreshed prompt says so
+        assertEquals(rec.table.promptNote(),
+                "Combat: on, but 2 creatures are summoning sick (game menu → Ready creatures…)");
+
+        rec.table.submit(g -> TableEditor.readyCreatures(g, List.of(bears.getId())));
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.table.sickBeforeCombat(), List.of(elves.getId()));
+        assertEquals(rec.table.promptNote(),
+                "Combat: on, but 1 creature is summoning sick (game menu → Ready creatures…)");
+
+        rec.table.submit(g -> TableEditor.readyCreatures(g, List.of(elves.getId())));
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+        assertTrue(rec.table.sickBeforeCombat().isEmpty());
+        assertEquals(rec.table.promptNote(), "Combat: on");
+    }
+
+    /** After this turn's combat, readying changes nothing until the next turn, so nothing is offered or noted. */
+    @Test
+    public void afterCombatNoCreatureIsOfferedAndThePromptHasNoCombatLine() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        new CompanionPlayerController(game, ann, new forge.ai.LobbyPlayerAi("Ann", null), rec.table)
+                .getInputQueue().deleteObservers();
+        putIn(game, ann, "Grizzly Bears");
+        moveTo(game, PhaseType.MAIN2);
+        saveAsTheTableDoes(rec, game);
+
+        assertTrue(rec.table.sickBeforeCombat().isEmpty());
+        assertNull(rec.table.promptNote());
+    }
+
+    /** Before the first prompt there's nothing to say. */
+    @Test
+    public void beforeAnyPromptThereIsNoCombatLine() {
+        assertNull(new Recorded().table.promptNote());
+        assertTrue(new Recorded().table.sickBeforeCombat().isEmpty());
+    }
 }

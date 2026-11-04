@@ -287,7 +287,8 @@ public class MatchController extends NetworkGuiGame {
     @Override
     public void showPromptMessage(final PlayerView player, final String message, final CardView card) {
         cancelAwaitNextInput();
-        view.getPrompt(player).setMessage(message, card);
+        String note = getExtension() == null ? null : getExtension().promptNote(player);
+        view.getPrompt(player).setMessage(note == null ? message : message + "\n" + note, card);
     }
 
     @Override

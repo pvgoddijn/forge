@@ -39,6 +39,14 @@ public interface MatchExtension {
     }
 
     /**
+     * A line added under the message of {@code player}'s prompt, or null for none. Asked on the UI thread each time a
+     * prompt message is shown.
+     */
+    default String promptNote(PlayerView player) {
+        return null;
+    }
+
+    /**
      * Handles a tap on a player's life total, on the UI thread.
      *
      * @return true if the mode handled the tap, so the usual player selection is skipped
