@@ -4,6 +4,7 @@ import forge.game.Game;
 import forge.game.GameState;
 import forge.game.card.Card;
 import forge.game.player.Player;
+import forge.game.zone.MagicStack;
 import forge.item.PaperCard;
 
 import java.util.List;
@@ -26,12 +27,33 @@ public class CompanionGameState extends GameState {
         return state.toString();
     }
 
-    /** Applies this state right away. Call on the game thread, before the main loop or between priority prompts. */
+    /**
+     * Applies this state right away. Call on the game thread, before the main loop or between priority prompts. A
+     * save is made with an empty stack, so anything on the stack now is from after it and goes (see
+     * {@link #clearStack}). A combat in progress is ended by Forge's own apply, which sets the phase.
+     */
     public void applyNow(Game game) {
+        clearStack(game);
         applyGameOnThread(game);
         for (Player player : game.getPlayers()) {
             clearLifeThisTurn(player);
         }
+        // Forge sets the turn number without telling the view, which would show the old turn until the next one began
+        game.updateTurnForView();
+    }
+
+    /**
+     * Empties the stack: its spells and abilities, the triggers waiting to go on it, and the cards in the stack zone.
+     * Forge's apply only resets the players' zones, so a spell cast after the save would stay on the stack, pointing
+     * at a card no zone has any more, and resolve after the state is back.
+     */
+    private static void clearStack(Game game) {
+        MagicStack stack = game.getStack();
+        stack.clearSimultaneousStack();
+        stack.clearFrozen();
+        stack.clear();
+        game.getStackZone().removeAllCards(true);
+        game.updateStackForView();
     }
 
     /**

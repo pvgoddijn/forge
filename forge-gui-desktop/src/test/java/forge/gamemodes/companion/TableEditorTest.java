@@ -780,6 +780,14 @@ public class TableEditorTest extends AITest {
             table.setOnNotice(notices::add);
             table.setOnResult(r -> results.add(r.message()));
         }
+
+        /** A new table on {@code before}'s store, as a relaunch of the app makes. */
+        Recorded(Recorded before) {
+            store = before.store;
+            table = new CompanionTable("t", before.table.setup(), store);
+            table.setOnNotice(notices::add);
+            table.setOnResult(r -> results.add(r.message()));
+        }
     }
 
     private static CompanionTable.AddCard cast(Player player, String name) {
@@ -1393,6 +1401,275 @@ public class TableEditorTest extends AITest {
         rec.table.runPending(game);
         List<CompanionLogEntry> after = rec.store.loadLog("t");
         assertEntry(after.get(after.size() - 1), CompanionLogEntry.Kind.ACTION, other.getName(), null, null);
+    }
+
+    // ---- Undo (slice 4, AC-27) ----
+
+    /** Saves as the active seat's controller does before its prompt: in a main phase with an empty stack. */
+    private static void saveAsTheTableDoes(Recorded rec, Game game) {
+        if (game.getStack().isEmpty() && game.getPhaseHandler().getPhase().isMain()) {
+            rec.table.save(game);
+        }
+    }
+
+    /** Runs {@code op} and then the save the next prompt would make. */
+    private static void act(Recorded rec, Game game, CompanionTable.Op op) {
+        rec.table.submit(op);
+        assertTrue(rec.table.runPending(game));
+        rec.table.save(game);
+    }
+
+    /** Undoes, as a tap on the menu item does, then saves as the next prompt would. */
+    private static void undo(Recorded rec, Game game) {
+        rec.table.undo();
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+    }
+
+    private static CompanionLogEntry lastEntry(Recorded rec) {
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        return log.get(log.size() - 1);
+    }
+
+    /**
+     * Through the real loop: End Turn passes Ann's turn, Bo draws, and his Main 1 is saved. Undo there puts Bo's draw
+     * back in his library, and the game, and its view, back on Ann's turn 1, where she is asked again: in Main 2, the
+     * last stop End Turn passed, which was saved like any main phase.
+     */
+    @Test
+    public void onTheGameLoopUndoAfterEndTurnPutsTheDrawAndTheActiveSeatBack() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        int boHand = bo.getCardsIn(ZoneType.Hand).size();
+        int boLibrary = bo.getCardsIn(ZoneType.Library).size();
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        List<Integer> boHandInHisTurn = new ArrayList<>();
+        boolean[] undone = {false};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (!undone[0] && ph.getPlayerTurn() == ann) {
+                return null; // End Turn: Ann passes her main phases
+            }
+            if (!undone[0]) {
+                assertEquals(ph.getPlayerTurn(), bo);
+                boHandInHisTurn.add(bo.getCardsIn(ZoneType.Hand).size());
+                undone[0] = true;
+                rec.table.undo();
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN2", "priority MAIN1", "priority MAIN2"));
+        assertEquals(boHandInHisTurn, List.of(boHand + 1), "Bo drew in his turn");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), boHand, "the draw is back");
+        assertEquals(bo.getCardsIn(ZoneType.Library).size(), boLibrary);
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getTurn(), 1);
+        assertEquals(ph.getPhase(), PhaseType.MAIN2);
+        assertEquals(game.getView().getTurn(), 1, "the view's turn went back too");
+        assertEquals(game.getView().getPlayerTurn(), ann.getView());
+        assertEquals(rec.store.latestStep("t"), 1, "Bo's turn is gone from disk, and Ann's prompt saved nothing new");
+        CompanionLogEntry undo = lastEntry(rec);
+        assertEquals(undo.kind(), CompanionLogEntry.Kind.UNDO);
+        assertEquals(undo.step(), 1);
+        assertEquals(undo.undid(), List.of(2));
+        assertEquals(undo.active(), ann.getName());
+    }
+
+    /** Undo goes back one save at a time to the start, then says there's nothing left. */
+    @Test
+    public void undoRepeatsBackToTheStartThenRefuses() {
+        Game game = startTable();
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // step 0, the start
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false));
+        act(rec, game, g -> TableEditor.setLife(bo, 20, false));
+        assertEquals(rec.store.latestStep("t"), 2);
+
+        undo(rec, game);
+        assertEquals(bo.getLife(), 30);
+        assertEquals(rec.store.latestStep("t"), 1, "the prompt after the undo saved nothing new");
+        undo(rec, game);
+        assertEquals(bo.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertEquals(rec.store.latestStep("t"), 0);
+
+        undo(rec, game);
+        assertEquals(rec.results.get(rec.results.size() - 1), "Nothing to undo: this is the start of the game");
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.NOTICE, "a refusal is logged as a notice");
+        assertEquals(bo.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertEquals(rec.store.latestStep("t"), 0);
+    }
+
+    /** Before the first save there is nothing to go back to. */
+    @Test
+    public void undoBeforeAnySaveRefuses() {
+        Game game = startTable();
+        Recorded rec = new Recorded();
+        rec.table.undo();
+        rec.table.runPending(game);
+        assertEquals(rec.results, List.of("Nothing to undo yet"));
+    }
+
+    /** The undone entries stay in the log, marked by the undo; a new action after it writes the step again, unmarked. */
+    @Test
+    public void anUndoneEntryStaysMarkedAndTheNextActionWritesItsStepAgain() {
+        Game game = startTable();
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false));
+        long undoneSeq = lastEntry(rec).seq();
+        assertEquals(lastEntry(rec).step(), 1);
+
+        undo(rec, game);
+        act(rec, game, g -> TableEditor.setLife(bo, 25, false));
+
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.size(), 3, log.toString());
+        assertEquals(log.get(1).kind(), CompanionLogEntry.Kind.UNDO);
+        CompanionLogEntry redone = log.get(2);
+        assertEquals(redone.step(), 1, "step 1 again");
+        assertEquals(CompanionLogEntry.undone(log), java.util.Set.of(undoneSeq), "only the undone life edit");
+        assertEquals(rec.store.latestStep("t"), 1);
+        assertTrue(String.join("\n", rec.store.loadStep("t", 1).orElseThrow()).contains("p1life=25"));
+    }
+
+    /**
+     * A relaunch after an undo loads the step undo went back to, its first prompt doesn't save that again as a new
+     * step, and the next undo carries on from there.
+     */
+    @Test
+    public void aRestartAfterAnUndoLoadsItsStepAndTheNextUndoCarriesOn() {
+        Game game = startTable();
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        act(rec, game, g -> TableEditor.setLife(g.getPlayers().get(1), 30, false));
+        act(rec, game, g -> TableEditor.setLife(g.getPlayers().get(1), 20, false));
+        undo(rec, game);
+        assertEquals(rec.store.latestStep("t"), 1);
+
+        Recorded relaunched = new Recorded(rec);
+        Game loaded = initAndCreateThreePlayerGame();
+        relaunched.table.startFromLatest(loaded);
+        Player bo = loaded.getPlayers().get(1);
+        assertEquals(bo.getLife(), 30, "the undone 20 isn't loaded");
+        seatsFor(loaded, relaunched, new ArrayList<>(), seat -> {
+            saveAsTheTableDoes(relaunched, loaded);
+            throw new OperatorAsked();
+        });
+        runLoopUntilTheOperatorIsAsked(loaded);
+        assertEquals(rec.store.latestStep("t"), 1, "the loaded game isn't saved again as a new step");
+
+        undo(relaunched, loaded);
+        assertEquals(bo.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertEquals(rec.store.latestStep("t"), 0);
+    }
+
+    /**
+     * A spell on the stack isn't saved yet, so undo takes back just that cast, to the latest save, not the one before
+     * it. The stack is emptied: nothing is left pointing at a card the load removed, and nothing resolves later.
+     */
+    @Test
+    public void undoWithASpellOnTheStackTakesBackOnlyTheCast() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false)); // step 1
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.runPending(game);
+        assertFalse(game.getStack().isEmpty(), "on the stack");
+        assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND - 1);
+
+        undo(rec, game);
+
+        assertTrue(game.getStack().isEmpty());
+        assertTrue(game.getStackZone().getCards().isEmpty(), "no card left in the stack zone");
+        assertEquals(bo.getLife(), 30, "step 1 stays");
+        assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND, "the card is back in the hand");
+        resolveAll(game);
+        assertEquals(countCardsWithName(game, "Grizzly Bears", ZoneType.Battlefield), 0, "nothing resolved later");
+        assertEquals(rec.store.latestStep("t"), 1);
+        assertEquals(lastEntry(rec).undid(), List.of(2), "the cast's entry carries step 2, the save it never got");
+    }
+
+    /** Through the real loop: undo at a combat stop ends the combat and goes back to the main phase before it. */
+    @Test
+    public void onTheGameLoopUndoInACombatEndsItAndGoesBackToMain1() {
+        Game game = startTableInTurn2(PhaseType.MAIN1, "p0battlefield=Grizzly Bears");
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player active = ph.getPlayerTurn();
+        Player defender = game.getNextPlayerAfter(active);
+        Recorded rec = new Recorded();
+        rec.table.setEngineCombatForTurn(2, true);
+        List<String> asked = new ArrayList<>();
+        boolean[] undone = {false};
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (undone[0]) {
+                throw new OperatorAsked();
+            }
+            if (ph.getPhase() == PhaseType.COMBAT_DECLARE_ATTACKERS) {
+                assertTrue(ph.inCombat());
+                undone[0] = true;
+                rec.table.undo();
+                return seat.asTheTableDoes();
+            }
+            return null; // on to combat
+        });
+        seats.stream().filter(s -> s.getPlayer() == active).findFirst().orElseThrow().attacker =
+                active.getCardsIn(ZoneType.Battlefield).stream().filter(c -> c.getName().equals("Grizzly Bears"))
+                        .findFirst().orElseThrow();
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "attackers " + active.getName(),
+                "priority COMBAT_DECLARE_ATTACKERS", "priority MAIN1"));
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        assertFalse(ph.inCombat(), "the combat ended");
+        Card bears = active.getCardsIn(ZoneType.Battlefield).stream()
+                .filter(c -> c.getName().equals("Grizzly Bears")).findFirst().orElseThrow();
+        assertFalse(bears.isTapped(), "untapped, as saved");
+        assertEquals(defender.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertTrue(rec.table.engineCombat(2), "the same turn: combat for it stays on");
+    }
+
+    /**
+     * A sorcery parked for Bo's Main 1 after End Turn was submitted after the latest save, so undo drops it and says
+     * so. Combat for Bo's turn goes too: the game is back in Ann's.
+     */
+    @Test
+    public void undoDropsAParkedSorceryAndCombatForAnotherTurnWithANotice() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // Ann's Main 1, turn 1
+        ph.devModeSet(PhaseType.UPKEEP, bo, 2); // End Turn reached Bo's upkeep
+        rec.table.setEngineCombatForTurn(2, true);
+        rec.table.submit(cast(bo, "Divination"));
+        rec.table.runPending(game);
+        assertTrue(rec.table.isParked());
+
+        undo(rec, game);
+
+        assertFalse(rec.table.isParked());
+        assertEquals(rec.notices, List.of("Divination waits for Main 1",
+                "Undone: Divination and anything after it wasn't added"));
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getTurn(), 1);
+        assertEquals(castCount(game, "Divination"), 0);
+        assertFalse(rec.table.engineCombat(2), "combat for Bo's turn went with it");
+        assertEquals(rec.store.latestStep("t"), 0);
     }
 
     private static void assertEntry(CompanionLogEntry entry, CompanionLogEntry.Kind kind, String seat, String card,
