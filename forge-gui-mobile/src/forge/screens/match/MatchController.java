@@ -894,6 +894,11 @@ public class MatchController extends NetworkGuiGame {
         return extension != null && hostedMatch.getGameView() == instance.getGameView() ? extension : null;
     }
 
+    /** Whether the current match offers Forge's Concede: any match, unless its extension says no. */
+    public static boolean offersConcede() {
+        return getExtension() == null || getExtension().offersConcede();
+    }
+
     /** Call after {@link #hostMatch()}, before the match starts: the match screen is built with it. */
     public static void setExtension(MatchExtension extension0) {
         extension = extension0;

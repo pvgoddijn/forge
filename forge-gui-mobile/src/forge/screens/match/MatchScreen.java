@@ -496,8 +496,10 @@ public class MatchScreen extends FScreen {
                 int idxShowWinLose = n - 1; // Show Win/Lose is last
                 boolean gameOver = viewWinLose != null;
                 boolean canSwitch = !gameOver && !game.isMulligan();
-                gameMenu.getChildAt(idxConcede).setEnabled(canSwitch);
-                gameMenu.getChildAt(idxAutoYields).setEnabled(canSwitch);
+                if (MatchController.offersConcede()) { // else the menu's first items are the mode's own
+                    gameMenu.getChildAt(idxConcede).setEnabled(canSwitch);
+                    gameMenu.getChildAt(idxAutoYields).setEnabled(canSwitch);
+                }
                 if (!Forge.isMobileAdventureMode) {
                     gameMenu.getChildAt(idxSettings).setEnabled(canSwitch);
                     gameMenu.getChildAt(idxShowWinLose).setEnabled(gameOver);
@@ -914,7 +916,7 @@ public class MatchScreen extends FScreen {
                 }
                 break;
             case Keys.Q: //concede game on Ctrl+Q
-                if (KeyInputAdapter.isCtrlKeyDown()) {
+                if (KeyInputAdapter.isCtrlKeyDown() && MatchController.offersConcede()) {
                     confirmUserConcedes();
                     return true;
                 }
