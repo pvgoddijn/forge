@@ -177,7 +177,7 @@ Measure: top-3 accuracy through `CardNameMatcher` (AC-32), time per photo, and A
 | Ops through `restartPrompt` interact badly with prompts other than priority (a target choice open when the operator taps Add) | Ops are offered only at priority prompts. The menu disables them otherwise. |
 | Placeholders made public, or searched for, show "Unknown Card" | The controller asks the operator to name the card (decision 3). Slice 2 (deferred) covers discard, mill and search. |
 | Snapshots lose temporary effects on resume or undo | Spec amended (2.3). Slice 0 measures what's lost. |
-| A snapshot per op costs time or storage on a phone | A snapshot is a few KB of text. Measure in slice 0. Keep the last 500 per game and prune older ones. |
+| A snapshot per op costs time or storage on a phone | A snapshot is a few KB of text. Measure in slice 0. Keep every step, so undo always reaches the game's start (owner's decision in slice 4; was "keep the last 500"). |
 | An effect the engine resolves differs from what happened at the table | Override (AC-22, AC-25) and undo (AC-27) are always there. The engine assists the operator and never has the last word. |
 | Core changes worry upstream maintainers | Only hooks and a fix (2.1), with no rules flag. Ask the maintainers with the proof in hand, and keep it on the fork if they decline. |
 | OCR, APK size, ProGuard, `android-maven-plugin` | As before: the spike, keep rules, slice 1. |
