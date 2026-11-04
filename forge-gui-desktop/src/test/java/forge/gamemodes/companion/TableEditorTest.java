@@ -1150,8 +1150,8 @@ public class TableEditorTest extends AITest {
 
     /**
      * A seat on the real game loop, without a screen. What it does is {@link CompanionPlayerController}'s own, except
-     * where the active seat would show the operator a priority prompt (nothing parked or queued, and a main phase, a
-     * non-empty stack or a combat with attackers): there the test's
+     * where the active seat would show the operator a priority prompt (nothing parked or queued, no yield running,
+     * and a main phase, a non-empty stack or a combat with attackers): there the test's
      * {@code operator} answers instead, as a tap would. The attack and block declarations, which open their own
      * prompts, are recorded and answered by the test too.
      */
@@ -1178,11 +1178,30 @@ public class TableEditorTest extends AITest {
             forge.game.phase.PhaseHandler ph = getGame().getPhaseHandler();
             boolean noStop = getGame().getStack().isEmpty() && !ph.getPhase().isMain()
                     && (ph.getCombat() == null || ph.getCombat().getAttackers().isEmpty());
-            if (table.isParked() || table.hasPending() || getPlayer() != ph.getPlayerTurn() || noStop) {
+            if (table.isParked() || table.hasPending() || getPlayer() != ph.getPlayerTurn() || noStop
+                    || mayAutoPass()) {
                 return super.chooseSpellAbilityToPlay(); // passes or runs ops, without a prompt
             }
             asked.add("priority " + ph.getPhase());
             return operator.apply(this);
+        }
+
+        /** The operator taps End Turn: the seat yields until the end of the turn, and passes. */
+        List<forge.game.spellability.SpellAbility> endTurn() {
+            getYieldController().setAutoPassUntilEndOfTurn(true);
+            return null;
+        }
+
+        /** While a yield runs, Forge's prompt passes without showing anything; this does that without the screen. */
+        @Override
+        List<forge.game.spellability.SpellAbility> prompt() {
+            return mayAutoPass() ? null : super.prompt();
+        }
+
+        /** As Forge's, without the screen it would clear. */
+        @Override
+        public void autoPassCancel() {
+            getYieldController().clearEndOfTurnYieldAndDispatch();
         }
 
         /** The operator's tap: run what this seat does when the prompt ends without an answer. */
@@ -1511,12 +1530,12 @@ public class TableEditorTest extends AITest {
     }
 
     /**
-     * Through the real loop: End Turn passes Ann's turn, Bo draws, and his Main 1 is saved. Undo there puts Bo's draw
-     * back in his library, and the game, and its view, back on Ann's turn 1, where she is asked again: in Main 2, the
-     * last stop End Turn passed, which was saved like any main phase.
+     * Through the real loop: Ann taps End Turn in Main 1, the yield passes her Main 2 without saving it, Bo draws,
+     * and his Main 1 is saved. One undo there puts Bo's draw back in his library, and the game, and its view, back
+     * where End Turn was tapped: Ann's Main 1 of turn 1, where she is asked again (item 8, one tap).
      */
     @Test
-    public void onTheGameLoopUndoAfterEndTurnPutsTheDrawAndTheActiveSeatBack() {
+    public void onTheGameLoopOneUndoAfterEndTurnGoesBackToWhereItWasTapped() {
         Game game = startTableIn(PhaseType.MAIN1);
         forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
         Player ann = ph.getPlayerTurn();
@@ -1530,7 +1549,7 @@ public class TableEditorTest extends AITest {
         seatsFor(game, rec, asked, seat -> {
             saveAsTheTableDoes(rec, game);
             if (!undone[0] && ph.getPlayerTurn() == ann) {
-                return null; // End Turn: Ann passes her main phases
+                return seat.endTurn();
             }
             if (!undone[0]) {
                 assertEquals(ph.getPlayerTurn(), bo);
@@ -1544,21 +1563,72 @@ public class TableEditorTest extends AITest {
 
         runLoopUntilTheOperatorIsAsked(game);
 
-        assertEquals(asked, List.of("priority MAIN1", "priority MAIN2", "priority MAIN1", "priority MAIN2"));
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN1"),
+                "End Turn passed Ann's Main 2 unasked, and after the undo she is asked in Main 1 again");
         assertEquals(boHandInHisTurn, List.of(boHand + 1), "Bo drew in his turn");
         assertEquals(bo.getCardsIn(ZoneType.Hand).size(), boHand, "the draw is back");
         assertEquals(bo.getCardsIn(ZoneType.Library).size(), boLibrary);
         assertEquals(ph.getPlayerTurn(), ann);
         assertEquals(ph.getTurn(), 1);
-        assertEquals(ph.getPhase(), PhaseType.MAIN2);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1, "back where End Turn was tapped, in one undo");
         assertEquals(game.getView().getTurn(), 1, "the view's turn went back too");
         assertEquals(game.getView().getPlayerTurn(), ann.getView());
-        assertEquals(rec.store.latestStep("t"), 1, "Bo's turn is gone from disk, and Ann's prompt saved nothing new");
+        assertEquals(rec.store.latestStep("t"), 0, "Bo's turn is gone from disk, and Ann's prompt saved nothing new");
         CompanionLogEntry undo = lastEntry(rec);
         assertEquals(undo.kind(), CompanionLogEntry.Kind.UNDO);
-        assertEquals(undo.step(), 1);
-        assertEquals(undo.undid(), List.of(2));
+        assertEquals(undo.step(), 0);
+        assertEquals(undo.undid(), List.of(1));
         assertEquals(undo.active(), ann.getName());
+    }
+
+    /**
+     * Through the real loop: a life total set in Ann's Main 2, before she taps End Turn there, is saved as its own
+     * step. The undo after End Turn goes back to it, with the new life total, not past it.
+     */
+    @Test
+    public void onTheGameLoopAChangeInMain2BeforeEndTurnIsKeptByTheUndo() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        boolean[] lifeSet = {false};
+        boolean[] undone = {false};
+        int[] stepAtEndTurn = {-1};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (undone[0]) {
+                throw new OperatorAsked();
+            }
+            if (ph.getPlayerTurn() == ann && ph.getPhase() == PhaseType.MAIN1) {
+                return null; // a pass, not End Turn: on to Main 2
+            }
+            if (ph.getPlayerTurn() == ann && !lifeSet[0]) {
+                lifeSet[0] = true;
+                rec.table.submit(g -> TableEditor.setLife(bo, 33, false));
+                return seat.asTheTableDoes(); // the edit runs, and Ann is asked again
+            }
+            if (ph.getPlayerTurn() == ann) {
+                stepAtEndTurn[0] = rec.store.latestStep("t");
+                return seat.endTurn();
+            }
+            assertEquals(ph.getPlayerTurn(), bo);
+            undone[0] = true;
+            rec.table.undo();
+            return seat.asTheTableDoes();
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN2", "priority MAIN2", "priority MAIN1",
+                "priority MAIN2"));
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getPhase(), PhaseType.MAIN2, "back where End Turn was tapped");
+        assertEquals(bo.getLife(), 33, "the life total set before End Turn was saved, so it stays");
+        assertEquals(rec.store.latestStep("t"), stepAtEndTurn[0]);
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.UNDO);
+        assertEquals(lastEntry(rec).undid(), List.of(stepAtEndTurn[0] + 1), "only Bo's turn was taken back");
     }
 
     /** Undo goes back one save at a time to the start, then says there's nothing left. */
