@@ -1,34 +1,66 @@
 # Slice 4 — Undo and correction
 
-**Depends on:** slice 3.
+**Depends on:** slice 0 only, for the mechanism: `CompanionTable`'s op queue and its save at each settled point, `CompanionStore`, and `CompanionGameState`. Undo means reloading the save made before the last action (spec Q22, `plan.md` decision 6), so it works the same whatever the action was and needs nothing from slices 1–3.
+
+**Stacked on:** slice 3, for branch order only. Its oracle undoes an End Turn and a life change, which slice 3 brings (End Turn is Forge's own yield, not an op, so it is undone like anything else: by the save before it). Built before slice 3, it would still work, with a smaller oracle.
+
+**Not needed:** slice 2. The "wrong player" correction (AC-22a) only moves one card from one player to another and gives the first player's hand back. This slice builds that as a narrow `TableEditor.reassign`, not slice 2's general `moveTo`.
+
+**Proves:** any mistake can be taken back, all the way to the start, and a restart keeps what was undone.
 
 ## Result
-Any mistake can be undone. A card logged to the wrong player, for example after forgetting to pass the turn, can be fixed with one action, and both hand counts come out right.
+Undo takes back the last action, and can be repeated back to the start of the game. A card logged to the wrong player, for example after forgetting to pass the turn, can be given to the right player in one action, and both hand counts come out right.
 
 ## Acceptance criteria
-- **AC-27** WHEN the operator taps undo THE SYSTEM SHALL revert the most recent action that hasn't been undone, and SHALL keep showing it in the history marked as undone. Undo SHALL be repeatable back to the start of the game.
-- **AC-22a** WHEN the operator uses "wrong player" on a card THE SYSTEM SHALL reassign it to the chosen player's same zone, restore the original player's hand as if the card had never left it, apply AC-19/AC-20 to the chosen player, and show the correction in the history.
+- **AC-27** WHEN the operator taps undo THE SYSTEM SHALL revert the most recent action that hasn't been undone, and SHALL keep showing it in the history marked as undone. Undo SHALL be repeatable back to the start of the game. (Q22: the board, hands, life, counters and turn are restored exactly; effects lasting until end of turn only as far as the engine can save them.)
+- **AC-22a** WHEN the operator uses "wrong player" on a card (for example it was logged after forgetting to pass the turn) THE SYSTEM SHALL reassign it to the chosen player's same zone, restore the original player's hand as if the card had never left it, apply AC-19/AC-20 to the chosen player, and show the correction in the history. Effects that already resolved are not redone; to replay them for the right player the operator undoes and logs the card again.
 
-A correction changes the player only. It does not change the turn number on the original entry, and does not pass the turn (A3).
+A correction changes the player only. It doesn't change the turn number on the original entry, and doesn't pass the turn (spec A3). This slice marks undone entries in the log; slice 5 shows them.
+
+## How undo works
+- **One undo step = one save.** `CompanionTable.save` writes a snapshot at each settled point (main phase, empty stack, the active seat asked), and only when the state changed. A cast with an ETB trigger is one step once it has resolved. Two ops that run before the next settled point are one step.
+- **Undo is an op.** The menu item submits it through `CompanionTable.submit`, so it runs on the game loop thread like any other action. It applies snapshot n−1 to the running game in place (`CompanionGameState.applyNow`, as the start hook does), and marks the log entries of step n undone.
+- **Undo while something is unsettled** (a spell on the stack, a combat step) goes back to the latest save, not the one before: the unsaved action is the one being undone.
+- **A new action after an undo** writes step n again, over the undone snapshot. The undone log entries stay, marked. No redo (not in the spec).
+- **Forge's own undo stays off.** The engine's `UndoManager` is in memory only, with barriers at every draw, phase and reveal (plan decision 6). The prompt's undo button (`VPrompt`'s `UndoButton`) is hidden in Companion, or routed to this undo.
 
 ## Build
-- **Domain:** `ActionUndone(targetSeq)` and `PlayerCorrected(cardInstanceId, newPlayer)`. Both are appended to the log, and the log is never rewritten.
-- **Replay:** skip undone actions. For a corrected card, use the new player for its original `CardAdded`. This gives the "as if it had never left" result, including the 0-clamp case, without special arithmetic.
-- **Decide and test:** later moves of a corrected card, undoing a correction, and whether undo can target a game's `GameStarted` (it must not).
-- **Screens:** undo button, and "wrong player" in the card menu.
-- Cache state in memory, and replay in full only on load or undo.
+Small chunks, in order. Each is one or two files.
+
+1. **`CompanionStore` (forge-gui):** numbered snapshots, `<id>/states/<n>.txt`, written whole then renamed, as `state.txt` is now. `loadState` reads the highest one. A game saved by slice 0 has one `state.txt`: read it as step 0. Keep the last 500 steps and prune older ones (plan risk "a snapshot per op").
+2. **`CompanionLogEntry` (new record, forge-gui) + `CompanionStore`:** the log becomes one JSON object per line instead of a plain message: `seq`, `step` (the snapshot it led to), `turn`, `active` seat, `affected` seats, `kind` (add, undo, correction, notice, and later slices' kinds), `text`, and for an add, `fromHand` = `placeholder`, `known` or `none` (what left the hand, for AC-22a). A plain line from an older log reads as a notice. A torn last line is ignored. Slice 5 reads these fields; settle them here so the log isn't changed twice.
+3. **`TableEditor.Result` + `TableEditor.addCard`:** the result carries the affected seat and what left the hand, so `CompanionTable.runPending` can write the entry in chunk 2's shape.
+4. **`CompanionTable`:** `undo()`, an op: find the latest step that isn't undone, apply the one before it with `CompanionGameState.applyNow`, append an `undo` entry naming the steps it undid, and set `lastSaved` to the restored text so the next save doesn't count it as a change. Also reset what isn't in a save: "combat this turn" (cleared unless the turn is the same), and slice 3's parked ops, which belong to the state being undone. Refuse at step 0, with a message.
+5. **Companion's `MatchExtension` (forge-gui-mobile):** today an anonymous class in `CompanionSetupScreen.openGame`. If slice 3 hasn't moved it into its own `CompanionMatchExtension`, do that first, as a chunk of its own. Then an "Undo" game-menu item, disabled at step 0. Hide or reroute Forge's prompt undo button.
+6. **`TableEditor`:** `reassign(Card card, Player to, String fromHand)`. Moves the card to the same zone of `to` and makes `to` its owner and controller. The original player gets back what left their hand: a placeholder for `placeholder`, nothing for `none` (their count was clamped at 0, so they don't gain a card). Then AC-19/AC-20 for `to`: their known copy of that name leaves their hand if they have one, otherwise one placeholder, otherwise nothing. No trigger runs again.
+7. **Companion's `MatchExtension` + a small new `WrongPlayerDialog` (forge-gui-mobile):** "Wrong player…" in the game menu: pick the card from the cards added this turn (the log's add entries), then the seat. Submits `reassign`, which writes a `correction` entry. A card-tap menu would be nicer, but that hook is slice 2's (deferred).
+
+## Decide and test
+- `known` in AC-22a's "as if it had never left": the card was a known card in the wrong player's hand, so it goes back there as a known card and a fresh copy goes to `to`? Or does the operator really mean it was never theirs? Pick one, write it in the test, and tell the owner.
+- A corrected card that moved again later (it died, or bounced). The log entry still names it; reassign the card where it is now, or refuse when it can't be found.
+- Undoing a correction: an ordinary undo step, so nothing special.
+- Undo never goes before step 0, the setup's start.
+
+## Check early
+- **In-place apply:** `applyNow` on a running game, between prompts, leaves no duplicate table effect or commander effect in the Command zone, and the game view updates every board.
+- **Turn after undo across an End Turn:** the game's turn goes back; the game view's turn is known to lag after a load (`CompanionTable.currentTurn`).
+- **Card identity after a load:** `GameState` writes `|Id:`. If IDs hold across a load, chunk 2 can name cards by ID instead of by name.
 
 ## Tests (CI)
-- Undo: repeated back to the start; an undone action stays in the log, marked.
-- Correction: both counts right; original player's count was clamped at 0, so correcting does not give them an extra card; target player's count clamps at 0; a known card in the target's hand is used per AC-20; undoing a correction restores the original.
-- A log with undo and correction survives reload.
+Through the real main loop, with a scripted operator:
+- Undo across a draw: End Turn draws for the next seat, undo puts the hand and the active seat back.
+- Repeated undo back to step 0, then a refusal.
+- An undone entry stays in the log, marked, and a new action after it writes the next step.
+- Correction: both counts right; the original player was clamped at 0, so correcting doesn't give them an extra card; the target's known copy is used per AC-20; undoing the correction restores the original.
+- A store with undo and correction entries survives reload, and a slice 0 `state.txt` loads as step 0.
 
 ## Oracle
-On the dev build:
-1. Player 1 and player 2 at 7 cards. Log a card to player 1 (count 6). Use "wrong player" → player 2. Now player 1 has 7, player 2 has 6, and the card is on player 2's battlefield.
-2. Undo: the card is back on player 1, and counts are 6 and 7.
+On the dev build, 3 players:
+1. Player 1 and player 2 at 7 cards. Log a card to player 1 (count 6). "Wrong player" → player 2. Player 1 has 7, player 2 has 6, and the card is on player 2's battlefield.
+2. Undo: the card is back with player 1, counts 6 and 7.
 3. Undo again: card gone, counts 7 and 7.
-4. Undo all the way back, with no crash. Restart: the state is the same.
+4. Cast Gray Merchant for player 2, then set a life total, then End Turn. Undo three times: back before the Merchant, every life total and hand as it was.
+5. Undo all the way back with no crash. Kill and relaunch: the same state, and the next undo carries on from there.
 
 ## Out of scope
-History screen (slice 5). Redo is not in the spec.
+The history screen (slice 5). Redo (not in the spec). Effects lasting until end of turn after an undo (spec Q22, plan 2.3).
