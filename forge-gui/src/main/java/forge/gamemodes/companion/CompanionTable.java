@@ -145,10 +145,7 @@ public class CompanionTable {
         setEngineCombatForTurn(currentTurn(), on);
     }
 
-    /**
-     * The game's own turn number. Not the game view's: after a game state is loaded, the view keeps the turn the
-     * match started on until the next turn begins.
-     */
+    /** The game's own turn number, from the game rather than its view, which a load updates only afterwards. */
     private int currentTurn() {
         return seats.stream().findFirst().map(seat -> seat.getGame().getPhaseHandler().getTurn()).orElse(NO_TURN);
     }
@@ -276,6 +273,86 @@ public class CompanionTable {
     }
 
     /**
+     * Starts {@code game} from {@link #latestState}: the match's start hook. When that is a save, the game as loaded
+     * counts as that step, so the first prompt doesn't save it again as a new step, which the next undo would only
+     * take back to the same state. Game loop thread.
+     */
+    public void startFromLatest(Game game) {
+        CompanionGameState.of(latestState()).applyNow(game);
+        lastSaved = store.latestStep(id) == CompanionStore.NO_STEP ? null : CompanionGameState.capture(game);
+    }
+
+    /**
+     * Takes back the last action (AC-27): queued like any op, so it runs on the game loop thread in its turn. See
+     * {@link Undo}. Any thread.
+     */
+    public void undo() {
+        submit(new Undo());
+    }
+
+    /**
+     * Undo puts the save before the last action back in place: the latest save when something happened since it (a
+     * spell on the stack, a combat, an op not yet saved, the turn moved on), as that is the action being taken back,
+     * and otherwise the one before it. The undone step's file goes before the log says so, so a restart never loads
+     * it; the log only gains an entry naming the step, so the undone entries stay, marked
+     * ({@link CompanionLogEntry#undone}). What a save doesn't hold goes too: combat for one turn unless the turn is
+     * the same, and parked ops, which were all submitted after the latest save (nothing is saved while one waits).
+     */
+    private final class Undo implements Op {
+        @Override
+        public TableEditor.Result run(Game game) {
+            int latest = store.latestStep(id);
+            if (latest == CompanionStore.NO_STEP) {
+                return new TableEditor.Result(false, "Nothing to undo yet");
+            }
+            boolean settled = settled(game);
+            int back = settled ? latest - 1 : latest;
+            if (back < 0) {
+                return new TableEditor.Result(false, "Nothing to undo: this is the start of the game");
+            }
+            List<String> state = store.loadStep(id, back).orElse(null);
+            if (state == null) {
+                return new TableEditor.Result(false, "Step " + back + " of the game wasn't found: nothing was undone");
+            }
+            CompanionGameState.of(state).applyNow(game);
+            store.discardAfter(id, back); // files first, then the log
+            lastSaved = CompanionGameState.capture(game);
+            PhaseHandler ph = game.getPhaseHandler();
+            if (combatTurn != ph.getTurn()) {
+                combatTurn = NO_TURN;
+            }
+            Player active = ph.getPlayerTurn();
+            // the entries of the action taken back carry the step its save wrote, or would have written
+            String text = "Undone: back to turn " + ph.getTurn() + (active == null ? "" : ", " + active.getName());
+            store.appendLog(id, CompanionLogEntry.undo(back, List.of(back + 1), Math.max(ph.getTurn(), 0),
+                    active == null ? null : active.getName(), text));
+            if (!parked.isEmpty()) {
+                List<String> affected = affectedBy(parked.get(0));
+                String first = nameOf(parked.get(0));
+                parked.clear();
+                parkedFor = null;
+                parkedTurn = -1;
+                tell("Undone: " + first + " and anything after it wasn't added", affected);
+            }
+            return new TableEditor.Result(true, text);
+        }
+
+        /** Whether the game is as the latest save left it: nothing on the stack, no combat, nothing changed. */
+        private boolean settled(Game game) {
+            if (!game.getStack().isEmpty() || game.getStack().hasSimultaneousStackEntries()
+                    || game.getPhaseHandler().inCombat() || lastSaved == null) {
+                return false;
+            }
+            try {
+                return CompanionGameState.capture(game).equals(lastSaved);
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+                return false; // it can't be compared, so it isn't as saved
+            }
+        }
+    }
+
+    /**
      * Runs the queued ops in order, until one needs a main phase that isn't reached: that one and everything after it
      * are parked (see {@link #isParked}). While ops are parked, newly queued card-adding ones join them at the back
      * instead of running ({@link Op#waitsBehindParked}); the others run at once. Game loop thread. Returns whether it took any ops, run or parked, so the caller asks the loop again.
@@ -392,6 +469,10 @@ public class CompanionTable {
         }
         // the result says whom it was about and what left the hand; an op's own failure (a seat not in the game, an
         // exception) has none, so the op says what it can
+        if (op instanceof Undo && result.done()) {
+            onResult.accept(result); // it wrote its own entry
+            return;
+        }
         List<String> affected = result.affected().isEmpty() ? affectedBy(op) : result.affected();
         String card = result.card() != null ? result.card() : op instanceof AddCard add ? add.name() : null;
         CompanionLogEntry entry = entry(!result.done() ? CompanionLogEntry.Kind.NOTICE
