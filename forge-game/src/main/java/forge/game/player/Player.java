@@ -2359,6 +2359,9 @@ public class Player extends GameEntity implements Comparable<Player> {
     public final int getLifeGainedTimesThisTurn() {
         return lifeGainedTimesThisTurn;
     }
+    public final void setLifeGainedTimesThisTurn(final int n) {
+        lifeGainedTimesThisTurn = n;
+    }
 
     public final int getLifeLostThisTurn() {
         return lifeLostThisTurn;
