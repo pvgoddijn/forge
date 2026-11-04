@@ -1706,6 +1706,283 @@ public class TableEditorTest extends AITest {
         assertEquals(rec.store.latestStep("t"), 0);
     }
 
+    // ---- "Wrong player" correction (slice 4, AC-22a) ----
+
+    private static List<Card> named(Player player, ZoneType zone, String name) {
+        return player.getCardsIn(zone).stream().filter(c -> c.getName().equals(name)).toList();
+    }
+
+    /** Adds {@code name} from {@code player}'s hand, cast, and lets it resolve. */
+    private static TableEditor.Result castFromHand(Game game, Player player, String name) {
+        TableEditor.Result add = TableEditor.addCard(player, name, true, TableEditor.Mode.CAST);
+        assertTrue(add.done(), add.message());
+        resolveAll(game);
+        return add;
+    }
+
+    /**
+     * AC-22a's example: Ann and Bo at 7, a card logged to Ann (6). Reassigned to Bo, Ann has 7, Bo 6, and the card is
+     * on Bo's battlefield, his own.
+     */
+    @Test
+    public void aCorrectionGivesTheCardToTheRightPlayerAndBothHandsComeOutRight() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        TableEditor.Result add = castFromHand(game, ann, "Grizzly Bears");
+        assertEquals(CompanionCards.hiddenInHand(ann), 6);
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        Card bears = TableEditor.findToReassign(ann, "Grizzly Bears");
+        TableEditor.Result fix = TableEditor.reassign(bears, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(CompanionCards.hiddenInHand(ann), 7, "the unknown card is back");
+        assertEquals(CompanionCards.hiddenInHand(bo), 6, "AC-19 for Bo");
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears"), List.of());
+        assertEquals(bears.getOwner(), bo);
+        assertEquals(bears.getController(), bo);
+        assertEquals(fix.affected(), List.of(ann.getName(), bo.getName()));
+        assertEquals(fix.card(), "Grizzly Bears");
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER, "Bo's side");
+        assertTrue(bears.isSick(), "it still came in this turn");
+    }
+
+    /** Ann's hand was empty (clamped at 0), so she gets nothing back; Bo's is empty too, so he gives up nothing. */
+    @Test
+    public void aClampedHandGetsNothingBackAndAnEmptyTargetHandGivesNothing() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        for (Player p : List.of(ann, bo)) {
+            for (Card c : new ArrayList<>(p.getCardsIn(ZoneType.Hand))) {
+                game.getAction().ceaseToExist(c, true);
+            }
+        }
+        TableEditor.Result add = castFromHand(game, ann, "Grizzly Bears");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE);
+
+        TableEditor.Result fix = TableEditor.reassign(TableEditor.findToReassign(ann, "Grizzly Bears"), bo,
+                add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(ann.getCardsIn(ZoneType.Hand).size(), 0, "no extra card for Ann");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), 0);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.NONE);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+    }
+
+    /** AC-20 for the target: Bo's known copy leaves his hand, not an unknown card. */
+    @Test
+    public void theTargetsKnownCopyLeavesTheirHand() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        addCardToZone("Grizzly Bears", bo, ZoneType.Hand);
+        castFromHand(game, ann, "Grizzly Bears");
+        Card bears = TableEditor.findToReassign(ann, "Grizzly Bears");
+
+        TableEditor.Result fix = TableEditor.reassign(bears, bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(named(bo, ZoneType.Hand, "Grizzly Bears"), List.of());
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+        assertEquals(countCardsWithName(game, "Grizzly Bears"), 1);
+    }
+
+    /**
+     * Decision for {@code known}: Ann's known copy left her hand when it was logged; the operator says she never
+     * played it, so it goes back to her hand as a known card, and the card on the table is Bo's.
+     */
+    @Test
+    public void aKnownCardGoesBackToTheOriginalHandAsAKnownCard() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        addCardToZone("Sol Ring", ann, ZoneType.Hand);
+        TableEditor.Result add = castFromHand(game, ann, "Sol Ring");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        Card ring = TableEditor.findToReassign(ann, "Sol Ring");
+
+        TableEditor.Result fix = TableEditor.reassign(ring, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        List<Card> backInHand = named(ann, ZoneType.Hand, "Sol Ring");
+        assertEquals(backInHand.size(), 1, "Ann has her Sol Ring again");
+        assertFalse(CompanionCards.isPlaceholder(backInHand.get(0)));
+        assertEquals(backInHand.get(0).getOwner(), ann);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 6);
+        assertEquals(named(bo, ZoneType.Battlefield, "Sol Ring"), List.of(ring));
+    }
+
+    /** Effects that resolved aren't redone: Gray Merchant's drain doesn't run again for Bo, nor undo for Ann. */
+    @Test
+    public void aCorrectionSetsOffNoTrigger() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        castFromHand(game, ann, "Gray Merchant of Asphodel");
+        assertEquals(ann.getLife(), 44);
+        assertEquals(bo.getLife(), 38);
+
+        TableEditor.Result fix = TableEditor.reassign(TableEditor.findToReassign(ann, "Gray Merchant of Asphodel"),
+                bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        assertTrue(fix.done(), fix.message());
+        assertTrue(game.getStack().isEmpty(), "no trigger went on the stack");
+        resolveAll(game);
+        assertEquals(ann.getLife(), 44);
+        assertEquals(bo.getLife(), 38);
+        assertEquals(cy.getLife(), 38);
+        assertFalse(game.getTriggerHandler().isTriggerSuppressed(forge.game.trigger.TriggerType.ChangesZone),
+                "the suppression is lifted");
+    }
+
+    /** The card died since it was logged: it's reassigned where it is now, Bo's graveyard. */
+    @Test
+    public void aCardThatDiedIsReassignedInTheGraveyard() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        game.getAction().moveToGraveyard(bears, null);
+        resolveAll(game);
+        Card dead = TableEditor.findToReassign(ann, "Grizzly Bears");
+        assertTrue(dead.isInZone(ZoneType.Graveyard));
+
+        TableEditor.Result fix = TableEditor.reassign(dead, bo, CompanionLogEntry.FromHand.NONE);
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(named(bo, ZoneType.Graveyard, "Grizzly Bears"), List.of(dead));
+        assertEquals(named(ann, ZoneType.Graveyard, "Grizzly Bears"), List.of());
+        assertEquals(dead.getOwner(), bo);
+    }
+
+    /**
+     * The card bounced to Ann's hand since: it goes to Bo's hand, and isn't taken for Bo's known copy (AC-20 is asked
+     * of Bo's hand before the card arrives), so he gives up an unknown card and holds the bounced one.
+     */
+    @Test
+    public void aBouncedCardGoesToTheRightHand() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        castFromHand(game, ann, "Grizzly Bears");
+        Card bears = TableEditor.findToReassign(ann, "Grizzly Bears");
+        game.getAction().moveToHand(bears, null);
+        resolveAll(game);
+        Card inHand = TableEditor.findToReassign(ann, "Grizzly Bears");
+
+        TableEditor.Result fix = TableEditor.reassign(inHand, bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(named(bo, ZoneType.Hand, "Grizzly Bears"), List.of(inHand));
+        assertEquals(named(ann, ZoneType.Hand, "Grizzly Bears"), List.of());
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 6);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+    }
+
+    /** Refused, changing nothing: the same player, and a spell still on the stack. */
+    @Test
+    public void aCorrectionToTheSamePlayerOrOfASpellOnTheStackIsRefused() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        TableEditor.Result same = TableEditor.reassign(bears, ann, CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertFalse(same.done());
+        assertNull(same.fromHand());
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+
+        assertTrue(TableEditor.addCard(ann, "Divination", true, TableEditor.Mode.CAST).done());
+        Card spell = TableEditor.findToReassign(ann, "Divination");
+        assertTrue(spell.isInZone(ZoneType.Stack));
+        TableEditor.Result onStack = TableEditor.reassign(spell, bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertFalse(onStack.done());
+        assertEquals(spell.getOwner(), ann);
+        assertEquals(CompanionCards.hiddenInHand(ann), 6);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+    }
+
+    /** Through the table: refusals are notices, and a token that ceased to exist isn't found. */
+    @Test
+    public void theTableRefusesACardItCantFindOrTheSamePlayer() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        assertTrue(TableEditor.addCard(ann, "Treasure Token", false, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
+        Card treasure = ann.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isToken).findFirst().orElseThrow();
+        assertEquals(TableEditor.findToReassign(ann, "Treasure Token"), treasure, "found while it exists");
+        game.getAction().ceaseToExist(treasure, true);
+        putIn(game, ann, "Grizzly Bears");
+
+        rec.table.submit(new CompanionTable.Reassign(ann.getName(), "Treasure Token", bo.getName(),
+                CompanionLogEntry.FromHand.NONE));
+        rec.table.submit(new CompanionTable.Reassign(ann.getName(), "Grizzly Bears", ann.getName(),
+                CompanionLogEntry.FromHand.PLACEHOLDER));
+        assertTrue(rec.table.runPending(game));
+
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.size(), 2, log.toString());
+        for (CompanionLogEntry entry : log) {
+            assertEquals(entry.kind(), CompanionLogEntry.Kind.NOTICE, entry.toString());
+        }
+        assertEquals(rec.results.get(0), ann.getName() + "'s Treasure Token wasn't found: nothing was changed");
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+    }
+
+    /**
+     * The table logs a correction as {@code correction}, about both seats, with Bo's side of the hand. Undoing it is
+     * an ordinary undo: the card is Ann's again (6 and 7), and a second undo takes the add back (7 and 7).
+     */
+    @Test
+    public void aCorrectionIsLoggedAndUndoneLikeAnyStep() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // step 0
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+        rec.table.save(game); // step 1
+        CompanionLogEntry add = lastEntry(rec);
+
+        act(rec, game, new CompanionTable.Reassign(ann.getName(), add.card(), bo.getName(), add.fromHand()));
+
+        CompanionLogEntry fix = lastEntry(rec);
+        assertEquals(fix.kind(), CompanionLogEntry.Kind.CORRECTION, fix.toString());
+        assertEquals(fix.affected(), List.of(ann.getName(), bo.getName()));
+        assertEquals(fix.card(), "Grizzly Bears");
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEquals(fix.step(), 2);
+        assertEquals(rec.store.latestStep("t"), 2);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+
+        undo(rec, game);
+        ann = game.getPlayers().get(0);
+        bo = game.getPlayers().get(1);
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears").size(), 1, "Ann's again");
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 0);
+        assertEquals(CompanionCards.hiddenInHand(ann), 6);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+        assertEquals(CompanionLogEntry.undone(rec.store.loadLog("t")), java.util.Set.of(fix.seq()));
+
+        undo(rec, game);
+        assertEquals(countCardsWithName(game, "Grizzly Bears"), 0);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+    }
+
     private static void assertEntry(CompanionLogEntry entry, CompanionLogEntry.Kind kind, String seat, String card,
                                     CompanionLogEntry.FromHand fromHand) {
         assertEquals(entry.kind(), kind, entry.toString());
