@@ -39,6 +39,20 @@ public class CompanionPlayerController extends PlayerControllerHuman {
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         Game game = getGame();
         PhaseHandler ph = game.getPhaseHandler();
+        if (table.isParked()) {
+            // A sorcery waits for its main phase (AC-42, D5). Until it's reached, every seat passes at every stop, so
+            // the loop moves on by the rules: triggers resolve, the draw happens, an engine combat is declared and
+            // dealt. Those ask their own choices (targets, "may", attackers, blockers); only priority is passed here.
+            // Ops submitted meanwhile are taken too: a card joins the parked ones, anything else (a life edit) runs now.
+            if (table.parkedReady(game)) {
+                table.runParked(game);
+            } else if (!table.runPending(game)) {
+                return null;
+            }
+            // as after any op: the active seat sees what it put on the stack
+            ph.setPriority(ph.getPlayerTurn());
+            return Collections.emptyList();
+        }
         if (table.runPending(game)) {
             // The active seat is asked next, whoever's priority this was, so the operator sees what the action put
             // on the stack: a spell's caster would get priority anyway, but triggers would otherwise resolve unseen.

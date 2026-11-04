@@ -1,11 +1,14 @@
 package forge.screens.companion;
 
 import forge.assets.FSkinImage;
+import forge.game.card.CardView;
+import forge.game.player.PlayerView;
 import forge.gamemodes.companion.CompanionGameState;
 import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
+import forge.gamemodes.companion.TableEditor;
 import forge.gamemodes.match.HostedMatch;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
@@ -19,8 +22,10 @@ import forge.screens.match.MatchController;
 import forge.screens.match.MatchExtension;
 import forge.toolbox.FButton;
 import forge.toolbox.FCheckBox;
+import forge.toolbox.FLabel;
 import forge.toolbox.FOptionPane;
 import forge.toolbox.FTextField;
+import forge.toolbox.GuiChoose;
 import forge.util.Utils;
 
 import java.io.File;
@@ -28,6 +33,7 @@ import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * Sets up a tracked game: players in seat order, and which one is Me. The game itself is a real match on Forge's match
@@ -35,6 +41,8 @@ import java.util.Optional;
  */
 public class CompanionSetupScreen extends LaunchScreen {
     private static final float PADDING = Utils.scale(5);
+    /** Digits only, at most four, so parsing never overflows; starting life is at least 1, so no minus. */
+    private static final Pattern LIFE_DIGITS = Pattern.compile("\\d{0,4}");
 
     private final CompanionStore store = new CompanionStore(new File(ForgeConstants.USER_DIR, "companion"));
     private final FTextField[] names = new FTextField[CompanionSetup.MAX_PLAYERS];
@@ -42,6 +50,8 @@ public class CompanionSetupScreen extends LaunchScreen {
     private final FButton[] ups = new FButton[CompanionSetup.MAX_PLAYERS];
     private final FButton btnFewer = add(new FButton("-"));
     private final FButton btnMore = add(new FButton("+"));
+    private final FLabel lblLife = add(new FLabel.Builder().text("Starting life").build());
+    private final FTextField txtLife = add(new FTextField(String.valueOf(CompanionSetup.DEFAULT_LIFE)));
     private int playerCount = 4;
 
     public CompanionSetupScreen() {
@@ -55,6 +65,14 @@ public class CompanionSetupScreen extends LaunchScreen {
             ups[i] = add(new FButton("^"));
             ups[i].setCommand(e -> swapWithRowAbove(row));
         }
+        txtLife.setIsNumeric(true);
+        txtLife.setLiveChangeEvents(true);
+        txtLife.setChangedHandler(e -> {
+            // a keyboard can type anything: keep the last text that was still digits, as LifeDialog does
+            if (!LIFE_DIGITS.matcher(txtLife.getText()).matches()) {
+                txtLife.setText(e.getArgs() instanceof String before ? before : "");
+            }
+        });
         btnFewer.setCommand(e -> setPlayerCount(playerCount - 1));
         btnMore.setCommand(e -> setPlayerCount(playerCount + 1));
         updateRows();
@@ -128,6 +146,10 @@ public class CompanionSetupScreen extends LaunchScreen {
         }
         btnFewer.setBounds(PADDING, y, buttonWidth, rowHeight);
         btnMore.setBounds(btnFewer.getRight() + PADDING, y, buttonWidth, rowHeight);
+        y += rowHeight + PADDING;
+        float lifeWidth = rowHeight * 2.2f;
+        lblLife.setBounds(PADDING, y, width - lifeWidth - 3 * PADDING, rowHeight);
+        txtLife.setBounds(lblLife.getRight() + PADDING, y, lifeWidth, rowHeight);
     }
 
     @Override
@@ -147,7 +169,14 @@ public class CompanionSetupScreen extends LaunchScreen {
             }
             seats.add(new CompanionSetup.Seat(name, mes[i].isSelected()));
         }
-        CompanionSetup setup = CompanionSetup.withDefaults(seats);
+        String lifeText = txtLife.getText().trim();
+        // the field keeps to four digits, so this can't overflow; empty counts as 0
+        int life = lifeText.isEmpty() ? 0 : Integer.parseInt(lifeText);
+        if (life < 1) {
+            FOptionPane.showErrorDialog("Starting life must be at least 1.");
+            return;
+        }
+        CompanionSetup setup = CompanionSetup.withDefaults(seats).withLife(life);
         String id;
         try {
             id = store.create(setup);
@@ -197,6 +226,36 @@ public class CompanionSetupScreen extends LaunchScreen {
                     }
                     menu.addItem(new FMenuItem(everyTurn ? "Combat every turn: on" : "Combat every turn: off",
                             FSkinImage.ATTACK, e -> table.setEngineCombat(!everyTurn)));
+                    // read from the views on the UI thread; the op re-checks each card on the game thread
+                    List<CardView> sick = new ArrayList<>();
+                    for (PlayerView p : MatchController.instance.getGameView().getPlayers()) {
+                        for (CardView c : p.getBattlefield()) {
+                            if (c.isSick()) {
+                                sick.add(c);
+                            }
+                        }
+                    }
+                    if (!sick.isEmpty()) {
+                        menu.addItem(new FMenuItem("Ready creatures…", FSkinImage.ATTACK,
+                                e -> GuiChoose.many("Ready creatures",
+                                        "Pick the ones that were on the table before this turn", 0, sick.size(), sick,
+                                        null, chosen -> {
+                                            if (chosen == null || chosen.isEmpty()) {
+                                                return;
+                                            }
+                                            List<Integer> ids = chosen.stream().map(CardView::getId).toList();
+                                            table.submit(game -> TableEditor.readyCreatures(game, ids));
+                                        })));
+                    }
+                }
+
+                @Override
+                public boolean tapLife(PlayerView player) {
+                    if (!table.atPriorityPrompt()) {
+                        return false; // a target prompt is open: the tap targets the player as usual
+                    }
+                    new LifeDialog(table, player).show();
+                    return true;
                 }
 
                 @Override
