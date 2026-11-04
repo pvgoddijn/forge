@@ -1,6 +1,7 @@
 package forge.screens.companion;
 
 import forge.assets.FSkinImage;
+import forge.game.Game;
 import forge.game.card.CardView;
 import forge.game.player.PlayerView;
 import forge.gamemodes.companion.CompanionGameState;
@@ -12,6 +13,7 @@ import forge.gamemodes.companion.TableEditor;
 import forge.gamemodes.match.HostedMatch;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
+import forge.interfaces.IGameController;
 import forge.localinstance.properties.ForgeConstants;
 import forge.menu.FDropDownMenu;
 import forge.menu.FMenuItem;
@@ -26,6 +28,7 @@ import forge.toolbox.FLabel;
 import forge.toolbox.FOptionPane;
 import forge.toolbox.FTextField;
 import forge.toolbox.GuiChoose;
+import forge.util.ThreadUtil;
 import forge.util.Utils;
 
 import java.io.File;
@@ -213,6 +216,9 @@ public class CompanionSetupScreen extends LaunchScreen {
         LoadingOverlay.show("Setting up the table", true, () -> {
             HostedMatch match = MatchController.hostMatch();
             MatchController.setExtension(new MatchExtension() {
+                /** Set once the game is marked ended, so its game over closes the match screen. */
+                private volatile boolean ending;
+
                 @Override
                 public void addGameMenuItems(FDropDownMenu menu) {
                     menu.addItem(new FMenuItem("Add card by name", FSkinImage.PLUS,
@@ -247,6 +253,39 @@ public class CompanionSetupScreen extends LaunchScreen {
                                             table.submit(game -> TableEditor.readyCreatures(game, ids));
                                         })));
                     }
+                    menu.addItem(new FMenuItem("End game…", FSkinImage.CONCEDE, e -> confirmEnd()));
+                }
+
+                private void confirmEnd() {
+                    FOptionPane.showConfirmDialog("End this game? It can't be resumed.", "End game", "End game",
+                            "Cancel", false, yes -> {
+                                if (!yes) {
+                                    return;
+                                }
+                                try {
+                                    store.end(id); // first, so the setup screen we go back to doesn't resume it
+                                } catch (UncheckedIOException e) {
+                                    FOptionPane.showErrorDialog("The game couldn't be ended.\n" + e.getMessage());
+                                    return;
+                                }
+                                ending = true;
+                                // conceding every seat ends the game, so the game thread returns from its loop;
+                                // the game over then closes the match screen (leavesWhenGameOver), as Quit would
+                                ThreadUtil.invokeInGameThread(() -> {
+                                    for (IGameController seat : MatchController.instance.getOriginalGameControllers()) {
+                                        Game game = match.getGame();
+                                        if (game == null || game.isGameOver()) {
+                                            break; // the last seat has won; conceding it too would change nothing
+                                        }
+                                        seat.concede();
+                                    }
+                                });
+                            });
+                }
+
+                @Override
+                public boolean leavesWhenGameOver() {
+                    return ending;
                 }
 
                 @Override

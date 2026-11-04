@@ -46,4 +46,12 @@ public interface MatchExtension {
     default boolean tapLife(PlayerView player) {
         return false;
     }
+
+    /**
+     * Whether the match screen closes as soon as the game is over, without the results screen. Asked on the UI thread
+     * when the game is over; a mode that ends the game itself to leave the match says yes.
+     */
+    default boolean leavesWhenGameOver() {
+        return false;
+    }
 }

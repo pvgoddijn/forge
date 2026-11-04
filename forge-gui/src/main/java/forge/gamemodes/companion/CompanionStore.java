@@ -75,6 +75,11 @@ public class CompanionStore {
         return state.exists() ? Optional.of(Arrays.asList(read(state).split("\n"))) : Optional.empty();
     }
 
+    /** Marks the game ended, so it's no longer the active game and Companion doesn't resume it. */
+    public void end(String id) {
+        writeWhole(new File(new File(dir, id), ENDED), "");
+    }
+
     /** Moves a game that can't be loaded out of the way, so Companion doesn't keep trying to resume it. */
     public File setAside(String id) {
         File game = new File(dir, id);
