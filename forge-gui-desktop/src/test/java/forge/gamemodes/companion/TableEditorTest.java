@@ -2166,4 +2166,104 @@ public class TableEditorTest extends AITest {
         assertNull(new Recorded().table.promptNote());
         assertTrue(new Recorded().table.sickBeforeCombat().isEmpty());
     }
+
+    // ---- Who could have cast an instant (slice 4, item 11) ----
+
+    /** Ann has two Islands, Bo two Mountains, Cy a lone Plains. Lands go in untapped or not: it makes no difference. */
+    private Game tableWithLands() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        putIn(game, ann, "Island");
+        putIn(game, ann, "Island").setTapped(true);
+        putIn(game, bo, "Mountain");
+        putIn(game, bo, "Mountain");
+        putIn(game, cy, "Plains");
+        return game;
+    }
+
+    private static List<String> names(List<Player> players) {
+        return players.stream().map(Player::getName).toList();
+    }
+
+    @Test
+    public void onlyTheSeatWithBlueCouldHaveCastCounterspell() {
+        Game game = tableWithLands();
+        String ann = game.getPlayers().get(0).getName();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Counterspell")), List.of(ann),
+                "UU from two Islands, one of them tapped");
+    }
+
+    @Test
+    public void onlyTheSeatWithRedCouldHaveCastLightningBolt() {
+        Game game = tableWithLands();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Lightning Bolt")),
+                List.of(game.getPlayers().get(1).getName()));
+    }
+
+    @Test
+    public void nobodyCouldHaveCastOptWithoutBlue() {
+        Game game = startTable();
+        putIn(game, game.getPlayers().get(1), "Mountain");
+        putIn(game, game.getPlayers().get(2), "Plains");
+        assertTrue(TableEditor.couldHaveCast(game, "Opt").isEmpty(), "the dialog then offers every seat (AC-39)");
+    }
+
+    /** A generic cost needs only enough sources, of any color: Cy's lone Plains isn't enough for {2}. */
+    @Test
+    public void aGenericInstantNeedsOnlyEnoughSources() {
+        Game game = tableWithLands();
+        List<Player> players = game.getPlayers();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Energybending")),
+                List.of(players.get(0).getName(), players.get(1).getName()), "{2}");
+        assertTrue(TableEditor.couldHaveCast(game, "Titan's Presence").isEmpty(), "{3}: nobody has three");
+        assertEquals(TableEditor.couldHaveCast(game, "Gut Shot").size(), 3, "{R/P}: life pays it");
+    }
+
+    /** An adventure's instant half counts, though the card itself is an artifact: {1}{B}, and nobody has black. */
+    @Test
+    public void anInstantFaceIsEnough() {
+        Game game = tableWithLands();
+        assertTrue(TableEditor.couldHaveCast(game, "My Precious").isEmpty());
+    }
+
+    @Test
+    public void aCardWithFlashIsNarrowedButASorceryOrCreatureIsNot() {
+        Game game = tableWithLands();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Spectral Sailor")),
+                List.of(game.getPlayers().get(0).getName()), "{U} with flash");
+        assertEquals(TableEditor.couldHaveCast(game, "Divination").size(), 3, "a sorcery isn't narrowed");
+        assertEquals(TableEditor.couldHaveCast(game, "Grizzly Bears").size(), 3, "nor a creature without flash");
+    }
+
+    @Test
+    public void colorsAreMatchedToSourcesAndHybridTakesEitherColor() {
+        List<Integer> islandAndMountain = List.of((int) forge.card.mana.ManaAtom.BLUE,
+                (int) forge.card.mana.ManaAtom.RED);
+        assertFalse(TableEditor.couldPay(new forge.card.mana.ManaCost("U U"), islandAndMountain),
+                "two sources, but only one makes blue");
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("U R"), islandAndMountain));
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("U/R U/R"), islandAndMountain));
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("X U"), islandAndMountain), "X is 0");
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("2/W"), islandAndMountain), "{2/W} as two");
+        assertFalse(TableEditor.couldPay(new forge.card.mana.ManaCost("C"), islandAndMountain), "{C} needs a colorless source");
+        int any = forge.card.mana.ManaAtom.ALL_MANA_COLORS;
+        assertFalse(TableEditor.couldPay(new forge.card.mana.ManaCost("W U"), List.of(any)),
+                "one any-color source isn't counted twice");
+    }
+
+    /** The UI asks the table, which answers from what the latest prompt published, on any thread. */
+    @Test
+    public void theTableAnswersFromTheLatestPrompt() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Recorded rec = new Recorded();
+        assertTrue(rec.table.couldHaveCast("Counterspell").isEmpty(), "before any prompt: every seat is offered");
+        Player bo = game.getPlayers().get(1);
+        putIn(game, bo, "Island");
+        putIn(game, bo, "Island");
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.table.couldHaveCast("Counterspell"), List.of(bo.getName()));
+        assertEquals(rec.table.couldHaveCast("Divination").size(), 3);
+    }
 }

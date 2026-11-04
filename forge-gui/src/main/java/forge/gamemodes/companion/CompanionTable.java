@@ -143,6 +143,8 @@ public class CompanionTable {
     private volatile List<CompanionLogEntry.Added> addedThisTurn = List.of();
     /** The active seat's summoning-sick creatures at the latest prompt, if it was before combat. See {@link #sickBeforeCombat}. */
     private volatile List<Integer> sickBeforeCombat = List.of();
+    /** Every seat's mana sources at the latest prompt, for {@link #couldHaveCast}. */
+    private volatile List<TableEditor.ManaSources> manaSources = List.of();
     /** The turn and phase of the latest priority prompt, for {@link #promptNote}. */
     private volatile int promptTurn = NO_TURN;
     private volatile PhaseType promptPhase;
@@ -564,6 +566,7 @@ public class CompanionTable {
         canUndo = latest > 0 || (latest == 0 && !asSaved);
         addedThisTurn = findAddedThisTurn(game);
         sickBeforeCombat = findSickBeforeCombat(game);
+        manaSources = TableEditor.manaSources(game);
         promptTurn = game.getPhaseHandler().getTurn();
         promptPhase = phase;
     }
@@ -591,6 +594,17 @@ public class CompanionTable {
      */
     public List<Integer> sickBeforeCombat() {
         return sickBeforeCombat;
+    }
+
+    /**
+     * The seats, by setup name, whose mana sources at the latest priority prompt could have paid for {@code card}
+     * when it's an instant or has flash, for the add dialog to offer (item 11); every seat for any other card. Empty
+     * before the first prompt, or when nobody could have: the dialog then offers every seat (AC-39). See
+     * {@link TableEditor#couldHaveCast(Game, String)}. Safe from any thread: it reads only what the prompt published
+     * and card data, and like {@link #canUndo} it can be out of date only between prompts.
+     */
+    public List<String> couldHaveCast(String card) {
+        return TableEditor.couldHaveCast(manaSources, card);
     }
 
     /**

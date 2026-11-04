@@ -38,6 +38,7 @@ public class CardSearchDialog extends FDialog {
     private static final String FROM_ELSEWHERE = "From elsewhere";
     private static final String CAST = "Cast it";
     private static final String PUT = "Put onto battlefield";
+    private static final String SHOW_ALL = "Show all players";
     private static CardNameMatcher matcher; // built once, on first use: it indexes every card name
 
     private final CompanionTable table;
@@ -46,6 +47,8 @@ public class CardSearchDialog extends FDialog {
     private final FComboBox<String> cbMode = add(new FComboBox<>());
     private final FTextField txtSearch = add(new FTextField());
     private final FList<CardNameMatcher.Suggestion> lstMatches = add(new FList<>());
+    private final List<String> allPlayers = new ArrayList<>();
+    private final String activePlayer; // the default target (AC-17)
     private String selectedCard; // a name from the database; null while the text is only what was typed
     private boolean photographing; // a photo is being taken or read; UI thread only
 
@@ -54,13 +57,20 @@ public class CardSearchDialog extends FDialog {
         super("Add card", canPhotograph() ? 3 : 2);
         table = table0;
 
-        List<String> playerNames = new ArrayList<>();
         for (CompanionSetup.Seat seat : table.setup().gameOrder()) {
-            playerNames.add(seat.name());
+            allPlayers.add(seat.name());
         }
         PlayerView active = gameView == null ? null : gameView.getPlayerTurn();
-        String target = active != null && playerNames.contains(active.getName()) ? active.getName() : playerNames.get(0);
-        cbPlayer.setItems(playerNames, target);
+        activePlayer = active != null && allPlayers.contains(active.getName()) ? active.getName() : allPlayers.get(0);
+        cbPlayer.setItems(allPlayers, activePlayer);
+        cbPlayer.setDropDownChangeHandler(e -> {
+            if (SHOW_ALL.equals(cbPlayer.getSelectedItem())) {
+                cbPlayer.setItems(allPlayers, playerBeforeShowAll);
+            } else {
+                playerBeforeShowAll = cbPlayer.getSelectedItem();
+            }
+        });
+        playerBeforeShowAll = activePlayer;
         cbFrom.setItems(List.of(FROM_HAND, FROM_ELSEWHERE), FROM_HAND);
         cbMode.setItems(List.of(CAST, PUT), CAST);
 
@@ -206,12 +216,37 @@ public class CardSearchDialog extends FDialog {
         } else if (selectedCard != null) {
             selectedCard = null;
             getButton(0).setText("Add as typed");
+            offerPlayers(null);
         }
     }
 
     private void select(String card) {
         selectedCard = card;
         getButton(0).setText("Add");
+        offerPlayers(card);
+    }
+
+    private String playerBeforeShowAll; // what "show all" keeps chosen
+
+    /**
+     * For an instant or a flash card, offers only the seats that could have cast it (item 11), as the latest prompt
+     * worked out on the game thread ({@link CompanionTable#couldHaveCast}): one is chosen for the operator, several
+     * come with "show all". When nobody could have, or for any other card, every seat, as before (AC-39). The choice
+     * already made stays when it's still offered; otherwise the active player if offered, else the first one.
+     */
+    private void offerPlayers(String card) {
+        List<String> could = card == null ? List.of() : table.couldHaveCast(card);
+        boolean narrowed = !could.isEmpty() && could.size() < allPlayers.size();
+        // in the setup's order, and the setup's own Strings, as the combo box compares items by identity
+        List<String> offered = narrowed ? allPlayers.stream().filter(could::contains).toList() : allPlayers;
+        String current = cbPlayer.getSelectedItem();
+        String pick = offered.contains(current) ? current : offered.contains(activePlayer) ? activePlayer : offered.get(0);
+        List<String> items = new ArrayList<>(offered);
+        if (narrowed && offered.size() > 1) {
+            items.add(SHOW_ALL);
+        }
+        cbPlayer.setItems(items, pick);
+        playerBeforeShowAll = pick;
     }
 
     private void addCard() {
@@ -220,6 +255,9 @@ public class CardSearchDialog extends FDialog {
             return;
         }
         String player = cbPlayer.getSelectedItem();
+        if (player == null || SHOW_ALL.equals(player)) {
+            return;
+        }
         boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
         TableEditor.Mode mode = PUT.equals(cbMode.getSelectedItem()) ? TableEditor.Mode.PUT_ONTO_BATTLEFIELD : TableEditor.Mode.CAST;
         hide();
