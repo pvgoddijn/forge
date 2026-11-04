@@ -25,7 +25,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Adds a card by typing: type, tap a match, check the player and how it was played, confirm. The game then does what
+ * Adds a card by photo, falling back to typing. {@link #addByPhoto} opens the camera first and shows this dialog only
+ * with what the photo gave; {@link #addByName} opens it to type. Typing: type, tap a match, check the player and how it was played, confirm. The game then does what
  * the card does. Text that matches nothing can still be added as typed, which is how emblems get in, as Forge has no
  * list of them.
  */
@@ -94,6 +95,25 @@ public class CardSearchDialog extends FDialog {
         }
     }
 
+    /**
+     * Photographs a card first and shows the dialog only once there is a photo: filled in with the read, so a confident
+     * one takes one tap to add (AC-8), or with the text read to finish by typing (AC-11). No photo, as when the camera
+     * is closed or refused, opens it empty to type. A device without a camera opens it to type straight away.
+     */
+    public static void addByPhoto(CompanionTable table, GameView gameView) {
+        CardSearchDialog dialog = new CardSearchDialog(table, gameView);
+        if (!canPhotograph()) {
+            dialog.show();
+            return;
+        }
+        dialog.photograph();
+    }
+
+    /** Opens the dialog to type a name, without the camera: for tokens and emblems, which have no card to photograph. */
+    public static void addByName(CompanionTable table, GameView gameView) {
+        new CardSearchDialog(table, gameView).show();
+    }
+
     /** Whether this device can photograph a card and read its name (slice 1). Not on iOS, which has no reader. */
     private static boolean canPhotograph() {
         IDeviceAdapter device = Forge.getDeviceAdapter();
@@ -113,10 +133,16 @@ public class CardSearchDialog extends FDialog {
         CardNameReader reader = Forge.getDeviceAdapter().getCardNameReader();
         Forge.getDeviceAdapter().photographCard(photo -> {
             if (photo == null) {
-                FThreads.invokeInEdtLater(() -> photographing = false);
+                FThreads.invokeInEdtLater(() -> {
+                    photographing = false;
+                    showIfHidden(); // the camera was the first step: without a photo, type instead
+                });
                 return;
             }
-            FThreads.invokeInEdtLater(() -> getButton(2).setText("Reading..."));
+            FThreads.invokeInEdtLater(() -> {
+                showIfHidden();
+                getButton(2).setText("Reading...");
+            });
             FThreads.invokeInBackgroundThread(() -> {
                 CardNameReader.Reading reading;
                 try {
@@ -131,6 +157,15 @@ public class CardSearchDialog extends FDialog {
                 FThreads.invokeInEdtLater(() -> showReading(read));
             });
         });
+    }
+
+    private boolean everShown; // false until the first photo comes back, so a hidden dialog wasn't closed by the operator
+
+    private void showIfHidden() {
+        if (!everShown) {
+            everShown = true;
+            show();
+        }
     }
 
     private void showReading(CardNameReader.Reading reading) {
