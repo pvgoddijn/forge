@@ -141,6 +141,11 @@ public class CompanionTable {
     private volatile boolean canUndo;
     /** The cards "wrong player" could correct at the latest priority prompt. See {@link #addedThisTurn}. */
     private volatile List<CompanionLogEntry.Added> addedThisTurn = List.of();
+    /** The active seat's summoning-sick creatures at the latest prompt, if it was before combat. See {@link #sickBeforeCombat}. */
+    private volatile List<Integer> sickBeforeCombat = List.of();
+    /** The turn and phase of the latest priority prompt, for {@link #promptNote}. */
+    private volatile int promptTurn = NO_TURN;
+    private volatile PhaseType promptPhase;
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -558,6 +563,62 @@ public class CompanionTable {
         boolean asSaved = settledPoint && !saveFailing && !game.getStack().hasSimultaneousStackEntries();
         canUndo = latest > 0 || (latest == 0 && !asSaved);
         addedThisTurn = findAddedThisTurn(game);
+        sickBeforeCombat = findSickBeforeCombat(game);
+        promptTurn = game.getPhaseHandler().getTurn();
+        promptPhase = phase;
+    }
+
+    /**
+     * The active seat's creatures that can't attack only because they came in this turn, when the game is still
+     * before this turn's combat; after it, readying them changes nothing until the next turn.
+     */
+    private static List<Integer> findSickBeforeCombat(Game game) {
+        PhaseHandler ph = game.getPhaseHandler();
+        PhaseType phase = ph.getPhase();
+        Player active = ph.getPlayerTurn();
+        if (phase == null || active == null || !phase.isBefore(PhaseType.COMBAT_BEGIN)) {
+            return List.of();
+        }
+        return TableEditor.sickCreatures(active).stream().map(Card::getId).toList();
+    }
+
+    /**
+     * The ids of the active seat's summoning-sick creatures as of the latest priority prompt, when it was before this
+     * turn's combat, and otherwise none. With engine combat on, the engine asks for attackers only if a creature can
+     * attack, so a turn whose creatures were all logged this turn skips combat without a word: the game menu offers
+     * to ready these when combat is switched on. Safe from any thread; out of date only between prompts, like
+     * {@link #canUndo}, and the ready op checks each card again.
+     */
+    public List<Integer> sickBeforeCombat() {
+        return sickBeforeCombat;
+    }
+
+    /**
+     * A line for the active seat's Main 1 prompt saying whether combat goes through the engine this turn, and how to
+     * change that, or null at any other prompt. Read live, so a prompt shown again after the operator switches combat
+     * says so. Safe from any thread.
+     */
+    public String promptNote() {
+        if (promptPhase != PhaseType.MAIN1) {
+            return null;
+        }
+        if (!engineCombat(promptTurn)) {
+            return "Combat: off (game menu → Combat this turn)";
+        }
+        int sick = sickBeforeCombat.size();
+        return sick == 0 ? "Combat: on"
+                : "Combat: on, but " + sick + (sick == 1 ? " creature is" : " creatures are")
+                        + " summoning sick (game menu → Ready creatures…)";
+    }
+
+    /**
+     * Shows the priority prompt again without running anything, so its message is redrawn after a setting it shows
+     * changed. Any thread.
+     */
+    public void refreshPrompt() {
+        for (CompanionPlayerController seat : seats) {
+            endPriorityPrompt(seat);
+        }
     }
 
     /** This turn's adds from the log that are still in the game, where {@link Reassign} would find them. */

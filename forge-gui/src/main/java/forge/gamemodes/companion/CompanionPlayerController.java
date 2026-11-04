@@ -121,6 +121,12 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         return super.isUiSetToSkipPhase(turnPlayer, phase);
     }
 
+    /** Whether combat goes through the engine this turn, in the active seat's Main 1 ({@link CompanionTable#promptNote}). */
+    @Override
+    public String getPriorityPromptNote() {
+        return table.promptNote();
+    }
+
     @Override
     public boolean answersForEveryLocalSeat() {
         return true;

@@ -170,7 +170,9 @@ public class InputPassPriority extends InputSyncronizedBase {
         pendingSuggestionMessage = null;
 
         showSelection();
-        showMessage(getTurnPhasePriorityMessage(getController().getGame()));
+        String note = getController().getPriorityPromptNote();
+        String message = getTurnPhasePriorityMessage(getController().getGame());
+        showMessage(note == null ? message : message + "\n" + note);
         chosenSa = null;
         Localizer localizer = Localizer.getInstance();
         /*if (getController().canUndoLastAction()) { //allow undoing with cancel button if can undo last action
