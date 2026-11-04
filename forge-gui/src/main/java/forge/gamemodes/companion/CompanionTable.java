@@ -390,12 +390,15 @@ public class CompanionTable {
             e.printStackTrace();
             result = new TableEditor.Result(false, "That didn't work: " + e);
         }
-        // chunk 3: the affected seat and what left the hand come from the result; until then, from the op
+        // the result says whom it was about and what left the hand; an op's own failure (a seat not in the game, an
+        // exception) has none, so the op says what it can
+        List<String> affected = result.affected().isEmpty() ? affectedBy(op) : result.affected();
+        String card = result.card() != null ? result.card() : op instanceof AddCard add ? add.name() : null;
         CompanionLogEntry entry = entry(!result.done() ? CompanionLogEntry.Kind.NOTICE
                 : op instanceof AddCard ? CompanionLogEntry.Kind.ADD : CompanionLogEntry.Kind.ACTION,
-                affectedBy(op), result.message());
-        if (result.done() && op instanceof AddCard add) {
-            entry = entry.withCard(add.name(), add.fromHand() ? null : CompanionLogEntry.FromHand.NONE);
+                affected, result.message());
+        if (card != null) {
+            entry = entry.withCard(card, result.fromHand());
         }
         store.appendLog(id, entry);
         onResult.accept(result);
