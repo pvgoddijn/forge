@@ -377,4 +377,21 @@ public class CompanionStoreShould {
         assertThat(CompanionHistory.of(new CompanionStore(dir).loadLog(ended)).rows())
                 .extracting(CompanionHistory.Row::text).containsExactly("Ann casts Opt");
     }
+
+    /** AC-30: a past game is read-only, so reading its boards doesn't settle its log as a resume would. */
+    @Test
+    public void readAnEndedGamesFinalStateWithoutWritingItsLog() throws IOException {
+        store.saveState(id, "step 0");
+        store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")); // step 1 never saved
+        store.end(id);
+        File log = new File(new File(dir, id), "log.txt");
+        byte[] before = Files.readAllBytes(log.toPath());
+
+        CompanionStore restarted = new CompanionStore(dir);
+        String ended = restarted.listEnded().get(0).id();
+
+        assertThat(restarted.loadFinalState(ended)).isEqualTo(lines("step 0"));
+        assertThat(restarted.loadLog(ended)).hasSize(1);
+        assertThat(Files.readAllBytes(log.toPath())).isEqualTo(before);
+    }
 }
