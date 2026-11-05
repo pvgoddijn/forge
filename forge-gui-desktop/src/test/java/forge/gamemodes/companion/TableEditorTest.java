@@ -2661,4 +2661,503 @@ public class TableEditorTest extends AITest {
         assertFalse(CompanionTable.mentions("Bob milled 2 cards", "Bo"));
         assertFalse(CompanionTable.mentions("Annul resolves", "Ann"));
     }
+
+    // ---- "Move…" (slice 2's chunk 1, pulled forward; AC-20, AC-21, AC-22) ----
+
+    /** AC-21 and AC-20: moved into a hand it's a known card, and moved back out the hidden count stays at 6. */
+    @Test
+    public void aCardMovedToAHandIsKnownAndMovedOutLeavesTheCountAlone() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        castFromHand(game, ann, "Sol Ring");
+        assertEquals(CompanionCards.hiddenInHand(ann), 6);
+        Card ring = named(ann, ZoneType.Battlefield, "Sol Ring").get(0);
+
+        TableEditor.Result toHand = TableEditor.moveTo(ring, ann, ZoneType.Hand);
+
+        assertTrue(toHand.done(), toHand.message());
+        assertEquals(toHand.message(), "Sol Ring was moved from " + ann.getName() + "'s Battlefield to " + ann.getName()
+                + "'s Hand");
+        assertEquals(toHand.affected(), List.of(ann.getName()));
+        List<Card> inHand = named(ann, ZoneType.Hand, "Sol Ring");
+        assertEquals(inHand.size(), 1);
+        assertFalse(CompanionCards.isPlaceholder(inHand.get(0)), "a known card");
+        assertEquals(CompanionCards.hiddenInHand(ann), 6, "the hidden count is unchanged");
+        assertEquals(ann.getCardsIn(ZoneType.Hand).size(), 7);
+
+        TableEditor.Result back = TableEditor.moveTo(inHand.get(0), ann, ZoneType.Battlefield);
+
+        assertTrue(back.done(), back.message());
+        assertEquals(named(ann, ZoneType.Hand, "Sol Ring"), List.of(), "the known card is gone");
+        assertEquals(named(ann, ZoneType.Battlefield, "Sol Ring").size(), 1);
+        assertEquals(CompanionCards.hiddenInHand(ann), 6, "still 6");
+    }
+
+    /** A move to Bo's battlefield gives him control, not ownership, and a save and a load keep it so. */
+    @Test
+    public void aMoveToAnotherPlayersBattlefieldChangesControlThroughASaveAndLoad() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        bears.setSickness(false);
+
+        TableEditor.Result move = TableEditor.moveTo(bears, bo, ZoneType.Battlefield);
+
+        assertTrue(move.done(), move.message());
+        assertEquals(move.affected(), List.of(ann.getName(), bo.getName()));
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears"), List.of());
+        assertEquals(bears.getController(), bo);
+        assertEquals(bears.getOwner(), ann);
+        assertTrue(bears.isSick(), "it came under Bo's control this turn");
+
+        String saved = CompanionGameState.capture(game);
+        Game loaded = initAndCreateThreePlayerGame();
+        CompanionGameState.of(List.of(saved.split("\n"))).applyNow(loaded);
+        Player ann2 = loaded.getPlayers().get(0);
+        Player bo2 = loaded.getPlayers().get(1);
+        List<Card> loadedBears = named(bo2, ZoneType.Battlefield, "Grizzly Bears");
+        assertEquals(loadedBears.size(), 1, saved);
+        assertEquals(loadedBears.get(0).getController(), bo2);
+        assertEquals(loadedBears.get(0).getOwner(), ann2);
+        assertEquals(named(ann2, ZoneType.Battlefield, "Grizzly Bears"), List.of());
+    }
+
+    /** Moved from the battlefield to the graveyard, a creature dies: its "when this dies" trigger fires. */
+    @Test
+    public void aCreatureMovedToTheGraveyardDies() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Card dissenter = putIn(game, ann, "Doomed Dissenter");
+
+        TableEditor.Result move = TableEditor.moveTo(dissenter, ann, ZoneType.Graveyard);
+
+        assertTrue(move.done(), move.message());
+        assertFalse(game.getStack().isEmpty(), "the dies trigger is on the stack");
+        resolveAll(game);
+        assertEquals(named(ann, ZoneType.Graveyard, "Doomed Dissenter").size(), 1);
+        assertEquals(ann.getCreaturesInPlay().stream().filter(Card::isToken).count(), 1L, "Ann's Zombie");
+    }
+
+    /**
+     * Moved to Bo's graveyard, the card is Bo's from then on, but it died under Ann's control, so the trigger and
+     * its Zombie are hers.
+     */
+    @Test
+    public void aCardMovedToAnotherPlayersGraveyardIsTheirsButDiedUnderItsController() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        putIn(game, ann, "Doomed Dissenter");
+        Card dissenter = named(ann, ZoneType.Battlefield, "Doomed Dissenter").get(0);
+
+        TableEditor.Result move = TableEditor.moveTo(dissenter, bo, ZoneType.Graveyard);
+
+        assertTrue(move.done(), move.message());
+        assertEquals(move.message(), "Doomed Dissenter was moved from " + ann.getName() + "'s Battlefield to "
+                + bo.getName() + "'s Graveyard");
+        resolveAll(game);
+        List<Card> inGrave = named(bo, ZoneType.Graveyard, "Doomed Dissenter");
+        assertEquals(inGrave.size(), 1);
+        assertEquals(inGrave.get(0).getOwner(), bo);
+        assertEquals(ann.getCreaturesInPlay().stream().filter(Card::isToken).count(), 1L, "Ann's Zombie");
+        assertEquals(bo.getCreaturesInPlay().size(), 0);
+    }
+
+    /** Any card can go to the Command zone (meant for a commander), and to the top of another player's library. */
+    @Test
+    public void aCardMovesToTheCommandZoneAndToTheTopOfALibrary() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        int command = ann.getCardsIn(ZoneType.Command).size();
+
+        TableEditor.Result toCommand = TableEditor.moveTo(bears, ann, ZoneType.Command);
+
+        assertTrue(toCommand.done(), toCommand.message());
+        assertEquals(ann.getCardsIn(ZoneType.Command).size(), command + 1);
+        Card inCommand = named(ann, ZoneType.Command, "Grizzly Bears").get(0);
+
+        TableEditor.Result toLibrary = TableEditor.moveTo(inCommand, bo, ZoneType.Library);
+
+        assertTrue(toLibrary.done(), toLibrary.message());
+        assertEquals(toLibrary.message(), "Grizzly Bears was moved from " + ann.getName() + "'s Command to the top of "
+                + bo.getName() + "'s Library");
+        Card top = bo.getCardsIn(ZoneType.Library).get(0);
+        assertEquals(top.getName(), "Grizzly Bears");
+        assertEquals(top.getOwner(), bo);
+        assertEquals(named(ann, ZoneType.Command, "Grizzly Bears"), List.of());
+    }
+
+    /** A card moved to another player's hand is a known card there, and theirs; neither hidden count changes. */
+    @Test
+    public void aCardMovedToAnotherPlayersHandIsTheirKnownCard() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+
+        assertTrue(TableEditor.moveTo(bears, bo, ZoneType.Hand).done());
+
+        List<Card> inHand = named(bo, ZoneType.Hand, "Grizzly Bears");
+        assertEquals(inHand.size(), 1);
+        assertEquals(inHand.get(0).getOwner(), bo);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+    }
+
+    /** Refused, changing nothing: an unknown card, a spell on the stack, the table effect, where it already is. */
+    @Test
+    public void aMoveIsRefusedForAnUnknownCardASpellTheTableEffectOrWhereItIs() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card hidden = ann.getCardsIn(ZoneType.Hand).get(0);
+        assertTrue(CompanionCards.isPlaceholder(hidden));
+        assertFalse(TableEditor.moveTo(hidden, bo, ZoneType.Battlefield).done());
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+
+        Card effect = ann.getCardsIn(ZoneType.Command).get(0);
+        assertFalse(TableEditor.moveTo(effect, ann, ZoneType.Graveyard).done(), "the table effect stays");
+        assertEquals(ann.getCardsIn(ZoneType.Command), List.of(effect));
+
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        TableEditor.Result same = TableEditor.moveTo(bears, ann, ZoneType.Battlefield);
+        assertFalse(same.done());
+        assertEquals(same.message(), "Grizzly Bears is already in " + ann.getName() + "'s Battlefield: nothing was changed");
+        assertFalse(TableEditor.moveTo(bears, ann, ZoneType.Stack).done(), "not a zone to move to");
+
+        assertTrue(TableEditor.addCard(ann, "Divination", false, TableEditor.Mode.CAST).done());
+        Card spell = game.getStack().peekAbility().getHostCard();
+        TableEditor.Result onStack = TableEditor.moveTo(spell, ann, ZoneType.Hand);
+        assertFalse(onStack.done());
+        assertTrue(onStack.message().contains("still on the stack"), onStack.message());
+        assertEquals(game.getStack().size(), 1);
+    }
+
+    /** The op writes a {@code move} entry naming the card, both seats and both zones, and an undo takes it back. */
+    @Test
+    public void aMoveIsLoggedAndUndoneLikeAnyStep() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // step 0
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        rec.table.save(game); // step 1
+
+        act(rec, game, new CompanionTable.Move(bears.getId(), "Grizzly Bears", bo.getName(), ZoneType.Battlefield));
+
+        CompanionLogEntry move = lastEntry(rec); // read back from the log file's JSON
+        assertEquals(move.kind(), CompanionLogEntry.Kind.MOVE, move.toString());
+        assertEquals(move.affected(), List.of(ann.getName(), bo.getName()));
+        assertEquals(move.card(), "Grizzly Bears");
+        assertEquals(move.text(), "Grizzly Bears was moved from " + ann.getName() + "'s Battlefield to " + bo.getName()
+                + "'s Battlefield");
+        assertEquals(move.step(), 2);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+
+        undo(rec, game);
+        ann = game.getPlayers().get(0);
+        bo = game.getPlayers().get(1);
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears").size(), 1, "Ann's again");
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears").get(0).getController(), ann);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of());
+        assertEquals(CompanionLogEntry.undone(rec.store.loadLog("t")), java.util.Set.of(move.seq()));
+    }
+
+    /** An id a load gave to another card, or a seat not in the game, is refused with a notice. */
+    @Test
+    public void theMoveOpRefusesACardItCantFindOrASeatNotInTheGame() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+
+        act(rec, game, new CompanionTable.Move(bears.getId(), "Sol Ring", ann.getName(), ZoneType.Hand));
+        act(rec, game, new CompanionTable.Move(bears.getId(), "Grizzly Bears", "Nobody", ZoneType.Hand));
+
+        assertEquals(rec.results, List.of("Sol Ring wasn't found: nothing was moved",
+                "Nobody isn't in the game: Grizzly Bears wasn't moved"));
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.NOTICE);
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+    }
+
+    /**
+     * Through the real loop: in Main 1 the operator moves Doomed Dissenter to the graveyard, and is asked again with
+     * its dies trigger on the stack.
+     */
+    @Test
+    public void onTheGameLoopAMoveToTheGraveyardPutsTheDiesTriggerOnTheStack() {
+        Game game = startTableIn(PhaseType.MAIN1, "p0battlefield=Doomed Dissenter");
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Card dissenter = named(ann, ZoneType.Battlefield, "Doomed Dissenter").get(0);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        seatsFor(game, rec, asked, seat -> {
+            if (game.getStack().isEmpty() && asked.size() == 1) {
+                rec.table.submit(new CompanionTable.Move(dissenter.getId(), "Doomed Dissenter", ann.getName(),
+                        ZoneType.Graveyard));
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1"), asked + " " + rec.results);
+        assertEquals(rec.results, List.of("Doomed Dissenter was moved from " + ann.getName() + "'s Battlefield to "
+                + ann.getName() + "'s Graveyard"));
+        assertEquals(game.getStack().size(), 1);
+        assertEquals(game.getStack().peekAbility().getHostCard().getName(), "Doomed Dissenter");
+        assertEquals(named(ann, ZoneType.Graveyard, "Doomed Dissenter").size(), 1);
+    }
+
+    // ---- "Move…" review follow-ups: a commander keeps its owner, a refused move keeps control, tokens, the log ----
+
+    private static final String KRENKO = "Krenko, Mob Boss";
+
+    /** A table with Bo's commander, Krenko, on his battlefield. */
+    private Game startTableWithBosCommander() {
+        Game game = startTableIn(PhaseType.MAIN1, "p1battlefield=" + KRENKO + "|IsCommander");
+        Player bo = game.getPlayers().get(1);
+        assertEquals(bo.getCommanders().size(), 1, "Bo has a commander");
+        return game;
+    }
+
+    /** Whether {@code player} may cast {@code card} from where it is, by the static abilities as they are now. */
+    private static boolean mayCast(Game game, Card card, Player player) {
+        game.getAction().checkStaticAbilities();
+        return !card.mayPlay(player).isEmpty();
+    }
+
+    /**
+     * Moved to Ann's graveyard, Bo's commander goes to Bo's instead, and stays his: moved on to the Command zone
+     * (Ann's, so Bo's again), Bo can cast it from there and Ann can't.
+     */
+    @Test
+    public void aCommanderMovedToAnotherPlayersZoneGoesToItsOwnersAndStaysTheirCommander() {
+        Game game = startTableWithBosCommander();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+
+        TableEditor.Result toGrave = TableEditor.moveTo(krenko, ann, ZoneType.Graveyard);
+
+        assertTrue(toGrave.done(), toGrave.message());
+        assertEquals(toGrave.message(), KRENKO + " was moved from " + bo.getName() + "'s Battlefield to " + bo.getName()
+                + "'s Graveyard (a commander stays its owner's, so not " + ann.getName() + "'s Graveyard)");
+        assertNull(toGrave.fromHand(), "its owner stayed the same");
+        assertEquals(named(ann, ZoneType.Graveyard, KRENKO), List.of());
+        Card inGrave = named(bo, ZoneType.Graveyard, KRENKO).get(0);
+        assertEquals(inGrave.getOwner(), bo);
+
+        TableEditor.Result toCommand = TableEditor.moveTo(inGrave, ann, ZoneType.Command);
+
+        assertTrue(toCommand.done(), toCommand.message());
+        assertEquals(toCommand.message(), KRENKO + " was moved from " + bo.getName() + "'s Graveyard to " + bo.getName()
+                + "'s Command (a commander stays its owner's, so not " + ann.getName() + "'s Command)");
+        Card inCommand = named(bo, ZoneType.Command, KRENKO).get(0);
+        assertEquals(inCommand.getOwner(), bo);
+        assertTrue(mayCast(game, inCommand, bo), "Bo casts his commander from the Command zone");
+        assertFalse(mayCast(game, inCommand, ann), "it isn't Ann's commander");
+    }
+
+    /** A commander can still change control: moved to Ann's battlefield, Ann controls it and Bo owns it. */
+    @Test
+    public void aCommanderMovedToAnotherPlayersBattlefieldChangesControlOnly() {
+        Game game = startTableWithBosCommander();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+
+        TableEditor.Result move = TableEditor.moveTo(krenko, ann, ZoneType.Battlefield);
+
+        assertTrue(move.done(), move.message());
+        assertEquals(named(ann, ZoneType.Battlefield, KRENKO), List.of(krenko));
+        assertEquals(krenko.getController(), ann);
+        assertEquals(krenko.getOwner(), bo);
+    }
+
+    /** Moved to its owner's Command zone, a commander is there to be cast again. */
+    @Test
+    public void aCommanderMovedToItsOwnersCommandZoneCanBeCastFromThere() {
+        Game game = startTableWithBosCommander();
+        Player bo = game.getPlayers().get(1);
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+
+        TableEditor.Result move = TableEditor.moveTo(krenko, bo, ZoneType.Command);
+
+        assertTrue(move.done(), move.message());
+        assertEquals(move.message(), KRENKO + " was moved from " + bo.getName() + "'s Battlefield to " + bo.getName()
+                + "'s Command");
+        Card inCommand = named(bo, ZoneType.Command, KRENKO).get(0);
+        assertTrue(mayCast(game, inCommand, bo));
+    }
+
+    /**
+     * Under the table's rules (a Constructed game, so no rule 903.9a check), a commander moved to a graveyard stays
+     * there and its owner isn't asked. Moved to a hand, the engine's command-zone replacement (903.9b) asks its owner,
+     * and a yes puts it into the Command zone, which the message says.
+     */
+    @Test
+    public void aCommanderMovedToAGraveyardStaysAndToAHandItsOwnerIsAskedAboutTheCommandZone() {
+        Game game = startTableWithBosCommander();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        List<String> asked = new ArrayList<>();
+        bo.dangerouslySetController(new forge.ai.PlayerControllerAi(game, bo, bo.getLobbyPlayer()) {
+            @Override
+            public boolean confirmReplacementEffect(forge.game.replacement.ReplacementEffect replacementEffect,
+                    forge.game.spellability.SpellAbility effectSA, forge.game.GameEntity affected, String question) {
+                asked.add("replacement");
+                return true;
+            }
+
+            @Override
+            public boolean confirmAction(forge.game.spellability.SpellAbility sa,
+                    forge.game.player.PlayerActionConfirmMode mode, String message, List<String> options,
+                    Card cardToShow, java.util.Map<String, Object> params) {
+                asked.add("action " + mode);
+                return true;
+            }
+        });
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+
+        TableEditor.Result toGrave = TableEditor.moveTo(krenko, bo, ZoneType.Graveyard);
+        game.getAction().checkStateEffects(true);
+
+        assertTrue(toGrave.done(), toGrave.message());
+        assertEquals(asked, List.of(), "no command-zone question for a graveyard");
+        Card inGrave = named(bo, ZoneType.Graveyard, KRENKO).get(0);
+
+        TableEditor.Result toHand = TableEditor.moveTo(inGrave, ann, ZoneType.Hand);
+
+        assertEquals(asked, List.of("replacement"), "Bo is asked whether it goes to the Command zone");
+        assertTrue(toHand.done(), toHand.message());
+        assertEquals(toHand.message(), KRENKO + " was moved from " + bo.getName() + "'s Graveyard, but went to " + bo.getName()
+                + "'s Command instead of " + bo.getName() + "'s Hand (a commander stays its owner's, so not "
+                + ann.getName() + "'s Hand)");
+        assertEquals(named(bo, ZoneType.Command, KRENKO).size(), 1);
+        assertEquals(named(ann, ZoneType.Hand, KRENKO), List.of());
+    }
+
+    /**
+     * An instant moved to Bo's battlefield is refused by the engine (rule 304.4): it stays in Ann's graveyard, and
+     * still under her control, not Bo's.
+     */
+    @Test
+    public void aRefusedMoveToAnotherPlayersBattlefieldKeepsTheController() {
+        Game game = startTableIn(PhaseType.MAIN1, "p0graveyard=Lightning Bolt");
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bolt = named(ann, ZoneType.Graveyard, "Lightning Bolt").get(0);
+        assertEquals(bolt.getController(), ann);
+
+        TableEditor.Result move = TableEditor.moveTo(bolt, bo, ZoneType.Battlefield);
+
+        assertFalse(move.done(), move.message());
+        assertEquals(move.message(), "Lightning Bolt couldn't be moved to " + bo.getName()
+                + "'s Battlefield: something on the table stopped it");
+        assertEquals(named(ann, ZoneType.Graveyard, "Lightning Bolt"), List.of(bolt));
+        assertEquals(bolt.getController(), ann, "the refused move leaves its controller");
+        assertEquals(bolt.getOwner(), ann);
+    }
+
+    /** A token moved off the battlefield ceases to exist, which the message says, and the next check removes it. */
+    @Test
+    public void aTokenMovedOffTheBattlefieldCeasesToExist() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Card dissenter = putIn(game, ann, "Doomed Dissenter");
+        assertTrue(TableEditor.moveTo(dissenter, ann, ZoneType.Graveyard).done());
+        resolveAll(game);
+        Card zombie = ann.getCreaturesInPlay().stream().filter(Card::isToken).findFirst().orElseThrow();
+        String name = zombie.getName();
+
+        TableEditor.Result move = TableEditor.moveTo(zombie, ann, ZoneType.Graveyard);
+
+        assertTrue(move.done(), move.message());
+        assertEquals(move.message(), name + " was moved from " + ann.getName() + "'s Battlefield to " + ann.getName()
+                + "'s Graveyard, where it ceases to exist: it's a token");
+        game.getAction().checkStateEffects(true);
+        assertEquals(named(ann, ZoneType.Graveyard, name), List.of(), "gone at the next check");
+        assertEquals(named(ann, ZoneType.Battlefield, name), List.of());
+    }
+
+    /**
+     * A card added for Ann and moved to Bo's graveyard is Bo's: "Wrong player" lists it under Bo, and correcting it
+     * from there gives it to Cy. A card moved to Bo's battlefield is still Ann's, and listed under her.
+     */
+    @Test
+    public void wrongPlayerFollowsAMoveThatGaveTheCardToAnotherPlayer() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        act(rec, game, new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        act(rec, game, new CompanionTable.AddCard(ann.getName(), "Sol Ring", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        Card bears = named(ann, ZoneType.Battlefield, "Grizzly Bears").get(0);
+        Card ring = named(ann, ZoneType.Battlefield, "Sol Ring").get(0);
+
+        act(rec, game, new CompanionTable.Move(bears.getId(), "Grizzly Bears", bo.getName(), ZoneType.Graveyard));
+        act(rec, game, new CompanionTable.Move(ring.getId(), "Sol Ring", bo.getName(), ZoneType.Battlefield));
+
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        List<CompanionLogEntry.Added> added = CompanionLogEntry.addedInTurn(log, log.get(0).turn());
+        assertEquals(added.stream().map(a -> a.card() + "@" + a.player()).toList(),
+                List.of("Grizzly Bears@" + bo.getName(), "Sol Ring@" + ann.getName()), log.toString());
+        assertEquals(added.get(0).fromHand(), CompanionLogEntry.FromHand.NONE, "nothing left Bo's hand for it");
+
+        act(rec, game, added.get(0).reassignTo(cy.getName()));
+
+        assertEquals(named(cy, ZoneType.Graveyard, "Grizzly Bears").size(), 1, rec.results.toString());
+        assertEquals(named(bo, ZoneType.Graveyard, "Grizzly Bears"), List.of());
+    }
+
+    /**
+     * Through the real loop: the operator's move of Doomed Dissenter to the graveyard is the table's own entry, not
+     * copied as engine entries, but its dies trigger resolving afterwards is something the engine did and is copied.
+     */
+    @Test
+    public void onTheGameLoopAMoveIsntCopiedFromTheEngineButItsTriggerResolvingIs() {
+        Game game = startTableIn(PhaseType.MAIN1, "p0battlefield=Doomed Dissenter");
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Card dissenter = named(ann, ZoneType.Battlefield, "Doomed Dissenter").get(0);
+        Recorded rec = new Recorded();
+        boolean[] moved = {false};
+        int[] engineWithTheTriggerOnTheStack = {-1};
+        seatsFor(game, rec, new ArrayList<>(), seat -> {
+            if (!game.getStack().isEmpty()) {
+                engineWithTheTriggerOnTheStack[0] = engineEntries(rec.store.loadLog("t")).size();
+                return null; // the operator passes, and the trigger resolves
+            }
+            saveAsTheTableDoes(rec, game);
+            if (!moved[0]) {
+                moved[0] = true;
+                rec.table.submit(new CompanionTable.Move(dissenter.getId(), "Doomed Dissenter", ann.getName(),
+                        ZoneType.Graveyard));
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+        int engineBefore = engineEntries(rec.store.loadLog("t")).size();
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(ann.getCreaturesInPlay().stream().filter(Card::isToken).count(), 1L, "the trigger resolved");
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.stream().filter(e -> e.kind() == CompanionLogEntry.Kind.MOVE).count(), 1L, log.toString());
+        assertEquals(engineWithTheTriggerOnTheStack[0], engineBefore, "the move itself is muted: " + log);
+        assertTrue(engineEntries(log).size() > engineBefore, "the trigger's resolution is copied: " + log);
+        assertTrue(CompanionHistory.of(log).rows().stream().anyMatch(r -> r.kind() == CompanionLogEntry.Kind.MOVE),
+                "the move is a history row");
+    }
 }

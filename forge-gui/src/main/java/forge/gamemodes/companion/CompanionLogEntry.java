@@ -53,6 +53,13 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         UNDO,
         /** A card given to the right player (AC-22a). */
         CORRECTION,
+        /**
+         * A card the operator moved to a zone of a player (AC-22); {@link #affected} has the seat it was with first
+         * (its owner, unless it went to a battlefield), then the seat it went to when that's someone else.
+         * {@link #fromHand} is {@link FromHand#NONE} when the move made that seat its owner (nothing left their hand
+         * for it), and absent when its owner stayed the same (a control change, a commander, a move within a seat).
+         */
+        MOVE,
         /** Something the game decided or couldn't do, for the operator to read; and lines from before entries. */
         NOTICE,
         /** What the engine did, copied from its game log (slice 5). */
@@ -60,7 +67,7 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
 
         /** Whether an entry of this kind changed the game, so it's on the board only once its step is saved. */
         public boolean changesState() {
-            return this == ADD || this == ACTION || this == CORRECTION || this == ENGINE;
+            return this == ADD || this == ACTION || this == CORRECTION || this == MOVE || this == ENGINE;
         }
     }
 
@@ -173,7 +180,10 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
     /**
      * The cards added in {@code turn} that aren't undone, oldest first, for the "wrong player" correction (AC-22a).
      * A correction that isn't undone moves its card to the seat it gave it to, with that seat's side of the hand, so
-     * the card can be corrected again from there; it applies to the latest add before it of that card and seat. Adds
+     * the card can be corrected again from there; it applies to the latest add before it of that card and seat. A
+     * move that isn't undone and gave the card a new owner ({@link Kind#MOVE} with a {@link #fromHand}) is followed
+     * the same way: the card is listed under the seat it was moved to, with nothing from that seat's hand. A move that
+     * only changed control leaves the card where it was logged: it's still its owner's. Adds
      * with no card or seat (a line from before entries) are left out. Whether each card can still be found is the
      * game's business, not the log's.
      */
@@ -186,7 +196,8 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
             }
             if (entry.kind == Kind.ADD && entry.turn == turn && !entry.affected.isEmpty()) {
                 added.add(new Added(entry.seq, entry.affected.get(0), entry.card, entry.fromHand));
-            } else if (entry.kind == Kind.CORRECTION && entry.affected.size() == 2) {
+            } else if ((entry.kind == Kind.CORRECTION || entry.kind == Kind.MOVE && entry.fromHand != null)
+                    && entry.affected.size() == 2) {
                 String from = entry.affected.get(0);
                 for (int i = added.size() - 1; i >= 0; i--) {
                     Added a = added.get(i);
