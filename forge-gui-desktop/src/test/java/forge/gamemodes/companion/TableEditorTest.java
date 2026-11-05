@@ -1631,6 +1631,57 @@ public class TableEditorTest extends AITest {
         assertEquals(lastEntry(rec).undid(), List.of(stepAtEndTurn[0] + 1), "only Bo's turn was taken back");
     }
 
+    @DataProvider
+    public Object[][] stepsTheEndTurnYieldPasses() {
+        return new Object[][] {{PhaseType.MAIN2}, {PhaseType.END_OF_TURN}};
+    }
+
+    /**
+     * Through the real loop: an undo tapped right after End Turn runs while the yield still passes Ann's turn, in her
+     * Main 2 or end step. It puts Main 1 back and ends the yield, so the turn doesn't end again: Ann is asked in Main 1.
+     */
+    @Test(dataProvider = "stepsTheEndTurnYieldPasses")
+    public void onTheGameLoopAnUndoDuringEndTurnStopsInMain1(PhaseType undoneIn) {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        boolean[] endTurn = {false};
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (!endTurn[0]) {
+                endTurn[0] = true;
+                return seat.endTurn();
+            }
+            throw new OperatorAsked();
+        });
+        LoopSeat annSeat = seats.stream().filter(s -> s.getPlayer() == ann).findFirst().orElseThrow();
+        List<PhaseType> undoSubmittedIn = new ArrayList<>();
+        for (LoopSeat s : seats) {
+            s.onEveryAsk = seat -> {
+                if (undoSubmittedIn.isEmpty() && ph.getPlayerTurn() == ann && ph.getPhase() == undoneIn) {
+                    assertTrue(annSeat.mayAutoPass(), "the End Turn yield is passing " + undoneIn);
+                    undoSubmittedIn.add(undoneIn);
+                    rec.table.undo();
+                }
+            };
+        }
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(undoSubmittedIn, List.of(undoneIn), "the undo ran during the yield");
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1"), "asked again in Main 1, not passed by");
+        assertEquals(ph.getPlayerTurn(), ann, "still Ann's turn");
+        assertEquals(ph.getTurn(), 1);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        for (LoopSeat s : seats) {
+            assertFalse(s.getYieldController().autoPassUntilEndOfTurn(), s.getPlayer().getName() + "'s yield ended");
+            assertFalse(s.mayAutoPass());
+        }
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.UNDO);
+    }
+
     /** Undo goes back one save at a time to the start, then says there's nothing left. */
     @Test
     public void undoRepeatsBackToTheStartThenRefuses() {
