@@ -158,4 +158,14 @@ public class CompanionLogEntryShould {
                 new Added(1, "Ann", "Grizzly Bears", FromHand.PLACEHOLDER),
                 new Added(3, "Ann", "Shock", FromHand.KNOWN));
     }
+
+    @Test
+    public void countAMoveAsChangingTheGameSoAResumeSettlesIt() {
+        assertThat(Kind.MOVE.changesState()).isTrue();
+        log(new CompanionLogEntry(0, 2, 1, "Ann", List.of("Ann", "Bo"), Kind.MOVE, "moved", "Grizzly Bears", null,
+                null));
+
+        assertThat(CompanionLogEntry.settle(log, 1)).isPresent();
+        assertThat(CompanionLogEntry.settle(log, 2)).isEmpty();
+    }
 }

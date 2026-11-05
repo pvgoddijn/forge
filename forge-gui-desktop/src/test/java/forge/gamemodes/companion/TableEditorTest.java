@@ -3202,4 +3202,43 @@ public class TableEditorTest extends AITest {
         assertEquals(named(cy, ZoneType.Graveyard, "Grizzly Bears").size(), 1, rec.results.toString());
         assertEquals(named(bo, ZoneType.Graveyard, "Grizzly Bears"), List.of());
     }
+
+    /**
+     * Through the real loop: the operator's move of Doomed Dissenter to the graveyard is the table's own entry, not
+     * copied as engine entries, but its dies trigger resolving afterwards is something the engine did and is copied.
+     */
+    @Test
+    public void onTheGameLoopAMoveIsntCopiedFromTheEngineButItsTriggerResolvingIs() {
+        Game game = startTableIn(PhaseType.MAIN1, "p0battlefield=Doomed Dissenter");
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Card dissenter = named(ann, ZoneType.Battlefield, "Doomed Dissenter").get(0);
+        Recorded rec = new Recorded();
+        boolean[] moved = {false};
+        int[] engineWithTheTriggerOnTheStack = {-1};
+        seatsFor(game, rec, new ArrayList<>(), seat -> {
+            if (!game.getStack().isEmpty()) {
+                engineWithTheTriggerOnTheStack[0] = engineEntries(rec.store.loadLog("t")).size();
+                return null; // the operator passes, and the trigger resolves
+            }
+            saveAsTheTableDoes(rec, game);
+            if (!moved[0]) {
+                moved[0] = true;
+                rec.table.submit(new CompanionTable.Move(dissenter.getId(), "Doomed Dissenter", ann.getName(),
+                        ZoneType.Graveyard));
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+        int engineBefore = engineEntries(rec.store.loadLog("t")).size();
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(ann.getCreaturesInPlay().stream().filter(Card::isToken).count(), 1L, "the trigger resolved");
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.stream().filter(e -> e.kind() == CompanionLogEntry.Kind.MOVE).count(), 1L, log.toString());
+        assertEquals(engineWithTheTriggerOnTheStack[0], engineBefore, "the move itself is muted: " + log);
+        assertTrue(engineEntries(log).size() > engineBefore, "the trigger's resolution is copied: " + log);
+        assertTrue(CompanionHistory.of(log).rows().stream().anyMatch(r -> r.kind() == CompanionLogEntry.Kind.MOVE),
+                "the move is a history row");
+    }
 }

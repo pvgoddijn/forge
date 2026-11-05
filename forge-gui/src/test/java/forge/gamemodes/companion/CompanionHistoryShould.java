@@ -71,4 +71,15 @@ public class CompanionHistoryShould {
         assertThat(CompanionHistory.of(log).rows()).containsExactly(
                 new Row(1, 0, null, List.of(), Kind.NOTICE, "Ann makes Goblin", false));
     }
+
+    @Test
+    public void showAMoveAsARowForBothSeatsAndMarkItUndone() {
+        long move = log(new CompanionLogEntry(0, 2, 1, "Ann", List.of("Ann", "Bo"), Kind.MOVE,
+                "Grizzly Bears was moved from Ann's Battlefield to Bo's Battlefield", "Grizzly Bears", null, null));
+        log(CompanionLogEntry.undo(1, List.of(2), 1, "Ann", "Undone"));
+
+        assertThat(CompanionHistory.of(log).rows()).containsExactly(new Row(move, 1, "Ann", List.of("Ann", "Bo"),
+                Kind.MOVE, "Grizzly Bears was moved from Ann's Battlefield to Bo's Battlefield", true));
+        assertThat(CompanionHistory.of(log).filter("Bo").rows()).extracting(Row::seq).containsExactly(move);
+    }
 }
