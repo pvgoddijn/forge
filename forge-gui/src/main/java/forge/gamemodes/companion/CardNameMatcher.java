@@ -3,6 +3,7 @@ package forge.gamemodes.companion;
 import forge.StaticData;
 import forge.card.CardRules;
 import forge.card.ICardFace;
+import forge.item.PaperCard;
 import org.apache.commons.text.similarity.LevenshteinDistance;
 
 import java.text.Normalizer;
@@ -13,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.function.Predicate;
 
 /** Turns typed text into ranked card names. It tolerates typos, and every face of a card is its own name. */
 public class CardNameMatcher {
@@ -70,6 +72,35 @@ public class CardNameMatcher {
                 .thenComparingInt(s -> s.card().length())
                 .thenComparing(Suggestion::card));
         return new ArrayList<>(matches.subList(0, Math.min(limit, matches.size())));
+    }
+
+    /**
+     * The best matches that are cards passing {@code filter}, best first. A name that isn't in Forge's card database,
+     * such as a token's, never passes. A null filter keeps every match, as {@link #match(String, int)} does.
+     */
+    public List<Suggestion> matchWhere(String text, int limit, Predicate<PaperCard> filter) {
+        if (filter == null) {
+            return match(text, limit);
+        }
+        List<Suggestion> kept = new ArrayList<>();
+        for (Suggestion suggestion : match(text, Integer.MAX_VALUE)) {
+            if (kept.size() >= limit) {
+                break;
+            }
+            if (passes(suggestion.card(), filter)) {
+                kept.add(suggestion);
+            }
+        }
+        return kept;
+    }
+
+    /** Whether {@code name} is a card in Forge's database that passes {@code filter}; always, for a null filter. */
+    public static boolean passes(String name, Predicate<PaperCard> filter) {
+        if (filter == null) {
+            return true;
+        }
+        PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
+        return card != null && filter.test(card);
     }
 
     /** Exact, then start of the name, start of a later word, anywhere in the name, and last the typo-tolerant forms. */
