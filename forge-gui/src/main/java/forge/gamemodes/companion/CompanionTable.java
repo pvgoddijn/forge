@@ -13,6 +13,7 @@ import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
 import forge.game.zone.ZoneView;
+import forge.game.zone.ZoneType;
 import forge.gamemodes.match.input.Input;
 import forge.gamemodes.match.input.InputPassPriority;
 import forge.gui.interfaces.IGuiGame;
@@ -124,6 +125,29 @@ public class CompanionTable {
             TableEditor.Result result = TableEditor.reassign(found, target, fromHand);
             // the log's name for it, which slice 5 matches against the add entry
             return new TableEditor.Result(result.done(), result.message(), result.affected(), card, result.fromHand());
+        }
+    }
+
+    /**
+     * The operator's "Move…" (AC-22): the card {@code card} with id {@code cardId} goes to {@code player}'s
+     * {@code zone}, through {@link TableEditor#moveTo}. The card is picked on the screen, so by id, as
+     * {@link TableEditor#readyCreatures} does; the name guards against an id that a load or undo since gave to
+     * another card. Written to the log as a {@code move}.
+     */
+    public record Move(int cardId, String card, String player, ZoneType zone) implements Op {
+        @Override
+        public TableEditor.Result run(Game game) {
+            Player target = seat(game, player);
+            if (target == null) {
+                return new TableEditor.Result(false, player + " isn't in the game: " + card + " wasn't moved",
+                        List.of(player), card, null);
+            }
+            Card found = game.findById(cardId);
+            if (found == null || !card.equals(found.getName())) {
+                return new TableEditor.Result(false, card + " wasn't found: nothing was moved", List.of(player), card,
+                        null);
+            }
+            return TableEditor.moveTo(found, target, zone);
         }
     }
 
@@ -752,10 +776,11 @@ public class CompanionTable {
         }
         List<String> affected = result.affected().isEmpty() ? affectedBy(op) : result.affected();
         String card = result.card() != null ? result.card() : op instanceof AddCard add ? add.name()
-                : op instanceof Reassign fix ? fix.card() : null;
+                : op instanceof Reassign fix ? fix.card() : op instanceof Move move ? move.card() : null;
         CompanionLogEntry entry = entry(!result.done() ? CompanionLogEntry.Kind.NOTICE
                 : op instanceof AddCard ? CompanionLogEntry.Kind.ADD
-                : op instanceof Reassign ? CompanionLogEntry.Kind.CORRECTION : CompanionLogEntry.Kind.ACTION,
+                : op instanceof Reassign ? CompanionLogEntry.Kind.CORRECTION
+                : op instanceof Move ? CompanionLogEntry.Kind.MOVE : CompanionLogEntry.Kind.ACTION,
                 affected, result.message());
         if (card != null) {
             entry = entry.withCard(card, result.fromHand());
@@ -767,11 +792,13 @@ public class CompanionTable {
     /** The seats an op is about, as far as the op says: the player an add is for, both seats of a correction. */
     private static List<String> affectedBy(Op op) {
         return op instanceof AddCard add ? List.of(add.player())
-                : op instanceof Reassign fix ? List.of(fix.from(), fix.to()) : List.of();
+                : op instanceof Reassign fix ? List.of(fix.from(), fix.to())
+                : op instanceof Move move ? List.of(move.player()) : List.of();
     }
 
     private static String nameOf(Op op) {
-        return op instanceof AddCard add ? add.name() : op instanceof Reassign fix ? fix.card() : "The action";
+        return op instanceof AddCard add ? add.name() : op instanceof Reassign fix ? fix.card()
+                : op instanceof Move move ? move.card() : "The action";
     }
 
     private static String mainName(PhaseType main) {

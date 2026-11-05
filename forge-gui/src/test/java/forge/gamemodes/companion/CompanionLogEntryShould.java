@@ -118,4 +118,15 @@ public class CompanionLogEntryShould {
 
         assertThat(CompanionLogEntry.fromLine(line, 0).fromHand()).isEqualTo(FromHand.NONE);
     }
+
+    @Test
+    public void readAMoveBackThroughJsonAndNotOfferItAsAnAdd() {
+        log(new CompanionLogEntry(0, 2, 1, "Ann", List.of("Ann", "Bo"), Kind.MOVE,
+                "Grizzly Bears was moved from Ann's Battlefield to Bo's Battlefield", "Grizzly Bears", null, null));
+
+        CompanionLogEntry read = CompanionLogEntry.fromLine(log.get(0).toLine(), 0);
+        assertThat(read).isEqualTo(log.get(0));
+        assertThat(log.get(0).toLine()).contains("\"kind\":\"move\"");
+        assertThat(CompanionLogEntry.addedInTurn(log, 1)).isEmpty();
+    }
 }

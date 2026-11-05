@@ -53,6 +53,11 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         UNDO,
         /** A card given to the right player (AC-22a). */
         CORRECTION,
+        /**
+         * A card the operator moved to a zone of a player (AC-22); {@link #affected} has the seat it was with first,
+         * then the seat it went to when that's someone else.
+         */
+        MOVE,
         /** Something the game decided or couldn't do, for the operator to read; and lines from before entries. */
         NOTICE,
         /** What the engine did, copied from its game log (slice 5). */
@@ -60,7 +65,7 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
 
         /** Whether an entry of this kind changed the game, so it's on the board only once its step is saved. */
         public boolean changesState() {
-            return this == ADD || this == ACTION || this == CORRECTION || this == ENGINE;
+            return this == ADD || this == ACTION || this == CORRECTION || this == MOVE || this == ENGINE;
         }
     }
 
