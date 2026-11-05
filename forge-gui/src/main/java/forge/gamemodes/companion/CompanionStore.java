@@ -17,10 +17,14 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.UUID;
 
 /**
@@ -123,10 +127,40 @@ public class CompanionStore {
         return new File(new File(dir, id), STATE).exists() ? 0 : NO_STEP;
     }
 
-    /** The game's latest saved state, or none if it never got to its first save. */
+    /**
+     * The game's latest saved state, or none if it never got to its first save: what a game resumes from. First the
+     * log is made to match it ({@link #settleLog}).
+     */
     public Optional<List<String>> loadState(String id) {
         int step = latestStep(id);
+        settleLog(id, step);
         return step == NO_STEP ? Optional.empty() : loadStep(id, step);
+    }
+
+    /**
+     * Marks undone the log entries of steps the game doesn't have, so the history says what the resumed board says.
+     * An entry carries the step the next save writes, so one with a step after {@code latest} that isn't undone was
+     * either never saved (a crash before its save) or its step was discarded by an undo whose log entry was never
+     * written (a crash between {@link #discardAfter} and {@link #appendLog}). Either way it isn't on the board, and the
+     * next action would reuse its step, so without this it would never show as undone. It's written as an ordinary
+     * undo entry back to {@code latest}, so a second resume finds nothing to do.
+     */
+    private void settleLog(String id, int latest) {
+        List<CompanionLogEntry> log = loadLog(id);
+        Set<Long> undone = CompanionLogEntry.undone(log);
+        SortedSet<Integer> lost = new TreeSet<>();
+        CompanionLogEntry last = null;
+        for (CompanionLogEntry entry : log) {
+            if (entry.kind() != CompanionLogEntry.Kind.UNDO && entry.step() > latest
+                    && !undone.contains(entry.seq())) {
+                lost.add(entry.step());
+            }
+            last = entry;
+        }
+        if (!lost.isEmpty()) {
+            appendLog(id, CompanionLogEntry.undo(latest, new ArrayList<>(lost), last.turn(), last.active(),
+                    "Not kept when the game was interrupted: back to the last save"));
+        }
     }
 
     /** The state saved as step {@code step}, or none if that step isn't on disk (never saved, or discarded). */
@@ -188,6 +222,46 @@ public class CompanionStore {
         if (!file.delete() && file.exists()) {
             throw new UncheckedIOException(new IOException("Can't delete " + file));
         }
+    }
+
+    /**
+     * A game that has ended, to browse read-only.
+     *
+     * @param id      its folder, for {@link #loadLog} and {@link #loadState}
+     * @param setup   its seats and options
+     * @param endedAt when it ended, in milliseconds since the epoch
+     */
+    public record Ended(String id, CompanionSetup setup, long endedAt) {
+        /** The seats' names, in seat order. */
+        public List<String> seatNames() {
+            List<String> names = new ArrayList<>();
+            for (CompanionSetup.Seat seat : setup.seats()) {
+                names.add(seat.name());
+            }
+            return names;
+        }
+    }
+
+    /**
+     * The games that have ended, newest first. A game whose setup doesn't read is left out: past games are only for
+     * reading, so there's nothing to recover it for here.
+     */
+    public List<Ended> listEnded() {
+        File[] games = dir.listFiles(f -> f.isDirectory() && !f.getName().endsWith(DAMAGED_SUFFIX)
+                && new File(f, ENDED).exists());
+        List<Ended> ended = new ArrayList<>();
+        if (games == null) {
+            return ended;
+        }
+        for (File game : games) {
+            try {
+                ended.add(new Ended(game.getName(), load(game).setup(), new File(game, ENDED).lastModified()));
+            } catch (RuntimeException e) {
+                System.err.println("Can't read ended companion game " + game + ": " + e);
+            }
+        }
+        ended.sort(Comparator.comparingLong(Ended::endedAt).reversed().thenComparing(Ended::id));
+        return ended;
     }
 
     /** Marks the game ended, so it's no longer the active game and Companion doesn't resume it. */

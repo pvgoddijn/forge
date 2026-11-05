@@ -372,7 +372,9 @@ public class CompanionTable {
             for (CompanionPlayerController seat : seats) {
                 seat.getYieldController().clearActiveYieldAndDispatch();
             }
-            store.discardAfter(id, back); // files first, then the log
+            // files first, then the log: a crash in between leaves entries for a step that isn't on disk, which the
+            // resume marks undone (CompanionStore.loadState), so a reused step number can't hide them
+            store.discardAfter(id, back);
             lastSaved = CompanionGameState.capture(game);
             ranSinceSave = false; // what ran is taken back
             PhaseHandler ph = game.getPhaseHandler();
