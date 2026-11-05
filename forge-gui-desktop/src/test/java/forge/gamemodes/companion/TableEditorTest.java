@@ -3425,4 +3425,56 @@ public class TableEditorTest extends AITest {
                 java.util.Optional.of(new CommanderLegality.SeatAhead("Carol", 2)));
         assertEquals(CommanderLegality.firstLegalSeatAfter(swords, setup, "Alice"), java.util.Optional.empty());
     }
+
+    private static PaperCard card(String name) {
+        PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
+        assertTrue(card != null, name + " is in the card database");
+        return card;
+    }
+
+    /** The commander step offers only cards that can be a commander (slice 6 chunk 7, AC-44). */
+    @Test
+    public void onlyCommandersAreOfferedAsCommanders() {
+        assertTrue(CommanderLegality.canBeCommander(card(KRENKO)));
+        assertTrue(CommanderLegality.canBeCommander(card("Raised by Giants")), "Forge counts a Background");
+        assertFalse(CommanderLegality.canBeCommander(card("Llanowar Elves")));
+        assertFalse(CommanderLegality.canBeCommander(card("Sol Ring")));
+
+        List<String> offered = CardNameMatcher.fromStaticData()
+                .matchWhere("Krenko", 30, CommanderLegality::canBeCommander).stream()
+                .map(CardNameMatcher.Suggestion::card).toList();
+        assertTrue(offered.contains(KRENKO), offered.toString());
+        assertFalse(offered.contains("Krenko's Command"), offered.toString());
+        assertFalse(CardNameMatcher.passes("Goblin", CommanderLegality::canBeCommander), "a token never passes");
+        assertTrue(CardNameMatcher.passes("Goblin", null));
+    }
+
+    /** Which commanders can take a second one, and which cards can be it (slice 6 chunk 7, AC-44). */
+    @DataProvider
+    public Object[][] pairings() {
+        return new Object[][] {
+            {"Thrasios, Triton Hero", "Tymna the Weaver", "Krenko, Mob Boss"}, // partner
+            {"Pir, Imaginative Rascal", "Toothy, Imaginary Friend", "Tymna the Weaver"}, // partner with
+            {"Max, the Daredevil", "Chief Jim Hopper", "Tymna the Weaver"}, // friends forever
+            {"Wilson, Refined Grizzly", "Raised by Giants", "Tymna the Weaver"}, // choose a Background
+            {"Raised by Giants", "Wilson, Refined Grizzly", "Krenko, Mob Boss"}, // a Background first
+            {"The Sixth Doctor", "Graham O'Brien", "Tymna the Weaver"}, // a Doctor and doctor's companion
+        };
+    }
+
+    @Test(dataProvider = "pairings")
+    public void aPairableCommanderTakesOnlyItsOtherHalf(String first, String second, String notSecond) {
+        PaperCard commander = card(first);
+
+        assertTrue(CommanderLegality.canHaveSecondCommander(commander));
+        assertTrue(CommanderLegality.secondCommanderFor(commander).test(card(second)), second);
+        assertFalse(CommanderLegality.secondCommanderFor(commander).test(card(notSecond)), notSecond);
+        assertFalse(CommanderLegality.secondCommanderFor(commander).test(commander), "not itself");
+    }
+
+    @Test
+    public void aCommanderWithoutAPairingTakesNoSecond() {
+        assertFalse(CommanderLegality.canHaveSecondCommander(card(KRENKO)));
+        assertFalse(CommanderLegality.canHaveSecondCommander(card("Marwyn, the Nurturer")));
+    }
 }

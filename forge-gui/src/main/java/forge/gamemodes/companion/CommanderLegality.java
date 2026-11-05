@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * Whether a card can be in a player's deck, going by their commanders' colour identity as Forge's deck rules decide
@@ -50,6 +51,27 @@ public final class CommanderLegality {
         return CardRulesPredicates.hasColorIdentity(identity).test(candidate)
                 || DeckFormat.allowsOffColorIdentity(rules, candidate)
                 || DeckFormat.approvesAdditionalColor(rules, candidate, identity);
+    }
+
+    /** Whether {@code card} can be a player's first commander, as Forge's Commander format decides it (AC-44). */
+    public static boolean canBeCommander(PaperCard card) {
+        return DeckFormat.Commander.isLegalCommander(card.getRules());
+    }
+
+    /**
+     * Whether {@code first} can be joined by a second commander (AC-44): it has partner, partner with, a partner
+     * type such as friends forever, "choose a Background", or is a Doctor or has doctor's companion; or it is a
+     * Background itself.
+     */
+    public static boolean canHaveSecondCommander(PaperCard first) {
+        return first.getRules().canBePartnerCommander();
+    }
+
+    /** The cards that can be the second commander beside {@code first}: the other half of its pairing. */
+    public static Predicate<PaperCard> secondCommanderFor(PaperCard first) {
+        CardRules firstRules = first.getRules();
+        return card -> !card.getName().equals(first.getName()) && canBeCommander(card)
+                && card.getRules().canBePartnerCommanders(firstRules);
     }
 
     /**

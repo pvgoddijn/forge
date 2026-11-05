@@ -1,6 +1,8 @@
 package forge.screens.companion;
 
 import forge.Forge;
+import forge.StaticData;
+import forge.gamemodes.companion.CommanderLegality;
 import forge.gamemodes.companion.CompanionGameState;
 import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
@@ -9,6 +11,7 @@ import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.match.HostedMatch;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
+import forge.item.PaperCard;
 import forge.localinstance.properties.ForgeConstants;
 import forge.screens.LaunchScreen;
 import forge.screens.LoadingOverlay;
@@ -27,6 +30,7 @@ import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /**
@@ -54,6 +58,8 @@ public class CompanionSetupScreen extends LaunchScreen {
     private final FButton btnMore = form.add(new FButton("+"));
     private final FLabel lblLife = form.add(new FLabel.Builder().text("Starting life").build());
     private final FTextField txtLife = form.add(new FTextField(String.valueOf(CompanionSetup.DEFAULT_LIFE)));
+    /** On by default (AC-43): Start then asks for each player's commander (AC-44). */
+    private final FCheckBox chkCommanderMode = form.add(new FCheckBox("Commander mode", true));
     private final FButton btnPastGames = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionPastGames")));
     private int playerCount = 4;
 
@@ -163,6 +169,8 @@ public class CompanionSetupScreen extends LaunchScreen {
         float lifeWidth = rowHeight * 2.2f;
         lblLife.setBounds(PADDING, y, width - lifeWidth - 3 * PADDING, rowHeight);
         txtLife.setBounds(lblLife.getRight() + PADDING, y, lifeWidth, rowHeight);
+        y += rowHeight + PADDING;
+        chkCommanderMode.setBounds(PADDING, y, width - 2 * PADDING, rowHeight);
         return y + rowHeight + PADDING;
     }
 
@@ -190,7 +198,53 @@ public class CompanionSetupScreen extends LaunchScreen {
             FOptionPane.showErrorDialog("Starting life must be at least 1.");
             return;
         }
-        CompanionSetup setup = CompanionSetup.withDefaults(seats).withLife(life);
+        CompanionSetup setup = CompanionSetup.withDefaults(seats).withLife(life)
+                .withCommanderMode(chkCommanderMode.isSelected());
+        if (!setup.commanderMode()) {
+            createAndOpen(setup);
+            return;
+        }
+        chooseCommanders(new ArrayList<>(seats), 0, chosen -> createAndOpen(new CompanionSetup(chosen, setup.life(),
+                setup.handSize(), setup.librarySize(), setup.engineCombat(), setup.commanderMode())));
+    }
+
+    /**
+     * The commander step (AC-44): for each seat from {@code index} on, in seat order, a commander by photo, typing,
+     * or "No commander", and a second one when the first can have a partner or a background. Then {@code done}, with
+     * the seats and their commanders. Cancel at any point ends the step on this screen, with nothing started or saved;
+     * Photo in the picker is the retake. UI thread only, and no game exists yet.
+     */
+    private void chooseCommanders(List<CompanionSetup.Seat> seats, int index, Consumer<List<CompanionSetup.Seat>> done) {
+        if (index == seats.size()) {
+            done.accept(seats);
+            return;
+        }
+        CompanionSetup.Seat seat = seats.get(index);
+        Consumer<List<String>> next = commanders -> {
+            seats.set(index, seat.withCommanders(commanders));
+            chooseCommanders(seats, index + 1, done);
+        };
+        new CardPicker(seat.name() + "'s commander", CommanderLegality::canBeCommander, name -> {
+            PaperCard first = StaticData.instance().getCommonCards().getUniqueByName(name);
+            if (first == null || !CommanderLegality.canHaveSecondCommander(first)) {
+                next.accept(List.of(name));
+                return;
+            }
+            FOptionPane.showOptionDialog(name + " can have a second commander: a partner or a background.",
+                    seat.name() + "'s commander", null, List.of("Add partner", "Next"), 0, choice -> {
+                if (choice == null || choice != 0) {
+                    next.accept(List.of(name));
+                    return;
+                }
+                new CardPicker(seat.name() + "'s second commander", CommanderLegality.secondCommanderFor(first),
+                        second -> next.accept(List.of(name, second)))
+                        .withSkip("No second commander", () -> next.accept(List.of(name)))
+                        .pickByPhoto();
+            });
+        }).withSkip("No commander", () -> next.accept(List.of())).pickByPhoto();
+    }
+
+    private void createAndOpen(CompanionSetup setup) {
         String id;
         try {
             id = store.create(setup);
