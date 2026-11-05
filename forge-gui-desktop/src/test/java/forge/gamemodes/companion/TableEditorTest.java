@@ -1682,6 +1682,100 @@ public class TableEditorTest extends AITest {
         assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.UNDO);
     }
 
+    /**
+     * Through the real loop: a card added just after End Turn runs while the yield passes Ann's Main 2. It is saved
+     * there as its own step, though the plain pass isn't. So the undo in Bo's turn takes back only the rest of
+     * Ann's turn, back to her Main 2 with the card, and a second undo takes the card back, to where End Turn was tapped.
+     */
+    @Test
+    public void onTheGameLoopACardAddedDuringEndTurnIsItsOwnStep() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        List<Integer> bearsWhenAsked = new ArrayList<>();
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            bearsWhenAsked.add(named(ann, ZoneType.Battlefield, "Grizzly Bears").size());
+            switch (asked.size()) {
+                case 1:
+                    return seat.endTurn();
+                case 2:
+                    assertEquals(ph.getPlayerTurn(), bo);
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                case 3:
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                default:
+                    throw new OperatorAsked();
+            }
+        });
+        boolean[] added = {false};
+        for (LoopSeat s : seats) {
+            s.onEveryAsk = seat -> {
+                if (!added[0] && ph.getPlayerTurn() == ann && ph.getPhase() == PhaseType.MAIN2) {
+                    added[0] = true; // logged just after the tap, reaching the game as the yield passes Main 2
+                    rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", false,
+                            TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+                }
+            };
+        }
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertTrue(added[0]);
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN2", "priority MAIN1"),
+                "Bo's Main 1, then the first undo goes back to Ann's Main 2, the second to her Main 1");
+        assertEquals(bearsWhenAsked, List.of(0, 1, 1, 0), "the first undo kept the card, the second took it back");
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        assertEquals(rec.store.latestStep("t"), 0, "back at the step End Turn was tapped in");
+    }
+
+    /**
+     * Through the real loop: an edit made in Main 1 is saved at the prompt that follows it, so End Turn tapped there
+     * still passes Main 2 without a save. One undo in Bo's turn goes back to Ann's Main 1, with the edit.
+     */
+    @Test
+    public void onTheGameLoopAnEditSavedBeforeEndTurnDoesNotMakeMain2AStep() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        int[] stepAtEndTurn = {-1};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            switch (asked.size()) {
+                case 1:
+                    rec.table.submit(g -> TableEditor.setLife(bo, 33, false));
+                    return seat.asTheTableDoes(); // the edit runs, and Ann is asked again
+                case 2:
+                    stepAtEndTurn[0] = rec.store.latestStep("t");
+                    return seat.endTurn();
+                case 3:
+                    assertEquals(ph.getPlayerTurn(), bo);
+                    assertEquals(rec.store.latestStep("t"), stepAtEndTurn[0] + 1, "Ann's Main 2 wasn't saved");
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                default:
+                    throw new OperatorAsked();
+            }
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN1", "priority MAIN1"));
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1, "back where End Turn was tapped, in one undo");
+        assertEquals(bo.getLife(), 33, "the edit was saved before End Turn, so it stays");
+        assertEquals(rec.store.latestStep("t"), stepAtEndTurn[0]);
+    }
+
     /** Undo goes back one save at a time to the start, then says there's nothing left. */
     @Test
     public void undoRepeatsBackToTheStartThenRefuses() {
