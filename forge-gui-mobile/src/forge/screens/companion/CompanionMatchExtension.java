@@ -6,6 +6,7 @@ import forge.game.Game;
 import forge.game.card.CardView;
 import forge.game.player.PlayerView;
 import forge.gamemodes.companion.CompanionSetup;
+import forge.gamemodes.companion.CompanionCards;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.TableEditor;
@@ -24,8 +25,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * What a tracked game adds to the match screen: the table's actions in the game menu, a tap on a life total to set
- * it, the prompt bar's Add card button, and leaving the match screen when the operator ends the game.
+ * What a tracked game adds to the match screen: the table's actions in the game menu, "Move…" on a card's menu, a
+ * tap on a life total to set it, the prompt bar's Add card button, and leaving the match screen when the operator ends the game.
  */
 class CompanionMatchExtension implements MatchExtension {
     private final CompanionTable table;
@@ -172,6 +173,15 @@ class CompanionMatchExtension implements MatchExtension {
         }
         new LifeDialog(table, player).show();
         return true;
+    }
+
+    @Override
+    public void addCardMenuItems(CardView card, FDropDownMenu menu) {
+        // only at a priority prompt, as for a tap on a life total; an unknown card the op would refuse
+        if (!table.atPriorityPrompt() || CompanionCards.PLACEHOLDER_NAME.equals(card.getName())) {
+            return;
+        }
+        menu.addItem(new FMenuItem("Move…", e -> MoveDialog.show(table, MatchController.instance.getGameView(), card)));
     }
 
     @Override

@@ -1,5 +1,6 @@
 package forge.screens.match;
 
+import forge.game.card.CardView;
 import forge.game.player.PlayerView;
 import forge.menu.FDropDownMenu;
 
@@ -11,6 +12,14 @@ import forge.menu.FDropDownMenu;
 public interface MatchExtension {
     /** Adds items to the top of the game menu. Only a single-operator match shows them. */
     default void addGameMenuItems(FDropDownMenu menu) {
+    }
+
+    /**
+     * Adds items to a card's menu, which a long press on a card in a player's zones opens (a right-click on desktop),
+     * with the card's zoom as its last item. Asked on the UI thread, each time the menu opens. Only a single-operator
+     * match asks; when no items are added, the press shows the zoom as usual.
+     */
+    default void addCardMenuItems(CardView card, FDropDownMenu menu) {
     }
 
     /**
