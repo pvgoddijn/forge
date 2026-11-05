@@ -129,6 +129,8 @@ public class CompanionTable {
     private volatile Consumer<String> onNotice = n -> { };
     private String lastSaved;
     private boolean saveFailing;
+    /** Whether an op other than undo has run since the latest save. See {@link #ranSinceSave}. Game loop thread only. */
+    private boolean ranSinceSave;
     /** Ops waiting for {@link #parkedFor}, the first being the one that waits. Game loop thread only. */
     private final List<Op> parked = new ArrayList<>();
     private PhaseType parkedFor;
@@ -372,6 +374,7 @@ public class CompanionTable {
             }
             store.discardAfter(id, back); // files first, then the log
             lastSaved = CompanionGameState.capture(game);
+            ranSinceSave = false; // what ran is taken back
             PhaseHandler ph = game.getPhaseHandler();
             if (combatTurn != ph.getTurn()) {
                 combatTurn = NO_TURN;
@@ -521,6 +524,9 @@ public class CompanionTable {
             // one bad action mustn't stop the table
             e.printStackTrace();
             result = new TableEditor.Result(false, "That didn't work: " + e);
+        }
+        if (!(op instanceof Undo)) {
+            ranSinceSave = true; // even one that failed may have changed something; a save of no change writes nothing
         }
         // the result says whom it was about and what left the hand; an op's own failure (a seat not in the game, an
         // exception) has none, so the op says what it can
@@ -681,16 +687,28 @@ public class CompanionTable {
         return canUndo;
     }
 
+    /**
+     * Whether an operator action (anything but an undo) has run since the latest save, or since an undo put a save
+     * back. While End Turn passes Main 2 nothing is saved, so that one undo goes back to where it was tapped; an
+     * action made during that pass (a card added just after the tap, a parked sorcery cast) is saved anyway, as its
+     * own step. Game loop thread.
+     */
+    boolean ranSinceSave() {
+        return ranSinceSave;
+    }
+
     /** Saves the game if it changed. Game loop thread, at a settled point: the stack empty, priority with the table. */
     void save(Game game) {
         try {
             String state = CompanionGameState.capture(game);
             if (state.equals(lastSaved)) {
+                ranSinceSave = false;
                 return;
             }
             store.saveState(id, state);
             lastSaved = state;
             saveFailing = false;
+            ranSinceSave = false;
         } catch (RuntimeException e) {
             // the game goes on unsaved rather than stopping; the operator is told once, not at every prompt
             e.printStackTrace();

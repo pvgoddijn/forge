@@ -67,9 +67,10 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         if (stackEmpty && !mainPhase && !isCombatStop(ph, ph.getPhase())) {
             return null;
         }
-        if (!mayAutoPass()) {
-            // saves in a main phase with an empty stack. Not while a yield (End Turn) passes through Main 2 with no
-            // prompt: one undo after End Turn then goes back to where it was tapped, not to that Main 2
+        if (!mayAutoPass() || table.ranSinceSave()) {
+            // saves in a main phase with an empty stack. Not while a yield (End Turn) only passes through Main 2 with
+            // no prompt: one undo after End Turn then goes back to where it was tapped, not to that Main 2. An action
+            // made during the yield is saved, though, so it's a step of its own and that undo doesn't take it back too
             table.atPrompt(game);
         }
         List<SpellAbility> chosen = prompt();
