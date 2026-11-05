@@ -129,4 +129,33 @@ public class CompanionLogEntryShould {
         assertThat(log.get(0).toLine()).contains("\"kind\":\"move\"");
         assertThat(CompanionLogEntry.addedInTurn(log, 1)).isEmpty();
     }
+
+    private void move(int step, int turn, String from, String to, String card, FromHand newOwner) {
+        log(new CompanionLogEntry(0, step, turn, from, List.of(from, to), Kind.MOVE, "moved", card, newOwner,
+                null));
+    }
+
+    @Test
+    public void followAMoveThatGaveTheCardToAnotherSeat() {
+        add(1, 1, "Ann", "Grizzly Bears", FromHand.PLACEHOLDER);
+        move(2, 1, "Ann", "Bo", "Grizzly Bears", FromHand.NONE);
+
+        assertThat(CompanionLogEntry.addedInTurn(log, 1)).containsExactly(
+                new Added(1, "Bo", "Grizzly Bears", FromHand.NONE));
+        assertThat(CompanionLogEntry.addedInTurn(log, 1).get(0).reassignTo("Cy"))
+                .isEqualTo(new CompanionTable.Reassign("Bo", "Grizzly Bears", "Cy", FromHand.NONE));
+    }
+
+    @Test
+    public void leaveACardWhereItWasLoggedAfterAControlChangeOrAnUndoneMove() {
+        add(1, 1, "Ann", "Grizzly Bears", FromHand.PLACEHOLDER);
+        move(2, 1, "Ann", "Bo", "Grizzly Bears", null); // to Bo's battlefield: still Ann's
+        add(3, 1, "Ann", "Shock", FromHand.KNOWN);
+        move(4, 1, "Ann", "Bo", "Shock", FromHand.NONE);
+        log(CompanionLogEntry.undo(3, List.of(4), 1, "Ann", "Undone"));
+
+        assertThat(CompanionLogEntry.addedInTurn(log, 1)).containsExactly(
+                new Added(1, "Ann", "Grizzly Bears", FromHand.PLACEHOLDER),
+                new Added(3, "Ann", "Shock", FromHand.KNOWN));
+    }
 }
