@@ -163,6 +163,15 @@ public class CompanionStore {
         }
     }
 
+    /**
+     * An ended game's last saved state, or none if it never got to its first save. Unlike {@link #loadState} it writes
+     * nothing, so a past game stays as it was: its log isn't settled.
+     */
+    public Optional<List<String>> loadFinalState(String id) {
+        int step = latestStep(id);
+        return step == NO_STEP ? Optional.empty() : loadStep(id, step);
+    }
+
     /** The state saved as step {@code step}, or none if that step isn't on disk (never saved, or discarded). */
     public Optional<List<String>> loadStep(String id, int step) {
         File file = stepFile(id, step);
@@ -227,7 +236,7 @@ public class CompanionStore {
     /**
      * A game that has ended, to browse read-only.
      *
-     * @param id      its folder, for {@link #loadLog} and {@link #loadState}
+     * @param id      its folder, for {@link #loadLog} and {@link #loadFinalState}
      * @param setup   its seats and options
      * @param endedAt when it ended, in milliseconds since the epoch
      */

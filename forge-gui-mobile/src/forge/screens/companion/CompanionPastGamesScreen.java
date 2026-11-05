@@ -62,10 +62,10 @@ public class CompanionPastGamesScreen extends FScreen {
     }
 
     private void open(CompanionStore.Ended game) {
-        // the state first: reading it settles the log (CompanionStore.loadState), so the history matches the boards
+        // read-only: a past game is never written to, so its log isn't settled as a resumed game's is
         String boards;
         try {
-            List<String> state = store.loadState(game.id()).orElseGet(game.setup()::initialState);
+            List<String> state = store.loadFinalState(game.id()).orElseGet(game.setup()::initialState);
             boards = boardsText(CompanionSnapshotSummary.of(state, game.setup()));
         } catch (RuntimeException e) {
             boards = Forge.getLocalizer().getMessage("lblCompanionBoardsUnreadable") + "\n" + e.getMessage();
