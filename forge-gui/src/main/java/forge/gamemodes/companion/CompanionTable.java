@@ -1,6 +1,7 @@
 package forge.gamemodes.companion;
 
 import com.google.common.eventbus.Subscribe;
+import forge.StaticData;
 import forge.game.Game;
 import forge.game.GameEntityView;
 import forge.game.GameLogEntry;
@@ -17,6 +18,7 @@ import forge.game.zone.ZoneType;
 import forge.gamemodes.match.input.Input;
 import forge.gamemodes.match.input.InputPassPriority;
 import forge.gui.interfaces.IGuiGame;
+import forge.item.PaperCard;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -64,14 +66,33 @@ public class CompanionTable {
         default boolean waitsBehindParked() {
             return false;
         }
+
+        /**
+         * The seat, by setup name, whose turn the game has to reach before this op runs, at its
+         * {@link #mainPhaseNeeded} of that turn; {@code null} for the turn being played (slice 6's turn skip). Asked
+         * on the game loop thread with {@link #mainPhaseNeeded}.
+         */
+        default String turnNeeded(Game game) {
+            return null;
+        }
     }
 
     /**
      * Adds the card {@code name} for the player named {@code player} through {@link TableEditor#addCard}. By name,
      * which setup keeps unique: a player's place in the game's list changes if anyone leaves the game. An active
      * player's cast sorcery waits for its main phase ({@link TableEditor#mainPhaseFor}).
+     * <p>
+     * With {@code skipToSeat} (AC-45), the card waits for Main 1 of that seat's next turn instead: every seat passes
+     * meanwhile, so the turns in between run by the rules, their draws and upkeeps included, as End Turn runs them.
+     * {@code null} for no skip, and so is a skip to the seat whose turn it already is: nothing is skipped then.
      */
-    public record AddCard(String player, String name, boolean fromHand, TableEditor.Mode mode) implements Op {
+    public record AddCard(String player, String name, boolean fromHand, TableEditor.Mode mode, String skipToSeat)
+            implements Op {
+        /** An add in the turn being played. */
+        public AddCard(String player, String name, boolean fromHand, TableEditor.Mode mode) {
+            this(player, name, fromHand, mode, null);
+        }
+
         @Override
         public TableEditor.Result run(Game game) {
             Player target = find(game);
@@ -83,8 +104,21 @@ public class CompanionTable {
 
         @Override
         public PhaseType mainPhaseNeeded(Game game) {
+            if (turnNeeded(game) != null) {
+                return PhaseType.MAIN1;
+            }
             Player target = find(game);
             return target == null ? null : TableEditor.mainPhaseFor(game, target, name, mode);
+        }
+
+        /** {@code skipToSeat} until it's that seat's turn; none once it is, or when that seat has left the game. */
+        @Override
+        public String turnNeeded(Game game) {
+            if (skipToSeat == null) {
+                return null;
+            }
+            Player skipTo = seat(game, skipToSeat);
+            return skipTo == null || skipTo.equals(game.getPhaseHandler().getPlayerTurn()) ? null : skipToSeat;
         }
 
         @Override
@@ -175,6 +209,8 @@ public class CompanionTable {
     private final List<Op> parked = new ArrayList<>();
     private PhaseType parkedFor;
     private int parkedTurn = -1;
+    /** The seat whose turn the parked ops wait for ({@link Op#turnNeeded}), or null for {@link #parkedTurn}'s. */
+    private String parkedSeat;
     /** No turn: no game is running yet, or combat isn't wanted for a single turn. Turns count from 1. */
     private static final int NO_TURN = -1;
     /** The turn the operator wants combat through the engine for, though it's off for the game. */
@@ -363,7 +399,7 @@ public class CompanionTable {
             // they were for the old game; the restart is from a save made before they were submitted
             tell("The game was restarted: " + nameOf(parked.get(0)) + " and anything after it wasn't added",
                     affectedBy(parked.get(0)));
-            parked.clear();
+            clearParked();
         }
         // An action can arrive just before a prompt opens. End that prompt as it opens, or the action would wait
         // for the operator's next tap.
@@ -583,8 +619,8 @@ public class CompanionTable {
      * and otherwise the one before it. The undone step's file goes before the log says so, so a restart never loads
      * it; the log only gains an entry naming the step, so the undone entries stay, marked
      * ({@link CompanionLogEntry#undone}). What a save doesn't hold goes too: combat for one turn unless the turn is
-     * the same, parked ops, which were all submitted after the latest save (nothing is saved while one waits), and
-     * every seat's yield (End Turn).
+     * the same, parked ops, which were all submitted after the latest save (nothing is saved while one waits, so an
+     * undo during a turn skip goes back to before the skip, and drops it), and every seat's yield (End Turn).
      */
     private final class Undo implements Op {
         @Override
@@ -627,9 +663,7 @@ public class CompanionTable {
             if (!parked.isEmpty()) {
                 List<String> affected = affectedBy(parked.get(0));
                 String first = nameOf(parked.get(0));
-                parked.clear();
-                parkedFor = null;
-                parkedTurn = -1;
+                clearParked();
                 tell("Undone: " + first + " and anything after it wasn't added", affected);
             }
             return new TableEditor.Result(true, text);
@@ -682,16 +716,37 @@ public class CompanionTable {
     }
 
     /**
+     * The seat a turn skip is moving the game to, while the turn being played is one it skips (AC-45: not that
+     * seat's); null otherwise. No engine combat is run in a skipped turn: its fight happened at the table
+     * ({@link CompanionPlayerController#declareAttackers}). Game loop thread.
+     */
+    String skippingTo(Game game) {
+        if (parked.isEmpty() || parkedSeat == null) {
+            return null;
+        }
+        Player skipTo = seat(game, parkedSeat);
+        return skipTo == null || skipTo.equals(game.getPhaseHandler().getPlayerTurn()) ? null : parkedSeat;
+    }
+
+    /**
      * Whether {@link #runParked} should be called now: the turn the ops were parked in is at their main phase with an
-     * empty stack, or that main phase was missed (a later step of that turn, or another turn). False when nothing is
-     * parked. Game loop thread; changes nothing.
+     * empty stack, or that main phase was missed (a later step of that turn, or another turn). For a turn skip
+     * ({@link Op#turnNeeded}), the turn is the waited-for seat's next one, and a turn change is the point of the
+     * skip, not a reason to run it now: it waits for that seat's turn, then its main phase as above. False when
+     * nothing is parked. Game loop thread; changes nothing.
      */
     boolean parkedReady(Game game) {
         if (parked.isEmpty()) {
             return false;
         }
         PhaseHandler ph = game.getPhaseHandler();
-        if (ph.getTurn() != parkedTurn) {
+        if (parkedSeat != null) {
+            Player skipTo = seat(game, parkedSeat);
+            if (skipTo != null && !skipTo.equals(ph.getPlayerTurn())) {
+                return false; // a skipped turn
+            }
+            // that seat's turn, or it left the game and there's nothing to wait for
+        } else if (ph.getTurn() != parkedTurn) {
             return true;
         }
         PhaseType phase = ph.getPhase();
@@ -705,7 +760,9 @@ public class CompanionTable {
      * Runs the parked ops in order, through the same result and log path as {@link #runPending}. Each is asked
      * {@link Op#mainPhaseNeeded} again first, so a second sorcery that now meets the first on the stack is parked
      * again, for when it has resolved, and one whose Main 1 was skipped waits for Main 2. When the turn has ended
-     * since they were parked, there's no going back (D5): they all run now, with a notice. Game loop thread.
+     * since they were parked, there's no going back (D5): they all run now, with a notice. A turn skip's ops
+     * waited for a turn change, so they don't count as late: each is asked again in the turn reached, as above.
+     * Game loop thread.
      */
     void runParked(Game game) {
         if (parked.isEmpty()) {
@@ -713,10 +770,8 @@ public class CompanionTable {
         }
         List<Op> ops = new ArrayList<>(parked);
         PhaseType waitedFor = parkedFor;
-        boolean turnEnded = game.getPhaseHandler().getTurn() != parkedTurn;
-        parked.clear();
-        parkedFor = null;
-        parkedTurn = -1;
+        boolean turnEnded = parkedSeat == null && game.getPhaseHandler().getTurn() != parkedTurn;
+        clearParked();
         if (turnEnded) {
             tell("The turn ended before " + mainName(waitedFor) + ": " + nameOf(ops.get(0)) + " is cast now");
             ops.forEach(op -> runOne(game, op));
@@ -743,7 +798,25 @@ public class CompanionTable {
         parked.add(op);
         parkedFor = target;
         parkedTurn = game.getPhaseHandler().getTurn();
-        tell(nameOf(op) + " waits for " + mainName(target), affectedBy(op));
+        parkedSeat = turnNeeded(game, op);
+        tell(nameOf(op) + " waits for " + (parkedSeat == null ? "" : parkedSeat + "'s ") + mainName(target),
+                affectedBy(op));
+    }
+
+    private void clearParked() {
+        parked.clear();
+        parkedFor = null;
+        parkedTurn = -1;
+        parkedSeat = null;
+    }
+
+    private static String turnNeeded(Game game, Op op) {
+        try {
+            return op.turnNeeded(game);
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            return null; // wait in this turn, as mainPhaseNeeded says
+        }
     }
 
     private static PhaseType mainPhaseNeeded(Game game, Op op) {
@@ -866,11 +939,23 @@ public class CompanionTable {
      * The seats, by setup name, whose mana sources at the latest priority prompt could have paid for {@code card}
      * when it's an instant or has flash, for the add dialog to offer (item 11); every seat for any other card. Empty
      * before the first prompt, or when nobody could have: the dialog then offers every seat (AC-39). See
-     * {@link TableEditor#couldHaveCast(Game, String)}. Safe from any thread: it reads only what the prompt published
-     * and card data, and like {@link #canUndo} it can be out of date only between prompts.
+     * {@link TableEditor#couldHaveCast(Game, String)}. With Commander mode on, only the seats whose commanders'
+     * colour identity allows the card are left, any card, not just instants ({@link CommanderLegality#legalSeats});
+     * a name that isn't in the card database isn't narrowed. Safe from any thread: it reads only what the prompt
+     * published, the setup and card data, and like {@link #canUndo} it can be out of date only between prompts.
      */
     public List<String> couldHaveCast(String card) {
-        return TableEditor.couldHaveCast(manaSources, card);
+        List<String> could = TableEditor.couldHaveCast(manaSources, card);
+        CompanionSetup current = setup;
+        if (!current.commanderMode()) {
+            return could;
+        }
+        PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(card);
+        if (printing == null) {
+            return could;
+        }
+        return CommanderLegality.legalSeats(printing, could,
+                seat -> CommanderLegality.commanders(current.commandersOf(seat)));
     }
 
     /**

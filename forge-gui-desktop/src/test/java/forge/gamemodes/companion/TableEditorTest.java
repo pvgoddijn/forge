@@ -850,11 +850,14 @@ public class TableEditorTest extends AITest {
         final List<String> results = new ArrayList<>();
 
         Recorded() {
+            this(CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                    new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false))));
+        }
+
+        Recorded(CompanionSetup setup) {
             try {
                 java.io.File dir = java.nio.file.Files.createTempDirectory("companion").toFile();
                 assertTrue(new java.io.File(dir, "t").mkdir());
-                CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
-                        new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
                 store = new CompanionStore(dir);
                 table = new CompanionTable("t", setup, store);
             } catch (java.io.IOException e) {
@@ -1143,6 +1146,173 @@ public class TableEditorTest extends AITest {
         assertEquals(rec.results, List.of("Nobody isn't in the game: Divination wasn't added"));
     }
 
+    // ---- Turn skip (slice 6, AC-45) ----
+
+    /** Ann's card that is legal only for Cy: the add moves the turn ahead to Cy's (2 turns) and adds it there. */
+    private static CompanionTable.AddCard skipTo(Player player, String name) {
+        return new CompanionTable.AddCard(player.getName(), name, false, TableEditor.Mode.CAST, player.getName());
+    }
+
+    /** Moves the game to {@code phase} of {@code player}'s turn {@code turn}, as the loop would reach it. */
+    private static void moveTo(Game game, Player player, int turn, PhaseType phase) {
+        game.getPhaseHandler().devModeSet(phase, player, turn);
+    }
+
+    /**
+     * AC-45: a skip waits for Main 1 of the target seat's turn with an empty stack. The turn changes in between are
+     * the point of the skip, so unlike a parked sorcery it isn't cast on them.
+     */
+    @Test
+    public void aSkipWaitsForTheTargetSeatsMain1AndNotForATurnChange() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int turn = ph.getTurn();
+        Recorded rec = new Recorded();
+        rec.table.submit(skipTo(cy, "Llanowar Elves"));
+
+        assertTrue(rec.table.runPending(game));
+        assertTrue(rec.table.isParked(), "parked in Ann's Main 1, though a creature isn't otherwise held");
+        String waits = "Llanowar Elves waits for " + cy.getName() + "'s Main 1";
+        assertEquals(rec.notices, List.of(waits));
+        assertFalse(rec.table.parkedReady(game), "still Ann's turn");
+        assertEquals(rec.table.skippingTo(game), cy.getName(), "Ann's turn is skipped too, from here");
+        moveTo(game, PhaseType.END_OF_TURN);
+        assertFalse(rec.table.parkedReady(game), "Ann's end step");
+
+        moveTo(game, bo, turn + 1, PhaseType.UPKEEP);
+        assertFalse(rec.table.parkedReady(game), "Bo's turn: a turn change isn't a reason to cast it now");
+        assertEquals(rec.table.skippingTo(game), cy.getName());
+        moveTo(game, bo, turn + 1, PhaseType.MAIN1);
+        assertFalse(rec.table.parkedReady(game), "Bo's Main 1 isn't Cy's");
+        moveTo(game, bo, turn + 1, PhaseType.MAIN2);
+        assertFalse(rec.table.parkedReady(game), "nor is Bo's Main 2");
+
+        moveTo(game, cy, turn + 2, PhaseType.DRAW);
+        assertFalse(rec.table.parkedReady(game), "Cy's turn, before Main 1");
+        assertNull(rec.table.skippingTo(game), "Cy's turn isn't skipped");
+        moveTo(game, cy, turn + 2, PhaseType.MAIN1);
+        TableEditor.addCard(cy, "Opt", false, TableEditor.Mode.CAST);
+        assertFalse(rec.table.parkedReady(game), "something is on the stack");
+        resolveAll(game);
+        assertTrue(rec.table.parkedReady(game), "Cy's Main 1 with an empty stack");
+
+        rec.table.runParked(game);
+        assertFalse(rec.table.isParked());
+        assertEquals(castCount(game, "Llanowar Elves"), 1);
+        assertEquals(rec.results.get(rec.results.size() - 1), cy.getName() + " casts Llanowar Elves",
+                rec.results.toString());
+        assertEquals(rec.notices, List.of(waits), "no \"turn ended\" notice");
+    }
+
+    /** A skip to the seat whose turn it already is skips nothing: it's an ordinary add. */
+    @Test
+    public void aSkipToTheActiveSeatIsAnOrdinaryAdd() {
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        CompanionTable.AddCard add = skipTo(ann, "Llanowar Elves");
+        assertNull(add.turnNeeded(game));
+        assertNull(add.mainPhaseNeeded(game), "a creature isn't held for a main phase");
+        assertEquals(skipTo(ann, "Divination").mainPhaseNeeded(game), PhaseType.MAIN1,
+                "a sorcery still waits for this turn's Main 1 (AC-42)");
+        Recorded rec = new Recorded();
+        rec.table.submit(add);
+        rec.table.runPending(game);
+        assertFalse(rec.table.isParked());
+        assertEquals(castCount(game, "Llanowar Elves"), 1);
+    }
+
+    /** An undo while the skip waits goes back to before it, and drops it: it's never cast later. */
+    @Test
+    public void anUndoWhileASkipIsParkedDropsTheSkip() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int turn = ph.getTurn();
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        rec.table.submit(skipTo(cy, "Llanowar Elves"));
+        rec.table.runPending(game);
+        moveTo(game, bo, turn + 1, PhaseType.MAIN1);
+
+        undo(rec, game);
+        assertFalse(rec.table.isParked());
+        assertNull(rec.table.skippingTo(game));
+        assertEquals(ph.getPlayerTurn(), ann, "back to before the skip");
+        assertEquals(rec.notices.get(rec.notices.size() - 1),
+                "Undone: Llanowar Elves and anything after it wasn't added");
+        moveTo(game, cy, turn + 2, PhaseType.MAIN1);
+        assertFalse(rec.table.parkedReady(game), "nothing waits any more");
+        rec.table.runParked(game);
+        assertEquals(castCount(game, "Llanowar Elves"), 0);
+    }
+
+    /** "Check early": a second Add while a skip waits queues behind it, and both run in Cy's Main 1, in order. */
+    @Test
+    public void aSecondAddWhileASkipIsParkedQueuesBehindIt() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int turn = ph.getTurn();
+        Recorded rec = new Recorded();
+        rec.table.submit(skipTo(cy, "Llanowar Elves"));
+        rec.table.runPending(game);
+        rec.table.submit(cast(bo, "Opt"));
+
+        assertTrue(rec.table.runPending(game));
+        assertEquals(castCount(game, "Opt"), 0, "waits behind the skip");
+        assertEquals(rec.notices, List.of("Llanowar Elves waits for " + cy.getName() + "'s Main 1",
+                "Opt waits behind Llanowar Elves"));
+        moveTo(game, bo, turn + 1, PhaseType.MAIN1);
+        assertFalse(rec.table.parkedReady(game));
+
+        moveTo(game, cy, turn + 2, PhaseType.MAIN1);
+        assertTrue(rec.table.parkedReady(game));
+        rec.table.runParked(game);
+        assertFalse(rec.table.isParked());
+        assertEquals(rec.results, List.of(cy.getName() + " casts Llanowar Elves", bo.getName() + " casts Opt"),
+                "in submit order");
+    }
+
+    /**
+     * Slice 4's item 11 with Commander mode on: only the seats whose commander's colour identity allows the card are
+     * offered, on top of the mana check, for any card. Off, or a name not in the database, isn't narrowed.
+     */
+    @Test
+    public void commanderModeNarrowsCouldHaveCastByColourIdentity() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        List<Player> players = game.getPlayers();
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(1), "Island");
+        putIn(game, players.get(1), "Island");
+        String ann = players.get(0).getName();
+        String bo = players.get(1).getName();
+        String cy = players.get(2).getName();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat(ann, true, List.of("Krenko, Mob Boss"), ""),
+                new CompanionSetup.Seat(bo, false, List.of("Talrand, Sky Summoner"), ""),
+                new CompanionSetup.Seat(cy, false)));
+        CompanionTable on = new Recorded(setup).table;
+        CompanionTable off = new Recorded(setup.withCommanderMode(false)).table;
+        on.atPrompt(game);
+        off.atPrompt(game);
+
+        assertEquals(off.couldHaveCast("Counterspell"), List.of(ann, bo), "the mana check alone");
+        assertEquals(on.couldHaveCast("Counterspell"), List.of(bo), "Krenko's red identity rules out Ann");
+        assertEquals(on.couldHaveCast("Divination"), List.of(bo, cy), "a sorcery too; Cy has no commander");
+        assertEquals(on.couldHaveCast("Llanowar Elves"), List.of(cy));
+        assertEquals(on.couldHaveCast("Sol Ring"), List.of(ann, bo, cy), "colourless fits everyone");
+        assertEquals(on.couldHaveCast("Not A Card Name"), List.of(ann, bo, cy), "a token name isn't narrowed");
+        assertTrue(on.couldHaveCast("Lightning Bolt").isEmpty(), "Ann has no red mana: the dialog offers all");
+    }
+
     /** Ends a run of the real main loop where the table would show the operator a priority prompt. */
     private static final class OperatorAsked extends RuntimeException {
         OperatorAsked() {
@@ -1220,7 +1390,7 @@ public class TableEditorTest extends AITest {
         }
 
         @Override
-        public void declareAttackers(Player attackingPlayer, Combat combat) {
+        void declareAttackersOnPrompt(Player attackingPlayer, Combat combat) {
             asked.add("attackers " + getPlayer().getName());
             assertTrue(table.engineCombat(getGame().getPhaseHandler().getTurn()), "the engine runs this combat");
             if (attacker != null) {
@@ -1383,6 +1553,124 @@ public class TableEditorTest extends AITest {
         assertEquals(ph.getPhase(), PhaseType.MAIN2);
         assertEquals(game.getStack().peekAbility().getHostCard().getName(), "Divination", "cast in Main 2");
         assertEquals(rec.notices, List.of("Divination waits for Main 2"));
+    }
+
+    /**
+     * AC-45 through the real loop: Ann's card legal only for Cy moves the turn ahead. Bo's turn runs (he draws) with
+     * nobody asked, the card is cast in Cy's Main 1, and the skipped turns' engine entries are under the step the
+     * skip's save writes. One undo there takes back the skip and the card together, to Ann's Main 1.
+     */
+    @Test
+    public void onTheGameLoopASkipRunsTheTurnsBetweenAndIsOneUndo() {
+        Game game = startTableInTurn2(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int boHand = bo.getCardsIn(ZoneType.Hand).size();
+        int cyHand = cy.getCardsIn(ZoneType.Hand).size();
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        List<Integer> handsInCysTurn = new ArrayList<>();
+        int[] stepInCysTurn = {-1};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            switch (asked.size()) {
+                case 1: // Ann's Main 1: move to Cy's turn and add it there
+                    rec.table.submit(skipTo(cy, "Llanowar Elves"));
+                    return seat.asTheTableDoes();
+                case 2: // Cy's Main 1, the Elves on the stack: pass, so they resolve
+                    assertEquals(ph.getPlayerTurn(), cy);
+                    assertEquals(game.getStack().peekAbility().getHostCard().getName(), "Llanowar Elves");
+                    handsInCysTurn.add(bo.getCardsIn(ZoneType.Hand).size());
+                    handsInCysTurn.add(cy.getCardsIn(ZoneType.Hand).size());
+                    return null;
+                case 3: // Cy's Main 1 with the Elves in play, saved: undo once
+                    stepInCysTurn[0] = rec.store.latestStep("t");
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                default:
+                    throw new OperatorAsked();
+            }
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN1", "priority MAIN1"),
+                "Ann, Cy twice, then Ann after the undo; nobody in Bo's turn: " + asked);
+        assertEquals(handsInCysTurn, List.of(boHand + 1, cyHand + 1), "Bo's and Cy's draws happened");
+        assertEquals(stepInCysTurn[0], 1, "Ann's Main 1 was step 0; the skip and the card are step 1");
+        List<CompanionLogEntry> bosTurn = rec.store.loadLog("t").stream()
+                .filter(e -> e.kind() == CompanionLogEntry.Kind.ENGINE && e.turn() == 3).toList();
+        assertFalse(bosTurn.isEmpty(), "Bo's turn is in the history");
+        assertTrue(bosTurn.stream().allMatch(e -> e.step() == 1), "under the skip's step: " + bosTurn);
+
+        assertEquals(ph.getPlayerTurn(), ann, "one undo took back the skip and the card");
+        assertEquals(ph.getTurn(), 2);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        assertEquals(named(cy, ZoneType.Battlefield, "Llanowar Elves").size(), 0);
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), boHand, "Bo's draw is back");
+        assertEquals(cy.getCardsIn(ZoneType.Hand).size(), cyHand);
+        assertEquals(rec.store.latestStep("t"), 0);
+        assertFalse(rec.table.isParked());
+    }
+
+    /** Runs the loop with a skip from Ann's Main 1 to Cy's turn, until Cy is asked in her Main 1. */
+    private void runASkipToCy(Game game, Recorded rec, List<String> asked, java.util.function.Consumer<List<LoopSeat>> setUp) {
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player cy = game.getNextPlayerAfter(game.getNextPlayerAfter(ph.getPlayerTurn()));
+        boolean[] submitted = {false};
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            if (!submitted[0]) {
+                submitted[0] = true;
+                rec.table.submit(skipTo(cy, "Llanowar Elves"));
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+        setUp.accept(seats);
+        runLoopUntilTheOperatorIsAsked(game);
+        assertEquals(ph.getPlayerTurn(), cy, asked + " " + rec.notices);
+        assertEquals(game.getStack().peekAbility().getHostCard().getName(), "Llanowar Elves");
+    }
+
+    /** No engine combat in a skipped turn, even with "Combat every turn" on: Bo isn't asked to attack. */
+    @Test
+    public void onTheGameLoopASkippedTurnRunsNoEngineCombat() {
+        Game game = startTableInTurn2(PhaseType.MAIN1, "p1battlefield=Grizzly Bears");
+        Player bo = game.getNextPlayerAfter(game.getPhaseHandler().getPlayerTurn());
+        Recorded rec = new Recorded();
+        rec.table.setEngineCombat(true);
+        List<String> asked = new ArrayList<>();
+
+        runASkipToCy(game, rec, asked, seats -> { });
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1"), "no attack in Bo's turn: " + asked);
+        assertEquals(bo.getCardsIn(ZoneType.Battlefield).size(), 1);
+    }
+
+    /**
+     * "Check early": a creature that must attack in a skipped turn. The skip stops at that combat with a notice, the
+     * operator declares it, blocks and damage are by the rules, and the skip carries on to Cy's Main 1.
+     */
+    @Test
+    public void onTheGameLoopAForcedAttackInASkippedTurnIsDeclaredAndTheSkipGoesOn() {
+        Game game = startTableInTurn2(PhaseType.MAIN1, "p1battlefield=Juggernaut");
+        Player bo = game.getNextPlayerAfter(game.getPhaseHandler().getPlayerTurn());
+        Player cy = game.getNextPlayerAfter(bo);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+
+        runASkipToCy(game, rec, asked, seats -> seats.stream().filter(s -> s.getPlayer() == bo).findFirst()
+                .orElseThrow().attacker = named(bo, ZoneType.Battlefield, "Juggernaut").get(0));
+
+        assertEquals(asked, List.of("priority MAIN1", "attackers " + bo.getName(), "priority MAIN1"),
+                "Cy has no creature, so isn't asked to block: " + asked);
+        assertEquals(cy.getLife(), CompanionSetup.DEFAULT_LIFE - 5, "Juggernaut's damage was dealt");
+        assertTrue(rec.notices.contains("A creature must attack in " + bo.getName() + "'s turn, so the move to "
+                + cy.getName() + "'s turn stops at this "
+                + "combat: declare the attack. Blocks and damage are done by the game too, so don't also set life "
+                + "for it. Then the move carries on."), rec.notices.toString());
     }
 
     @Test
