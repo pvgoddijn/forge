@@ -291,4 +291,90 @@ public class CompanionStoreShould {
     public void reportAGameThatCantBeEnded() {
         assertThatThrownBy(() -> store.end("no-such-game")).isInstanceOf(UncheckedIOException.class);
     }
+
+    /**
+     * L2: a crash after an undo discarded step 2 but before its log entry was written. The resume marks step 2's
+     * entries undone, so the next action, which writes step 2 again, doesn't hide them.
+     */
+    @Test
+    public void markUndoneTheEntriesOfAStepAnInterruptedUndoDiscarded() {
+        store.saveState(id, "step 0");
+        long first = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).seq();
+        store.saveState(id, "step 1");
+        long second = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "b")).seq();
+        store.saveState(id, "step 2");
+        store.discardAfter(id, 1); // the undo's files; then the crash, so no undo entry
+
+        CompanionStore restarted = new CompanionStore(dir);
+        assertThat(restarted.loadState(id)).isEqualTo(lines("step 1"));
+        long redone = restarted.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "c")).seq();
+        restarted.saveState(id, "step 2 again");
+
+        assertThat(CompanionLogEntry.undone(restarted.loadLog(id))).containsExactly(second);
+        assertThat(CompanionHistory.of(restarted.loadLog(id)).rows()).extracting(CompanionHistory.Row::undone)
+                .containsExactly(false, true, false);
+        assertThat(List.of(first, redone)).doesNotContainAnyElementsOf(CompanionLogEntry.undone(store.loadLog(id)));
+
+        // a second resume finds nothing more to do
+        new CompanionStore(dir).loadState(id);
+        assertThat(store.loadLog(id)).filteredOn(e -> e.kind() == Kind.UNDO).hasSize(1);
+    }
+
+    /** An action logged but not saved before a crash isn't on the resumed board, so it reads as undone too. */
+    @Test
+    public void markUndoneAnActionThatWasNeverSaved() {
+        store.saveState(id, "step 0");
+        long lost = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).seq();
+
+        new CompanionStore(dir).loadState(id);
+
+        assertThat(CompanionLogEntry.undone(store.loadLog(id))).containsExactly(lost);
+    }
+
+    @Test
+    public void leaveTheLogAloneWhenItMatchesTheSteps() {
+        store.saveState(id, "step 0");
+        store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a"));
+        store.saveState(id, "step 1");
+
+        new CompanionStore(dir).loadState(id);
+
+        assertThat(store.loadLog(id)).hasSize(1);
+    }
+
+    @Test
+    public void listEndedGamesNewestFirstWithTheirDateAndSeats() {
+        String older = store.create(CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Cy", true), new CompanionSetup.Seat("Di", false))));
+        String newer = store.create(CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ed", false), new CompanionSetup.Seat("Flo", true))));
+        store.end(older);
+        store.end(newer);
+        assertThat(new File(new File(dir, older), "ended").setLastModified(1_000_000L)).isTrue();
+        assertThat(new File(new File(dir, newer), "ended").setLastModified(2_000_000L)).isTrue();
+
+        List<CompanionStore.Ended> ended = store.listEnded();
+
+        assertThat(ended).extracting(CompanionStore.Ended::id).containsExactly(newer, older); // not the active one
+        assertThat(ended.get(0).endedAt()).isEqualTo(2_000_000L);
+        assertThat(ended.get(0).seatNames()).containsExactly("Ed", "Flo");
+        assertThat(ended.get(1).seatNames()).containsExactly("Cy", "Di");
+        assertThat(store.loadActive()).hasValueSatisfying(saved -> assertThat(saved.id()).isEqualTo(id));
+    }
+
+    @Test
+    public void listNoEndedGamesBeforeOneEnds() {
+        assertThat(store.listEnded()).isEmpty();
+    }
+
+    @Test
+    public void readAnEndedGamesLog() {
+        store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "Ann casts Opt"));
+        store.end(id);
+
+        String ended = store.listEnded().get(0).id();
+
+        assertThat(CompanionHistory.of(new CompanionStore(dir).loadLog(ended)).rows())
+                .extracting(CompanionHistory.Row::text).containsExactly("Ann casts Opt");
+    }
 }
