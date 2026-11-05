@@ -230,8 +230,9 @@ public class CardSearchDialog extends FDialog {
 
     /**
      * For an instant or a flash card, offers only the seats that could have cast it (item 11), as the latest prompt
-     * worked out on the game thread ({@link CompanionTable#couldHaveCast}): one is chosen for the operator, several
-     * come with "show all". When nobody could have, or for any other card, every seat, as before (AC-39). The choice
+     * worked out on the game thread ({@link CompanionTable#couldHaveCast}), always with "show all", as the mana
+     * check is approximate and the operator must be able to pick anyone (AC-39); a single one is chosen for the
+     * operator. When nobody could have, or for any other card, every seat, as before (AC-39). The choice
      * already made stays when it's still offered; otherwise the active player if offered, else the first one.
      */
     private void offerPlayers(String card) {
@@ -242,7 +243,7 @@ public class CardSearchDialog extends FDialog {
         String current = cbPlayer.getSelectedItem();
         String pick = offered.contains(current) ? current : offered.contains(activePlayer) ? activePlayer : offered.get(0);
         List<String> items = new ArrayList<>(offered);
-        if (narrowed && offered.size() > 1) {
+        if (narrowed) {
             items.add(SHOW_ALL);
         }
         cbPlayer.setItems(items, pick);
