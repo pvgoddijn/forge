@@ -143,6 +143,10 @@ public class CompanionTable {
                         List.of(player), card, null);
             }
             Card found = game.findById(cardId);
+            // The name only catches an id that went to a card of another name. A load or undo between the pick and
+            // this run (ids aren't kept, see CompanionLogEntry) can give the id to another card of the same name,
+            // say the other of two Grizzly Bears, and then that one is moved. That's let be: the two read the same to
+            // the operator and in the log, and the move still says which seat and zone it came from.
             if (found == null || !card.equals(found.getName())) {
                 return new TableEditor.Result(false, card + " wasn't found: nothing was moved", List.of(player), card,
                         null);
