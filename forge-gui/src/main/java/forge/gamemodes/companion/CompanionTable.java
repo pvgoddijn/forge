@@ -12,6 +12,7 @@ import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
+import forge.game.zone.ZoneView;
 import forge.gamemodes.match.input.Input;
 import forge.gamemodes.match.input.InputPassPriority;
 import forge.gui.interfaces.IGuiGame;
@@ -388,8 +389,10 @@ public class CompanionTable {
             players.add(e.player());
         } else if (event instanceof GameEventPlayerDamaged e) {
             players.add(e.target());
+            addController(players, e.source()); // "Bo's Bears deals 2 to Ann" is about Bo too
         } else if (event instanceof GameEventCardDamaged e) {
             addController(players, e.card());
+            addController(players, e.source());
         } else if (event instanceof GameEventPlayerPoisoned e) {
             players.add(e.receiver());
         } else if (event instanceof GameEventPlayerRadiation e) {
@@ -401,6 +404,9 @@ public class CompanionTable {
             if (e.card() != null) {
                 players.add(e.card().getOwner()); // a stolen creature dies into its owner's graveyard
             }
+            // the zones' players: a stolen creature leaves its thief's battlefield for its owner's graveyard
+            addZone(players, e.from());
+            addZone(players, e.to());
         } else if (event instanceof GameEventPlayerControl e) {
             players.add(e.player());
         } else if (event instanceof GameEventAttackersDeclared e) {
@@ -441,6 +447,12 @@ public class CompanionTable {
     private static void addController(Set<PlayerView> players, CardView card) {
         if (card != null) {
             players.add(card.getController() != null ? card.getController() : card.getOwner());
+        }
+    }
+
+    private static void addZone(Set<PlayerView> players, ZoneView zone) {
+        if (zone != null && zone.player() != null) {
+            players.add(zone.player());
         }
     }
 
