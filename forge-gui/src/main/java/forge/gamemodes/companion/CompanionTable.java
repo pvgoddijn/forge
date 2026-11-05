@@ -344,7 +344,8 @@ public class CompanionTable {
      * and otherwise the one before it. The undone step's file goes before the log says so, so a restart never loads
      * it; the log only gains an entry naming the step, so the undone entries stay, marked
      * ({@link CompanionLogEntry#undone}). What a save doesn't hold goes too: combat for one turn unless the turn is
-     * the same, and parked ops, which were all submitted after the latest save (nothing is saved while one waits).
+     * the same, parked ops, which were all submitted after the latest save (nothing is saved while one waits), and
+     * every seat's yield (End Turn).
      */
     private final class Undo implements Op {
         @Override
@@ -363,6 +364,12 @@ public class CompanionTable {
                 return new TableEditor.Result(false, "Step " + back + " of the game wasn't found: nothing was undone");
             }
             CompanionGameState.of(state).applyNow(game);
+            // Ops run at every priority, so an undo tapped just after End Turn can run while that yield passes Main 2
+            // or the end step. A save doesn't hold the yield, which is the controller's: left on, it would pass the
+            // main phase put back too, and end the turn again. So it ends here, and the screen is told.
+            for (CompanionPlayerController seat : seats) {
+                seat.getYieldController().clearActiveYieldAndDispatch();
+            }
             store.discardAfter(id, back); // files first, then the log
             lastSaved = CompanionGameState.capture(game);
             PhaseHandler ph = game.getPhaseHandler();
