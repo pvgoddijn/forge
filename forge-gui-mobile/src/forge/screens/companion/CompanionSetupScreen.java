@@ -1,5 +1,6 @@
 package forge.screens.companion;
 
+import forge.Forge;
 import forge.gamemodes.companion.CompanionGameState;
 import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
@@ -29,7 +30,8 @@ import java.util.regex.Pattern;
 
 /**
  * Sets up a tracked game: players in seat order, and which one is Me. The game itself is a real match on Forge's match
- * screen, with every seat answered by the operator. Goes straight to the active game if there is one.
+ * screen, with every seat answered by the operator. Goes straight to the active game if there is one; with none, it's
+ * a new game's setup, and Past games for the ones that have ended.
  */
 public class CompanionSetupScreen extends LaunchScreen {
     private static final float PADDING = Utils.scale(5);
@@ -44,6 +46,7 @@ public class CompanionSetupScreen extends LaunchScreen {
     private final FButton btnMore = add(new FButton("+"));
     private final FLabel lblLife = add(new FLabel.Builder().text("Starting life").build());
     private final FTextField txtLife = add(new FTextField(String.valueOf(CompanionSetup.DEFAULT_LIFE)));
+    private final FButton btnPastGames = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionPastGames")));
     private int playerCount = 4;
 
     public CompanionSetupScreen() {
@@ -67,6 +70,7 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         btnFewer.setCommand(e -> setPlayerCount(playerCount - 1));
         btnMore.setCommand(e -> setPlayerCount(playerCount + 1));
+        btnPastGames.setCommand(e -> Forge.openScreen(new CompanionPastGamesScreen(store)));
         updateRows();
     }
 
@@ -142,6 +146,8 @@ public class CompanionSetupScreen extends LaunchScreen {
         float lifeWidth = rowHeight * 2.2f;
         lblLife.setBounds(PADDING, y, width - lifeWidth - 3 * PADDING, rowHeight);
         txtLife.setBounds(lblLife.getRight() + PADDING, y, lifeWidth, rowHeight);
+        y += rowHeight + 2 * PADDING;
+        btnPastGames.setBounds(PADDING, y, width - 2 * PADDING, rowHeight);
     }
 
     @Override
