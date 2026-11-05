@@ -62,7 +62,7 @@ public class CompanionPastGamesScreen extends FScreen {
     }
 
     private void open(CompanionStore.Ended game) {
-        // read-only: a past game is never written to, so its log isn't settled as a resumed game's is
+        // read-only: a past game is never written to; its log is settled in memory, to match its final board
         String boards;
         try {
             List<String> state = store.loadFinalState(game.id()).orElseGet(game.setup()::initialState);
@@ -72,7 +72,7 @@ public class CompanionPastGamesScreen extends FScreen {
         }
         List<CompanionLogEntry> log;
         try {
-            log = store.loadLog(game.id());
+            log = store.loadFinalLog(game.id());
         } catch (RuntimeException e) {
             e.printStackTrace(); // the boards can still be shown; the history is then empty
             log = List.of();
