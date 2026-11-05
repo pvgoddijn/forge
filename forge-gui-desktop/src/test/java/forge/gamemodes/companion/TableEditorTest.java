@@ -2614,6 +2614,45 @@ public class TableEditorTest extends AITest {
         assertEquals(engine.get(1).affected(), List.of(newCy.getName()));
     }
 
+    /**
+     * Damage is about its source's controller as well as whoever was dealt it, so filtering on the attacker shows
+     * "Bo's Bears deals 2 to Ann". A stolen creature's move is about the players of both zones, thief and owner.
+     */
+    @Test
+    public void damageIsAboutItsSourcesControllerAndAStolenCreaturesMoveAboutThiefAndOwner() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        Recorded rec = new Recorded();
+        seatsFor(game, rec, new ArrayList<>(), seat -> {
+            throw new OperatorAsked();
+        });
+        Card bosBears = putIn(game, bo, "Grizzly Bears");
+        Card cysBears = putIn(game, cy, "Grizzly Bears");
+        int before = engineEntries(rec.store.loadLog("t")).size();
+
+        game.fireEvent(new forge.game.event.GameEventPlayerDamaged(ann.getView(), bosBears.getView(), 2, true,
+                false));
+        game.fireEvent(new forge.game.event.GameEventCardDamaged(cysBears.getView(), bosBears.getView(), 2,
+                forge.game.event.GameEventCardDamaged.DamageType.Normal));
+        // Cy's Bears, stolen by Ann, die: from Ann's battlefield to Cy's graveyard
+        game.fireEvent(new forge.game.event.GameEventCardChangeZone(cysBears.getView(),
+                new forge.game.zone.ZoneView(ann.getView(), ZoneType.Battlefield),
+                new forge.game.zone.ZoneView(cy.getView(), ZoneType.Graveyard)));
+
+        List<CompanionLogEntry> engine = engineEntries(rec.store.loadLog("t"));
+        assertEquals(engine.size(), before + 3, engine.toString());
+        assertEquals(engine.get(before).affected(), List.of(ann.getName(), bo.getName()), "damage to a player");
+        assertEquals(engine.get(before + 1).affected(), List.of(cy.getName(), bo.getName()), "damage to a card");
+        assertEquals(new java.util.HashSet<>(engine.get(before + 2).affected()),
+                java.util.Set.of(ann.getName(), cy.getName()), "the thief and the owner");
+        List<String> damage = List.of(engine.get(before).text(), engine.get(before + 1).text());
+        CompanionHistory history = CompanionHistory.of(rec.store.loadLog("t"));
+        assertEquals(history.filter(bo.getName()).rows().stream().filter(r -> damage.contains(r.text())).count(), 2L,
+                "Bo's filter shows the damage his Bears dealt: " + damage);
+    }
+
     /** Text with no player in its event is matched to seats by whole words only. */
     @Test
     public void aSeatNameIsMentionedOnlyAsAWholeWord() {
