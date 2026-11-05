@@ -331,6 +331,55 @@ public class CompanionStoreShould {
         assertThat(CompanionLogEntry.undone(store.loadLog(id))).containsExactly(lost);
     }
 
+    /**
+     * Undo with ops parked: the undo entry, then the notice that they weren't added, under the next step. A notice
+     * changes nothing, so a resume keeps it as it is and writes no undo entry for it.
+     */
+    @Test
+    public void leaveANoticeAfterTheLastSaveAloneAtAResume() {
+        store.saveState(id, "step 0");
+        store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a"));
+        store.saveState(id, "step 1");
+        store.discardAfter(id, 0);
+        store.appendLog(id, CompanionLogEntry.undo(0, List.of(1), 1, "Ann", "Undone: back to turn 1, Ann"));
+        store.appendLog(id, CompanionLogEntry.of(Kind.NOTICE, 1, 1, "Ann", List.of("Ann"),
+                "Undone: Opt and anything after it wasn't added"));
+        List<CompanionLogEntry> before = store.loadLog(id);
+
+        assertThat(new CompanionStore(dir).loadState(id)).isEqualTo(lines("step 0"));
+
+        assertThat(store.loadLog(id)).isEqualTo(before);
+    }
+
+    @Test
+    public void settleOnlyTheKindsThatChangeTheGame() {
+        for (Kind kind : Kind.values()) {
+            List<CompanionLogEntry> log = List.of(CompanionLogEntry.of(kind, 1, 1, "Ann", List.of("Ann"), "x")
+                    .withSeq(1));
+            boolean changes = kind != Kind.NOTICE && kind != Kind.UNDO;
+            assertThat(CompanionLogEntry.settle(log, 0)).as(kind.name()).isEqualTo(changes
+                    ? Optional.of(CompanionLogEntry.undo(0, List.of(1), 1, "Ann",
+                            "Not kept when the game was interrupted: back to the last save"))
+                    : Optional.empty());
+        }
+    }
+
+    /** A log that can't be written keeps numbering on, so an entry kept in memory isn't given the next one's seq. */
+    @Test
+    public void takeTheSeqOfAnEntryItCouldntWrite() throws IOException {
+        assertThat(store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "a")).seq())
+                .isEqualTo(1);
+        File log = new File(new File(dir, id), "log.txt");
+        Files.delete(log.toPath());
+        assertThat(log.mkdir()).isTrue(); // the log can't be written now
+
+        long unwritten = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "b")).seq();
+        long next = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "c")).seq();
+
+        assertThat(unwritten).isEqualTo(2);
+        assertThat(next).isEqualTo(3);
+    }
+
     @Test
     public void leaveTheLogAloneWhenItMatchesTheSteps() {
         store.saveState(id, "step 0");
@@ -392,6 +441,33 @@ public class CompanionStoreShould {
 
         assertThat(restarted.loadFinalState(ended)).isEqualTo(lines("step 0"));
         assertThat(restarted.loadLog(ended)).hasSize(1);
+        assertThat(Files.readAllBytes(log.toPath())).isEqualTo(before);
+    }
+
+    /**
+     * AC-30: an action logged after the last save isn't on the final board, so a past game's history shows it undone,
+     * settled in memory only.
+     */
+    @Test
+    public void showAnEndedGamesUnsavedActionUndoneWithoutWritingItsLog() throws IOException {
+        store.saveState(id, "step 0");
+        long kept = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).seq();
+        store.saveState(id, "step 1");
+        long unsaved = store.appendLog(id, CompanionLogEntry.of(Kind.ACTION, 2, 1, "Ann", List.of("Ann"), "b"))
+                .seq();
+        store.end(id);
+        File log = new File(new File(dir, id), "log.txt");
+        byte[] before = Files.readAllBytes(log.toPath());
+
+        CompanionStore restarted = new CompanionStore(dir);
+        String ended = restarted.listEnded().get(0).id();
+        List<CompanionLogEntry> history = restarted.loadFinalLog(ended);
+
+        assertThat(CompanionLogEntry.undone(history)).containsExactly(unsaved);
+        assertThat(history.get(history.size() - 1).seq()).isEqualTo(unsaved + 1);
+        assertThat(CompanionHistory.of(history).rows()).filteredOn(r -> r.text().equals("a"))
+                .extracting(CompanionHistory.Row::undone).containsExactly(false);
+        assertThat(kept).isLessThan(unsaved);
         assertThat(Files.readAllBytes(log.toPath())).isEqualTo(before);
     }
 }

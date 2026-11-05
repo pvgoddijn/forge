@@ -22,9 +22,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.SortedSet;
-import java.util.TreeSet;
 import java.util.UUID;
 
 /**
@@ -138,34 +135,28 @@ public class CompanionStore {
     }
 
     /**
-     * Marks undone the log entries of steps the game doesn't have, so the history says what the resumed board says.
-     * An entry carries the step the next save writes, so one with a step after {@code latest} that isn't undone was
-     * either never saved (a crash before its save) or its step was discarded by an undo whose log entry was never
-     * written (a crash between {@link #discardAfter} and {@link #appendLog}). Either way it isn't on the board, and the
-     * next action would reuse its step, so without this it would never show as undone. It's written as an ordinary
-     * undo entry back to {@code latest}, so a second resume finds nothing to do.
+     * Marks undone the log entries of steps the game doesn't have, so the history says what the resumed board says
+     * ({@link CompanionLogEntry#settle}). The next action would reuse their step, so without this they would never show
+     * as undone. It's written as an ordinary undo entry back to {@code latest}, so a second resume finds nothing to do.
      */
     private void settleLog(String id, int latest) {
+        CompanionLogEntry.settle(loadLog(id), latest).ifPresent(undo -> appendLog(id, undo));
+    }
+
+    /**
+     * An ended game's log as its final board says it: {@link #loadLog} with the entry {@link CompanionLogEntry#settle}
+     * finds, numbered after the last, added in memory only. Like {@link #loadFinalState} it writes nothing (AC-30).
+     */
+    public List<CompanionLogEntry> loadFinalLog(String id) {
         List<CompanionLogEntry> log = loadLog(id);
-        Set<Long> undone = CompanionLogEntry.undone(log);
-        SortedSet<Integer> lost = new TreeSet<>();
-        CompanionLogEntry last = null;
-        for (CompanionLogEntry entry : log) {
-            if (entry.kind() != CompanionLogEntry.Kind.UNDO && entry.step() > latest
-                    && !undone.contains(entry.seq())) {
-                lost.add(entry.step());
-            }
-            last = entry;
-        }
-        if (!lost.isEmpty()) {
-            appendLog(id, CompanionLogEntry.undo(latest, new ArrayList<>(lost), last.turn(), last.active(),
-                    "Not kept when the game was interrupted: back to the last save"));
-        }
+        long last = log.stream().mapToLong(CompanionLogEntry::seq).max().orElse(0);
+        CompanionLogEntry.settle(log, latestStep(id)).ifPresent(undo -> log.add(undo.withSeq(last + 1)));
+        return log;
     }
 
     /**
      * An ended game's last saved state, or none if it never got to its first save. Unlike {@link #loadState} it writes
-     * nothing, so a past game stays as it was: its log isn't settled.
+     * nothing, so a past game stays as it was: its log is settled in memory only, by {@link #loadFinalLog}.
      */
     public Optional<List<String>> loadFinalState(String id) {
         int step = latestStep(id);
@@ -287,7 +278,7 @@ public class CompanionStore {
 
     /**
      * Adds {@code entry} to the game's log, numbered after the last entry, and returns it as written. A log that can't
-     * be written doesn't stop the game: the entry is returned, unwritten. If a crash cut the last line short, the new
+     * be written doesn't stop the game: the entry is returned, unwritten, and its seq is still taken. If a crash cut the last line short, the new
      * entry starts on a line of its own, so only the cut line is lost.
      */
     public synchronized CompanionLogEntry appendLog(String id, CompanionLogEntry entry) {
@@ -296,6 +287,8 @@ public class CompanionStore {
         try {
             Long last = lastSeq.get(id);
             numbered = entry.withSeq((last != null ? last : lastSeq(id)) + 1);
+            // taken even if the write fails: the table keeps the entry in memory, so the next one mustn't reuse it
+            lastSeq.put(id, numbered.seq());
             String line = numbered.toLine() + "\n";
             if (endsCutShort(log)) {
                 line = "\n" + line;
@@ -303,7 +296,6 @@ public class CompanionStore {
             try (FileOutputStream out = new FileOutputStream(log, true)) {
                 out.write(line.getBytes(StandardCharsets.UTF_8));
             }
-            lastSeq.put(id, numbered.seq());
         } catch (IOException | UncheckedIOException e) {
             System.err.println("Can't write companion log " + log + ": " + e);
         }
