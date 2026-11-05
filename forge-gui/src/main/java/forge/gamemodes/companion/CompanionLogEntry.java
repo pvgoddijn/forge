@@ -11,7 +11,10 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 
 /**
  * One line of a game's log ({@link CompanionStore#appendLog}), stored as one JSON object per line.
@@ -53,7 +56,12 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         /** Something the game decided or couldn't do, for the operator to read; and lines from before entries. */
         NOTICE,
         /** What the engine did, copied from its game log (slice 5). */
-        ENGINE
+        ENGINE;
+
+        /** Whether an entry of this kind changed the game, so it's on the board only once its step is saved. */
+        public boolean changesState() {
+            return this == ADD || this == ACTION || this == CORRECTION || this == ENGINE;
+        }
     }
 
     /** What left the hand when a card was added, for giving it back (AC-22a). */
@@ -119,6 +127,31 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
             }
         }
         return Collections.unmodifiableSet(undone);
+    }
+
+    /**
+     * The undo entry that makes {@code log} say what the board at step {@code latest} says, or none if it already
+     * does. An entry carries the step the next save writes, so one that changed the game ({@link Kind#changesState}) with a
+     * step after {@code latest} that isn't undone was either never saved (a crash or the game's end before its save)
+     * or its step was discarded by an undo whose log entry was never written (a crash between the undo's files and its
+     * entry). Either way it isn't on the board. A notice changes nothing, so one after the last save is still true: a
+     * save with nothing changed writes nothing, and a notice logged after it keeps the next step. The entry is
+     * unnumbered, for {@link CompanionStore#appendLog}.
+     */
+    public static Optional<CompanionLogEntry> settle(List<CompanionLogEntry> log, int latest) {
+        Set<Long> undone = undone(log);
+        SortedSet<Integer> lost = new TreeSet<>();
+        for (CompanionLogEntry entry : log) {
+            if (entry.kind.changesState() && entry.step > latest && !undone.contains(entry.seq)) {
+                lost.add(entry.step);
+            }
+        }
+        if (lost.isEmpty()) {
+            return Optional.empty();
+        }
+        CompanionLogEntry last = log.get(log.size() - 1);
+        return Optional.of(undo(latest, new ArrayList<>(lost), last.turn, last.active,
+                "Not kept when the game was interrupted: back to the last save"));
     }
 
     /**

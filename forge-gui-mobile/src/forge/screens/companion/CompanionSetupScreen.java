@@ -1,5 +1,6 @@
 package forge.screens.companion;
 
+import forge.Forge;
 import forge.gamemodes.companion.CompanionGameState;
 import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
@@ -17,6 +18,7 @@ import forge.toolbox.FButton;
 import forge.toolbox.FCheckBox;
 import forge.toolbox.FLabel;
 import forge.toolbox.FOptionPane;
+import forge.toolbox.FScrollPane;
 import forge.toolbox.FTextField;
 import forge.util.Utils;
 
@@ -29,7 +31,8 @@ import java.util.regex.Pattern;
 
 /**
  * Sets up a tracked game: players in seat order, and which one is Me. The game itself is a real match on Forge's match
- * screen, with every seat answered by the operator. Goes straight to the active game if there is one.
+ * screen, with every seat answered by the operator. Goes straight to the active game if there is one; with none, it's
+ * a new game's setup, and Past games for the ones that have ended.
  */
 public class CompanionSetupScreen extends LaunchScreen {
     private static final float PADDING = Utils.scale(5);
@@ -40,10 +43,18 @@ public class CompanionSetupScreen extends LaunchScreen {
     private final FTextField[] names = new FTextField[CompanionSetup.MAX_PLAYERS];
     private final FCheckBox[] mes = new FCheckBox[CompanionSetup.MAX_PLAYERS];
     private final FButton[] ups = new FButton[CompanionSetup.MAX_PLAYERS];
-    private final FButton btnFewer = add(new FButton("-"));
-    private final FButton btnMore = add(new FButton("+"));
-    private final FLabel lblLife = add(new FLabel.Builder().text("Starting life").build());
-    private final FTextField txtLife = add(new FTextField(String.valueOf(CompanionSetup.DEFAULT_LIFE)));
+    /** The form scrolls: with six players its rows don't fit above the buttons on a small screen. */
+    private final FScrollPane form = add(new FScrollPane() {
+        @Override
+        protected ScrollBounds layoutAndGetScrollBounds(float visibleWidth, float visibleHeight) {
+            return new ScrollBounds(visibleWidth, layoutForm(visibleWidth));
+        }
+    });
+    private final FButton btnFewer = form.add(new FButton("-"));
+    private final FButton btnMore = form.add(new FButton("+"));
+    private final FLabel lblLife = form.add(new FLabel.Builder().text("Starting life").build());
+    private final FTextField txtLife = form.add(new FTextField(String.valueOf(CompanionSetup.DEFAULT_LIFE)));
+    private final FButton btnPastGames = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionPastGames")));
     private int playerCount = 4;
 
     public CompanionSetupScreen() {
@@ -51,10 +62,10 @@ public class CompanionSetupScreen extends LaunchScreen {
 
         for (int i = 0; i < CompanionSetup.MAX_PLAYERS; i++) {
             final int row = i;
-            names[i] = add(new FTextField("Player " + (i + 1)));
-            mes[i] = add(new FCheckBox("Me", i == 0));
+            names[i] = form.add(new FTextField("Player " + (i + 1)));
+            mes[i] = form.add(new FCheckBox("Me", i == 0));
             mes[i].setCommand(e -> setMe(row));
-            ups[i] = add(new FButton("^"));
+            ups[i] = form.add(new FButton("^"));
             ups[i].setCommand(e -> swapWithRowAbove(row));
         }
         txtLife.setIsNumeric(true);
@@ -67,6 +78,7 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         btnFewer.setCommand(e -> setPlayerCount(playerCount - 1));
         btnMore.setCommand(e -> setPlayerCount(playerCount + 1));
+        btnPastGames.setCommand(e -> Forge.openScreen(new CompanionPastGamesScreen(store)));
         updateRows();
     }
 
@@ -108,7 +120,7 @@ public class CompanionSetupScreen extends LaunchScreen {
             }
         }
         updateRows();
-        revalidate();
+        form.revalidate(); // the form's size doesn't change, so the screen's layout wouldn't lay out its rows again
     }
 
     private void updateRows() {
@@ -124,10 +136,19 @@ public class CompanionSetupScreen extends LaunchScreen {
 
     @Override
     protected void doLayoutAboveBtnStart(float startY, float width, float height) {
+        // Past games stays put above Start; the form above it scrolls
+        float rowHeight = FTextField.getDefaultHeight();
+        float pastGamesY = height - rowHeight - PADDING;
+        btnPastGames.setBounds(PADDING, pastGamesY, width - 2 * PADDING, rowHeight);
+        form.setBounds(0, startY, width, pastGamesY - PADDING - startY);
+    }
+
+    /** Lays out the form's rows in the scroll pane, and returns their height. */
+    private float layoutForm(float width) {
         float rowHeight = FTextField.getDefaultHeight();
         float buttonWidth = rowHeight * 1.2f;
         float meWidth = rowHeight * 2.2f;
-        float y = startY + PADDING;
+        float y = PADDING;
         for (int i = 0; i < CompanionSetup.MAX_PLAYERS; i++) {
             names[i].setBounds(PADDING, y, width - meWidth - buttonWidth - 4 * PADDING, rowHeight);
             mes[i].setBounds(names[i].getRight() + PADDING, y, meWidth, rowHeight);
@@ -142,6 +163,7 @@ public class CompanionSetupScreen extends LaunchScreen {
         float lifeWidth = rowHeight * 2.2f;
         lblLife.setBounds(PADDING, y, width - lifeWidth - 3 * PADDING, rowHeight);
         txtLife.setBounds(lblLife.getRight() + PADDING, y, lifeWidth, rowHeight);
+        return y + rowHeight + PADDING;
     }
 
     @Override
