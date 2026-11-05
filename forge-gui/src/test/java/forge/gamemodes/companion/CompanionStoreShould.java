@@ -470,4 +470,77 @@ public class CompanionStoreShould {
         assertThat(kept).isLessThan(unsaved);
         assertThat(Files.readAllBytes(log.toPath())).isEqualTo(before);
     }
+
+    /** Slice 6: the seats' commanders and decklists, and Commander mode, come back as they were saved. */
+    @Test
+    public void keepTheCommandersTheDeckListsAndCommanderModeInSetupVersion3() {
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true, List.of("Krenko, Mob Boss"), "1 Sol Ring\n1 Mountain"),
+                new CompanionSetup.Seat("Bo", false, List.of("Tymna the Weaver", "Thrasios, Triton Hero"), ""),
+                new CompanionSetup.Seat("Cy", false))).withCommanderMode(false);
+
+        String json = CompanionStore.toJson(setup);
+        CompanionSetup read = CompanionStore.fromJson(json);
+
+        assertThat(json).contains("\"version\":3");
+        assertThat(read).isEqualTo(setup);
+        assertThat(read.seats().get(1).commanders()).containsExactly("Tymna the Weaver", "Thrasios, Triton Hero");
+        assertThat(read.seats().get(0).deckList()).isEqualTo("1 Sol Ring\n1 Mountain");
+        assertThat(read.commanderMode()).isFalse();
+        assertThat(CompanionStore.fromJson(CompanionStore.toJson(setup.withCommanderMode(true))).commanderMode())
+                .isTrue();
+    }
+
+    /** A game saved before version 3 started without commanders, so it reads with none and Commander mode off. */
+    @Test
+    public void readAVersion2SetupWithNoCommandersAndCommanderModeOff() {
+        String version2 = "{\"version\":2,\"life\":40,\"hand\":7,\"library\":92,\"combat\":true,"
+                + "\"seats\":[{\"name\":\"Ann\",\"me\":true},{\"name\":\"Bo\",\"me\":false}]}";
+
+        CompanionSetup read = CompanionStore.fromJson(version2);
+
+        assertThat(read.commanderMode()).isFalse();
+        assertThat(read.engineCombat()).isTrue();
+        assertThat(read.hasCommanders()).isFalse();
+        assertThat(read.seats()).extracting(CompanionSetup.Seat::deckList).containsExactly("", "");
+        assertThat(read.seats()).extracting(CompanionSetup.Seat::name).containsExactly("Ann", "Bo");
+    }
+
+    /** A new game has Commander mode on, as the setup screen starts it (AC-43). */
+    @Test
+    public void startANewSetupWithCommanderModeOn() {
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false)));
+
+        assertThat(setup.commanderMode()).isTrue();
+        assertThat(store.loadActive()).get().extracting(s -> s.setup().commanderMode()).isEqualTo(true);
+    }
+
+    /**
+     * The commanders are in each seat's Command zone at the start, in game order (p0 is Me), and each library is the
+     * 100-card deck less its commanders and the hand.
+     */
+    @Test
+    public void startEachCommanderInItsSeatsCommandZoneWithTheLibraryLessTheCommanders() {
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", false, List.of("Krenko, Mob Boss"), ""),
+                new CompanionSetup.Seat("Bo", true, List.of("Tymna the Weaver", "Thrasios, Triton Hero"), ""),
+                new CompanionSetup.Seat("Cy", false)));
+
+        List<String> state = setup.initialState();
+
+        // game order starts at Me: Bo, Cy, Ann
+        assertThat(state).contains("p0command=Tymna the Weaver|IsCommander;Thrasios, Triton Hero|IsCommander",
+                "p2command=Krenko, Mob Boss|IsCommander");
+        assertThat(state).noneMatch(line -> line.startsWith("p1command="));
+        assertThat(libraryCount(state, 0)).isEqualTo(100 - 2 - 7);
+        assertThat(libraryCount(state, 1)).isEqualTo(100 - 7);
+        assertThat(libraryCount(state, 2)).isEqualTo(100 - 1 - 7).isEqualTo(CompanionSetup.DEFAULT_LIBRARY);
+    }
+
+    private static int libraryCount(List<String> state, int player) {
+        String prefix = "p" + player + "library=";
+        return state.stream().filter(line -> line.startsWith(prefix))
+                .mapToInt(line -> line.substring(prefix.length()).split(";").length).findFirst().orElse(-1);
+    }
 }

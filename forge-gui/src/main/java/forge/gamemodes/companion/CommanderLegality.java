@@ -1,5 +1,6 @@
 package forge.gamemodes.companion;
 
+import forge.StaticData;
 import forge.card.CardRules;
 import forge.card.CardRulesPredicates;
 import forge.deck.DeckFormat;
@@ -70,9 +71,28 @@ public final class CommanderLegality {
      * The first seat after {@code activeSeat} in turn order ({@link CompanionSetup#seats()}, wrapping round) whose
      * commanders allow {@code card}, never the active seat itself; empty when there is none.
      *
-     * @param commandersOf a seat name's commanders, empty for none. Until {@code CompanionSetup.Seat} holds its
-     *                     commanders (slice 6 chunk 3) the caller supplies them.
+     * @param commandersOf a seat name's commanders, empty for none
      */
+    /** {@link #firstLegalSeatAfter(PaperCard, CompanionSetup, String, Function)} with the setup's own commanders. */
+    public static Optional<SeatAhead> firstLegalSeatAfter(PaperCard card, CompanionSetup setup, String activeSeat) {
+        return firstLegalSeatAfter(card, setup, activeSeat, seat -> commanders(setup.commandersOf(seat)));
+    }
+
+    /**
+     * The cards named {@code names}, from Forge's card database. A name it doesn't have is left out, so it never
+     * narrows what a seat can play.
+     */
+    public static List<PaperCard> commanders(List<String> names) {
+        List<PaperCard> cards = new ArrayList<>();
+        for (String name : names) {
+            PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
+            if (card != null) {
+                cards.add(card);
+            }
+        }
+        return cards;
+    }
+
     public static Optional<SeatAhead> firstLegalSeatAfter(PaperCard card, CompanionSetup setup, String activeSeat,
                                                           Function<String, List<PaperCard>> commandersOf) {
         List<CompanionSetup.Seat> seats = setup.seats();

@@ -91,8 +91,16 @@ public final class TableEditor {
      * Adds the card named {@code name} for {@code player}. With {@code fromHand}, it leaves that hand: the player's
      * known copy if they have one, otherwise one of the unknown cards. A name that is neither a card nor a token is
      * added as an emblem, as Forge has no list of emblems.
+     * <p>
+     * When {@code player}'s Command zone holds their commander of that name, it's that card, from there, whatever
+     * {@code fromHand} says, and the hand isn't touched. The cast is free, as every add is, but the engine still counts
+     * it as a cast from the Command zone, so the next one's tax goes up as the rules say.
      */
     public static Result addCard(Player player, String name, boolean fromHand, Mode mode) {
+        Card commander = findCommanderInCommandZone(player, name);
+        if (commander != null) {
+            return addCommander(player, commander, mode);
+        }
         Game game = player.getGame();
         String seat = player.getName();
         PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(name);
@@ -855,6 +863,39 @@ public final class TableEditor {
         for (Map.Entry<String, CardRules> entry : StaticData.instance().getAllTokens().getRules().entrySet()) {
             if (entry.getValue().getName().equalsIgnoreCase(name)) {
                 return StaticData.instance().getAllTokens().getToken(entry.getKey());
+            }
+        }
+        return null;
+    }
+
+    /** Casts {@code commander} from its owner's Command zone, or puts it onto the battlefield from there. */
+    private static Result addCommander(Player player, Card commander, Mode mode) {
+        Game game = player.getGame();
+        String name = commander.getName();
+        boolean done;
+        if (mode == Mode.PUT_ONTO_BATTLEFIELD) {
+            Card moved = commander.isPermanent()
+                    ? game.getAction().moveToPlay(commander, player, null, AbilityKey.newMap()) : null;
+            done = moved != null && moved.isInZone(ZoneType.Battlefield);
+        } else {
+            done = cast(player, commander);
+        }
+        settle(game);
+        if (!done) {
+            // a cancelled cast leaves it where it was, in the Command zone
+            return Result.add(player.getName(), name, null, false, name + " wasn't added: "
+                    + (mode == Mode.CAST ? "it couldn't be cast, or the cast was cancelled." : "it isn't a permanent."));
+        }
+        // nothing left the hand
+        return Result.add(player.getName(), name, CompanionLogEntry.FromHand.NONE, true, player.getName()
+                + (mode == Mode.CAST ? " casts " : " puts in ") + name + " from the Command zone");
+    }
+
+    /** {@code player}'s own commander named {@code name} in their Command zone, or null. */
+    private static Card findCommanderInCommandZone(Player player, String name) {
+        for (Card card : player.getCardsIn(ZoneType.Command)) {
+            if (card.isCommander() && card.getOwner() == player && card.getName().equals(name)) {
+                return card;
             }
         }
         return null;

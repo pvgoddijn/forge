@@ -30,6 +30,8 @@ import static org.testng.Assert.assertTrue;
  * the engine can run headless; nothing in these cards asks for a choice.
  */
 public class TableEditorTest extends AITest {
+    /** A seat with no commander: its whole 100-card deck less the hand is in its library. */
+    private static final int NO_COMMANDER_LIBRARY = CompanionSetup.DEFAULT_LIBRARY + 1;
 
     private Game startTable() {
         Game game = initAndCreateThreePlayerGame();
@@ -57,7 +59,7 @@ public class TableEditorTest extends AITest {
         Game game = startTable();
         for (Player p : game.getPlayers()) {
             assertEquals(CompanionCards.hiddenInHand(p), 7);
-            assertEquals(p.getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY);
+            assertEquals(p.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
             assertEquals(p.getLife(), 40);
         }
     }
@@ -377,7 +379,7 @@ public class TableEditorTest extends AITest {
         assertTrue(TableEditor.addCard(p, "Elvish Visionary", true, TableEditor.Mode.CAST).done());
         resolveAll(game);
         assertEquals(CompanionCards.hiddenInHand(p), 7, "one card left the hand, one was drawn");
-        assertEquals(p.getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY - 1);
+        assertEquals(p.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY - 1);
     }
 
     @Test
@@ -416,7 +418,7 @@ public class TableEditorTest extends AITest {
         assertEquals(CompanionCards.hiddenInHand(q), 6);
         assertEquals(q.getLife(), 44);
         assertEquals(countCardsWithName(loaded, "Gray Merchant of Asphodel"), 1);
-        assertEquals(q.getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY);
+        assertEquals(q.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
         assertEquals(q.getCardsIn(ZoneType.Command).size(), 1, "the table effect, and only one");
     }
 
@@ -3080,7 +3082,8 @@ public class TableEditorTest extends AITest {
     }
 
     /**
-     * Under the table's rules (a Constructed game, so no rule 903.9a check), a commander moved to a graveyard stays
+     * Without the Commander variant (this test game's Constructed rules, so no rule 903.9a check; a Companion game
+     * with commanders has it, see {@link #aCommanderThatDiesIsOfferedTheCommandZone}), a commander moved to a graveyard stays
      * there and its owner isn't asked. Moved to a hand, the engine's command-zone replacement (903.9b) asks its owner,
      * and a yes puts it into the Command zone, which the message says.
      */
@@ -3240,5 +3243,186 @@ public class TableEditorTest extends AITest {
         assertTrue(engineEntries(log).size() > engineBefore, "the trigger's resolution is copied: " + log);
         assertTrue(CompanionHistory.of(log).rows().stream().anyMatch(r -> r.kind() == CompanionLogEntry.Kind.MOVE),
                 "the move is a history row");
+    }
+
+    // ---- Slice 6, chunks 3-5: commanders from the setup, the Commander variant, and casting from the Command zone ----
+
+    /** Seat order Ann (Me), Bo, Cy, so game order too: Bo has Krenko as his commander. */
+    private static CompanionSetup setupWithBosCommander() {
+        return CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                new CompanionSetup.Seat("Bo", false, List.of(KRENKO), ""), new CompanionSetup.Seat("Cy", false)));
+    }
+
+    /** A game as {@link CompanionMatch} makes it for {@code setup}: its variants, then the setup's starting state. */
+    private Game startCommanderTable(CompanionSetup setup) {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(setup, game.getRules());
+        CompanionGameState.of(setup.initialState()).applyNow(game);
+        return game;
+    }
+
+    /** Bo's Krenko is his commander, in his Command zone, and he may cast it from there. */
+    private void assertKrenkoIsBosCommanderInCommand(Game game, String when) {
+        Player bo = game.getPlayers().get(1);
+        List<Card> krenko = named(bo, ZoneType.Command, KRENKO);
+        assertEquals(krenko.size(), 1, when + ": Krenko is in Bo's Command zone");
+        assertTrue(krenko.get(0).isCommander(), when + ": and is a commander");
+        assertEquals(bo.getCommanders(), krenko, when + ": Bo's only commander");
+        assertTrue(mayCast(game, krenko.get(0), bo), when + ": Bo may cast it from there");
+        assertEquals(game.getCardsInGame().stream().filter(c -> c.getName().equals(KRENKO)).count(), 1L,
+                when + ": and there is only one");
+    }
+
+    @Test
+    public void aCommanderFromTheSetupStartsInCommandWithTheVariantAndTheLibraryLessIt() {
+        Game game = startCommanderTable(setupWithBosCommander());
+
+        assertTrue(game.getRules().hasAppliedVariant(forge.game.GameType.Commander), "a seat has a commander");
+        assertKrenkoIsBosCommanderInCommand(game, "at the start");
+        assertEquals(game.getPlayers().get(1).getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY);
+        assertEquals(game.getPlayers().get(0).getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
+        assertEquals(CompanionCards.hiddenInHand(game.getPlayers().get(1)), CompanionSetup.DEFAULT_HAND);
+        assertEquals(game.getPlayers().get(1).getCardsIn(ZoneType.Command).size(), 3,
+                "the commander, the engine's commander effect, and the table effect");
+    }
+
+    @Test
+    public void withNoCommanderTheVariantIsntApplied() {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                new CompanionSetup.Seat("Bo", false))), game.getRules());
+        assertFalse(game.getRules().hasAppliedVariant(forge.game.GameType.Commander));
+    }
+
+    @Test
+    public void aCommanderStaysACommanderInCommandAfterAGameStateRoundTrip() {
+        CompanionSetup setup = setupWithBosCommander();
+        Game game = startCommanderTable(setup);
+        String saved = CompanionGameState.capture(game);
+
+        Game loaded = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(setup, loaded.getRules());
+        CompanionGameState.of(List.of(saved.split("\n"))).applyNow(loaded);
+
+        assertKrenkoIsBosCommanderInCommand(loaded, "after a round trip");
+        assertEquals(loaded.getPlayers().get(1).getCardsIn(ZoneType.Command).size(), 3,
+                "one commander effect and one table effect, none left over");
+    }
+
+    /** Krenko is cast from the Command zone and resolves; one undo puts him back there, still a commander. */
+    @Test
+    public void aCommanderCastFromCommandIsBackThereAfterAnUndo() {
+        CompanionSetup setup = setupWithBosCommander();
+        Game game = startCommanderTable(setup);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // step 0, the start
+        act(rec, game, g -> {
+            TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+            resolveAll(g);
+            return add;
+        });
+        assertEquals(named(bo, ZoneType.Battlefield, KRENKO).size(), 1, "cast and resolved");
+
+        undo(rec, game);
+
+        assertKrenkoIsBosCommanderInCommand(game, "after an undo");
+        assertEquals(named(bo, ZoneType.Battlefield, KRENKO), List.of());
+    }
+
+    /**
+     * "From hand" or not, Bo's commander is cast from his Command zone and the hand isn't touched. The cast is free,
+     * but the engine counts it as a cast from the Command zone, so the tax for the next one is 2.
+     */
+    @Test
+    public void addingACommanderCastsItFromCommandAndLeavesTheHand() {
+        Game game = startCommanderTable(setupWithBosCommander());
+        Player bo = game.getPlayers().get(1);
+        Card krenko = named(bo, ZoneType.Command, KRENKO).get(0);
+        int hand = bo.getCardsIn(ZoneType.Hand).size();
+
+        TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+
+        assertTrue(add.done(), add.message());
+        assertEquals(add.message(), bo.getName() + " casts " + KRENKO + " from the Command zone");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE, "nothing left the hand");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), hand, "the hand isn't touched");
+        assertEquals(CompanionCards.hiddenInHand(bo), CompanionSetup.DEFAULT_HAND);
+        assertEquals(game.getStack().size(), 1);
+        assertEquals(game.getStack().peekAbility().getHostCard(), krenko, "the commander itself, not a new card");
+        assertEquals(bo.getCommanderCast(krenko), 1, "counted for tax");
+        resolveAll(game);
+        assertEquals(named(bo, ZoneType.Battlefield, KRENKO), List.of(krenko));
+        assertTrue(krenko.isCommander());
+        assertEquals(named(bo, ZoneType.Command, KRENKO), List.of());
+    }
+
+    /** Another player's commander of the same name isn't theirs to cast: Ann's Krenko is a new card, from her hand. */
+    @Test
+    public void anotherPlayersCommanderIsntCastFromTheirCommandZone() {
+        Game game = startCommanderTable(setupWithBosCommander());
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+
+        TableEditor.Result add = TableEditor.addCard(ann, KRENKO, true, TableEditor.Mode.CAST);
+
+        assertTrue(add.done(), add.message());
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEquals(named(bo, ZoneType.Command, KRENKO).size(), 1, "Bo's commander stays where it is");
+        assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND - 1);
+    }
+
+    /**
+     * With the Commander variant, a commander that dies goes to its owner's graveyard, and the state-based check
+     * (rule 903.9a) offers its owner the Command zone; a yes puts it there, and it can be cast again, for 2 more.
+     */
+    @Test
+    public void aCommanderThatDiesIsOfferedTheCommandZone() {
+        Game game = startCommanderTable(setupWithBosCommander());
+        Player bo = game.getPlayers().get(1);
+        List<String> asked = new ArrayList<>();
+        bo.dangerouslySetController(new forge.ai.PlayerControllerAi(game, bo, bo.getLobbyPlayer()) {
+            @Override
+            public boolean confirmAction(forge.game.spellability.SpellAbility sa,
+                    forge.game.player.PlayerActionConfirmMode mode, String message, List<String> options,
+                    Card cardToShow, java.util.Map<String, Object> params) {
+                asked.add("action " + mode);
+                return true;
+            }
+        });
+        assertTrue(TableEditor.addCard(bo, KRENKO, false, TableEditor.Mode.CAST).done());
+        resolveAll(game);
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+
+        TableEditor.Result dies = TableEditor.moveTo(krenko, bo, ZoneType.Graveyard);
+        game.getAction().checkStateEffects(true);
+
+        assertTrue(dies.done(), dies.message());
+        assertEquals(asked, List.of("action " + forge.game.player.PlayerActionConfirmMode.ChangeZoneToAltDestination),
+                "Bo is asked whether it goes to the Command zone");
+        assertEquals(named(bo, ZoneType.Graveyard, KRENKO), List.of());
+        Card inCommand = named(bo, ZoneType.Command, KRENKO).get(0);
+        assertTrue(inCommand.isCommander());
+
+        TableEditor.Result again = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+
+        assertTrue(again.done(), "free, so the tax doesn't stop it: " + again.message());
+        assertEquals(bo.getCommanderCast(inCommand), 2, "the second cast from the Command zone");
+        assertEquals(CompanionCards.hiddenInHand(bo), CompanionSetup.DEFAULT_HAND);
+    }
+
+    /** The legality check looks the setup's commanders up by name, in Forge's card database (slice 6 chunk 3). */
+    @Test
+    public void theNextLegalSeatComesFromTheSetupsCommanders() {
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Alice", true, List.of(KRENKO), ""),
+                new CompanionSetup.Seat("Bob", false, List.of("Talrand, Sky Summoner"), ""),
+                new CompanionSetup.Seat("Carol", false, List.of("Marwyn, the Nurturer"), "")));
+        PaperCard elves = StaticData.instance().getCommonCards().getUniqueByName("Llanowar Elves");
+        PaperCard swords = StaticData.instance().getCommonCards().getUniqueByName("Swords to Plowshares");
+
+        assertEquals(CommanderLegality.firstLegalSeatAfter(elves, setup, "Alice"),
+                java.util.Optional.of(new CommanderLegality.SeatAhead("Carol", 2)));
+        assertEquals(CommanderLegality.firstLegalSeatAfter(swords, setup, "Alice"), java.util.Optional.empty());
     }
 }
