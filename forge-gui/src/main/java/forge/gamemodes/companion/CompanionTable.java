@@ -156,6 +156,8 @@ public class CompanionTable {
     private volatile List<CompanionLogEntry.Added> addedThisTurn = List.of();
     /** The active seat's summoning-sick creatures at the latest prompt, if it was before combat. See {@link #sickBeforeCombat}. */
     private volatile List<Integer> sickBeforeCombat = List.of();
+    /** The game's log entries as of the latest priority prompt. See {@link #logAtPrompt}. */
+    private volatile List<CompanionLogEntry> logAtPrompt = List.of();
     /** Every seat's mana sources at the latest prompt, for {@link #couldHaveCast}. */
     private volatile List<TableEditor.ManaSources> manaSources = List.of();
     /** The turn and phase of the latest priority prompt, for {@link #promptNote}. */
@@ -784,6 +786,12 @@ public class CompanionTable {
         manaSources = TableEditor.manaSources(game);
         promptTurn = game.getPhaseHandler().getTurn();
         promptPhase = phase;
+        try {
+            logAtPrompt = log();
+        } catch (RuntimeException e) {
+            // an unreadable log mustn't stop the prompt; the history keeps what it showed last
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -877,6 +885,16 @@ public class CompanionTable {
      */
     public List<CompanionLogEntry.Added> addedThisTurn() {
         return addedThisTurn;
+    }
+
+    /**
+     * The game's log entries as written, oldest first, as of the latest priority prompt: the live game's history for
+     * the UI to show ({@link CompanionHistory#of}). Empty before the first prompt. Safe from any thread, and never
+     * waits for the game thread or reads the store: like {@link #addedThisTurn}, it's published by the prompt, so it
+     * can be out of date only while the game runs between prompts.
+     */
+    public List<CompanionLogEntry> logAtPrompt() {
+        return logAtPrompt;
     }
 
     /**

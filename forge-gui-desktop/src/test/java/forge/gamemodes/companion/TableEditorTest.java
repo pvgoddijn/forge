@@ -1766,6 +1766,22 @@ public class TableEditorTest extends AITest {
                 "an undo sent anyway is refused");
     }
 
+    /** The history the UI reads is the log as of the latest prompt: an entry written since shows at the next one. */
+    @Test
+    public void logAtPromptIsTheLogAsOfTheLatestPrompt() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        assertTrue(rec.table.logAtPrompt().isEmpty(), "no prompt yet");
+
+        rec.table.submit(g -> TableEditor.setLife(ann, 30, false));
+        rec.table.runPending(game);
+        assertTrue(rec.table.logAtPrompt().isEmpty(), "written, but no prompt since");
+        saveAsTheTableDoes(rec, game);
+        assertFalse(rec.table.logAtPrompt().isEmpty());
+        assertEquals(rec.table.logAtPrompt(), rec.table.log());
+    }
+
     /** The undone entries stay in the log, marked by the undo; a new action after it writes the step again, unmarked. */
     @Test
     public void anUndoneEntryStaysMarkedAndTheNextActionWritesItsStepAgain() {

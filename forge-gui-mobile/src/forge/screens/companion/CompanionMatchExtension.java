@@ -1,9 +1,11 @@
 package forge.screens.companion;
 
+import forge.Forge;
 import forge.assets.FSkinImage;
 import forge.game.Game;
 import forge.game.card.CardView;
 import forge.game.player.PlayerView;
+import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.TableEditor;
@@ -49,6 +51,8 @@ class CompanionMatchExtension implements MatchExtension {
         menu.addItem(new FMenuItem("Wrong player…",
                 e -> WrongPlayerDialog.show(table, MatchController.instance.getGameView()),
                 !table.addedThisTurn().isEmpty()));
+        // the log as of that prompt too, published by the game thread: nothing here reads the game or the store
+        menu.addItem(new FMenuItem(Forge.getLocalizer().getMessage("lblCompanionHistory"), e -> showHistory()));
         // the menu is built each time it opens, so the labels show the current settings
         boolean everyTurn = table.engineCombat();
         if (!everyTurn) {
@@ -78,6 +82,11 @@ class CompanionMatchExtension implements MatchExtension {
                     e -> chooseToReady(READY_PICK, sick)));
         }
         menu.addItem(new FMenuItem("End game…", FSkinImage.CONCEDE, e -> confirmEnd()));
+    }
+
+    private void showHistory() {
+        List<String> seats = table.setup().seats().stream().map(CompanionSetup.Seat::name).toList();
+        Forge.openScreen(new CompanionHistoryScreen(table.logAtPrompt(), seats));
     }
 
     private static final String READY_PICK = "Pick the ones that were on the table before this turn";
