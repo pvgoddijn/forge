@@ -1,7 +1,11 @@
 package forge.screens.match;
 
+import forge.game.card.CardView;
 import forge.game.player.PlayerView;
 import forge.menu.FDropDownMenu;
+import forge.menu.FMenuItem;
+
+import java.util.List;
 
 /**
  * What a game mode adds to, or changes in, the match screen for one match. Set after
@@ -11,6 +15,15 @@ import forge.menu.FDropDownMenu;
 public interface MatchExtension {
     /** Adds items to the top of the game menu. */
     default void addGameMenuItems(FDropDownMenu menu) {
+    }
+
+    /**
+     * Items for a card's menu, which a long press on a card in a player's zones opens (a right-click on desktop), with
+     * the card's zoom as its last item. Asked on the UI thread, each time the menu opens; with no items, the press
+     * shows the zoom as usual.
+     */
+    default List<FMenuItem> cardMenuItems(CardView card) {
+        return List.of();
     }
 
     /**
