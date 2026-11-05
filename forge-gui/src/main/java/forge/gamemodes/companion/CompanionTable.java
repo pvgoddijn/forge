@@ -1,20 +1,31 @@
 package forge.gamemodes.companion;
 
+import com.google.common.eventbus.Subscribe;
 import forge.game.Game;
+import forge.game.GameEntityView;
+import forge.game.GameLogEntry;
+import forge.game.GameLogEntryType;
 import forge.game.card.Card;
+import forge.game.card.CardView;
+import forge.game.event.*;
 import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
+import forge.game.player.PlayerView;
 import forge.gamemodes.match.input.Input;
 import forge.gamemodes.match.input.InputPassPriority;
 import forge.gui.interfaces.IGuiGame;
 
 import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * One tracked game while it runs: the operator's pending actions, and saving after each one.
@@ -150,6 +161,26 @@ public class CompanionTable {
     /** The turn and phase of the latest priority prompt, for {@link #promptNote}. */
     private volatile int promptTurn = NO_TURN;
     private volatile PhaseType promptPhase;
+    /**
+     * The game's log as written, and its latest step, kept in memory so a prompt or a log entry doesn't read the log
+     * file or list the steps folder (L3). Null until first needed; read again from the store after a load, which may
+     * add an entry ({@link CompanionStore#loadState}), and after a write that failed part way. This table is the only
+     * writer while its game runs. Guarded by {@code this}.
+     */
+    private List<CompanionLogEntry> log;
+    private int latestStep;
+    /** The Forge game log entry types copied into the table's log as {@code engine} entries. Not phases or mana. */
+    private static final Set<GameLogEntryType> ENGINE_TYPES = EnumSet.of(GameLogEntryType.TURN,
+            GameLogEntryType.LIFE, GameLogEntryType.DAMAGE, GameLogEntryType.ZONE_CHANGE, GameLogEntryType.DISCARD,
+            GameLogEntryType.STACK_RESOLVE, GameLogEntryType.COMBAT, GameLogEntryType.PLAYER_CONTROL);
+    /** The running game's engine log copier; a restart replaces it, which stops the old game's. */
+    private volatile EngineLog engineLog;
+    /**
+     * Whether the table itself is changing the game: an op runs, or a save is applied. What the engine logs then isn't
+     * copied: an op writes its own entry, and a save applied (a start, an undo) sets every life total again, which
+     * isn't something that happened. Game loop thread only.
+     */
+    private boolean tableActing;
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -228,8 +259,43 @@ public class CompanionTable {
 
     /** {@link #tell(String)}, about the seats {@code affected}. */
     private void tell(String notice, List<String> affected) {
-        store.appendLog(id, entry(CompanionLogEntry.Kind.NOTICE, affected, notice));
+        append(entry(CompanionLogEntry.Kind.NOTICE, affected, notice));
         onNotice.accept(notice);
+    }
+
+    /** Writes {@code entry} through the store, which never throws for it, and keeps it in {@link #log}. */
+    private synchronized void append(CompanionLogEntry entry) {
+        List<CompanionLogEntry> entries = cachedLog();
+        entries.add(store.appendLog(id, entry));
+    }
+
+    private synchronized List<CompanionLogEntry> cachedLog() {
+        if (log == null) {
+            log = new ArrayList<>(store.loadLog(id));
+            latestStep = store.latestStep(id);
+        }
+        return log;
+    }
+
+    /** The game's log entries as written, oldest first: what {@link CompanionStore#loadLog} reads, from memory. */
+    synchronized List<CompanionLogEntry> log() {
+        return List.copyOf(cachedLog());
+    }
+
+    /** The game's current step, as {@link CompanionStore#latestStep} says, from memory. */
+    synchronized int latestStep() {
+        cachedLog();
+        return latestStep;
+    }
+
+    private synchronized void setLatestStep(int step) {
+        cachedLog();
+        latestStep = step;
+    }
+
+    /** Reads the log and step from the store again at next use: after a load, or a write that may have half happened. */
+    private synchronized void forgetCache() {
+        log = null;
     }
 
     /**
@@ -240,7 +306,7 @@ public class CompanionTable {
         Game game = seats.stream().findFirst().map(CompanionPlayerController::getGame).orElse(null);
         int turn = game == null ? 0 : Math.max(game.getPhaseHandler().getTurn(), 0);
         Player active = game == null ? null : game.getPhaseHandler().getPlayerTurn();
-        return CompanionLogEntry.of(kind, store.latestStep(id) + 1, turn, active == null ? null : active.getName(),
+        return CompanionLogEntry.of(kind, latestStep() + 1, turn, active == null ? null : active.getName(),
                 affected, text);
     }
 
@@ -254,6 +320,14 @@ public class CompanionTable {
         // setup screen gets a new table.
         boolean restarted = seats.removeIf(old -> old.getGame() != seat.getGame());
         seats.add(seat); // first, so the notice below is logged with the new game's turn
+        EngineLog current = engineLog;
+        if (current == null || current.game != seat.getGame()) {
+            // the first seat of this game: copy what its engine logs. Game has no unsubscribe, so the old game's copier
+            // stays on the old game's event bus, which nothing posts to after its loop ended, and is stopped by this
+            EngineLog copier = new EngineLog(seat.getGame());
+            engineLog = copier;
+            seat.getGame().subscribeToEvents(copier);
+        }
         if (restarted && !parked.isEmpty()) {
             // they were for the old game; the restart is from a save made before they were submitted
             tell("The game was restarted: " + nameOf(parked.get(0)) + " and anything after it wasn't added",
@@ -267,6 +341,119 @@ public class CompanionTable {
                 endPriorityPrompt(seat);
             }
         });
+    }
+
+    /**
+     * Copies what the engine logs into the table's log as {@code engine} entries, under the step the next save writes,
+     * like any entry. It watches the game's events and formats each with the game log's own formatter, so the text and
+     * type are those of Forge's {@code GameLog}. Not the {@code GameLog} itself: its entries don't say which player
+     * they are about, and an event does. Called on the game loop thread, where the game posts its events.
+     */
+    private final class EngineLog {
+        final Game game;
+
+        EngineLog(Game game) {
+            this.game = game;
+        }
+
+        @Subscribe
+        public void receive(GameEvent event) {
+            // replaced by a restart, or the table is acting; the outcome's formatting adds to Forge's log itself
+            if (engineLog != this || tableActing || event instanceof GameEventGameOutcome) {
+                return;
+            }
+            try {
+                GameLogEntry logged = event.visit(game.getGameLog().getEventVisitor());
+                if (logged != null && ENGINE_TYPES.contains(logged.type())) {
+                    append(entry(CompanionLogEntry.Kind.ENGINE, affectedBy(game, event, logged), logged.message()));
+                }
+            } catch (RuntimeException e) {
+                // the history misses a line rather than the game stopping
+                e.printStackTrace();
+            }
+        }
+    }
+
+    /**
+     * The seats an engine log entry is about, by name: the players its event names, as a life change names whose life
+     * changed. For an event that names none, such as a line a card's effect logs, the seats whose names its text
+     * mentions as a whole word; a seat named like a card ("Angel" in "Serra Angel") can then be matched wrongly, but
+     * only there.
+     */
+    static List<String> affectedBy(Game game, GameEvent event, GameLogEntry logged) {
+        Set<PlayerView> players = new LinkedHashSet<>();
+        if (event instanceof GameEventPlayerLivesChanged e) {
+            players.add(e.player());
+        } else if (event instanceof GameEventPlayerDamaged e) {
+            players.add(e.target());
+        } else if (event instanceof GameEventCardDamaged e) {
+            addController(players, e.card());
+        } else if (event instanceof GameEventPlayerPoisoned e) {
+            players.add(e.receiver());
+        } else if (event instanceof GameEventPlayerRadiation e) {
+            players.add(e.receiver());
+        } else if (event instanceof GameEventTurnBegan e) {
+            players.add(e.turnOwner());
+        } else if (event instanceof GameEventCardChangeZone e) {
+            addController(players, e.card());
+            if (e.card() != null) {
+                players.add(e.card().getOwner()); // a stolen creature dies into its owner's graveyard
+            }
+        } else if (event instanceof GameEventPlayerControl e) {
+            players.add(e.player());
+        } else if (event instanceof GameEventAttackersDeclared e) {
+            players.add(e.player());
+            e.attackersMap().keySet().forEach(defender -> addEntity(players, defender));
+        } else if (event instanceof GameEventBlockersDeclared e) {
+            players.add(e.defendingPlayer());
+            e.blockers().keySet().forEach(defender -> addEntity(players, defender));
+        } else if (event instanceof GameEventSpellResolved e) {
+            if (e.spell() != null) {
+                addController(players, e.spell().getHostCard());
+            }
+        } else if (event instanceof GameEventScry e) {
+            players.add(e.player());
+        } else if (event instanceof GameEventSurveil e) {
+            players.add(e.player());
+        } else if (event instanceof GameEventCardModeChosen e) {
+            players.add(e.player());
+        } else if (logged.sourceCard() != null) {
+            addController(players, logged.sourceCard()); // a discard names the card discarded
+        }
+        List<String> names = new ArrayList<>();
+        for (PlayerView player : players) {
+            if (player != null && !names.contains(player.getName())) {
+                names.add(player.getName());
+            }
+        }
+        if (names.isEmpty()) {
+            for (Player player : game.getPlayers()) {
+                if (mentions(logged.message(), player.getName())) {
+                    names.add(player.getName());
+                }
+            }
+        }
+        return names;
+    }
+
+    private static void addController(Set<PlayerView> players, CardView card) {
+        if (card != null) {
+            players.add(card.getController() != null ? card.getController() : card.getOwner());
+        }
+    }
+
+    private static void addEntity(Set<PlayerView> players, GameEntityView entity) {
+        if (entity instanceof PlayerView player) {
+            players.add(player);
+        } else if (entity instanceof CardView card) {
+            addController(players, card); // a planeswalker or battle attacked
+        }
+    }
+
+    /** Whether {@code text} has {@code name} in it as a whole word, not as part of a longer one. */
+    static boolean mentions(String text, String name) {
+        return text != null && !name.isEmpty() && Pattern.compile("(?<![\\p{L}\\p{N}])" + Pattern.quote(name)
+                + "(?![\\p{L}\\p{N}])").matcher(text).find();
     }
 
     /** Queues {@code op}, and ends the priority prompt so the game runs it. Any thread. */
@@ -319,7 +506,9 @@ public class CompanionTable {
 
     /** The state to start the match from: the latest save, or the setup's start if there is none yet. */
     public List<String> latestState() {
-        return store.loadState(id).orElseGet(setup::initialState);
+        List<String> state = store.loadState(id).orElseGet(setup::initialState);
+        forgetCache(); // the load may have added an entry
+        return state;
     }
 
     /**
@@ -328,8 +517,14 @@ public class CompanionTable {
      * take back to the same state. Game loop thread.
      */
     public void startFromLatest(Game game) {
-        CompanionGameState.of(latestState()).applyNow(game);
-        lastSaved = store.latestStep(id) == CompanionStore.NO_STEP ? null : CompanionGameState.capture(game);
+        List<String> state = latestState();
+        tableActing = true;
+        try {
+            CompanionGameState.of(state).applyNow(game);
+        } finally {
+            tableActing = false;
+        }
+        lastSaved = latestStep() == CompanionStore.NO_STEP ? null : CompanionGameState.capture(game);
     }
 
     /**
@@ -352,7 +547,7 @@ public class CompanionTable {
     private final class Undo implements Op {
         @Override
         public TableEditor.Result run(Game game) {
-            int latest = store.latestStep(id);
+            int latest = latestStep();
             if (latest == CompanionStore.NO_STEP) {
                 return new TableEditor.Result(false, "Nothing to undo yet");
             }
@@ -375,6 +570,7 @@ public class CompanionTable {
             // files first, then the log: a crash in between leaves entries for a step that isn't on disk, which the
             // resume marks undone (CompanionStore.loadState), so a reused step number can't hide them
             store.discardAfter(id, back);
+            setLatestStep(back);
             lastSaved = CompanionGameState.capture(game);
             ranSinceSave = false; // what ran is taken back
             PhaseHandler ph = game.getPhaseHandler();
@@ -384,7 +580,7 @@ public class CompanionTable {
             Player active = ph.getPlayerTurn();
             // the entries of the action taken back carry the step its save wrote, or would have written
             String text = "Undone: back to turn " + ph.getTurn() + (active == null ? "" : ", " + active.getName());
-            store.appendLog(id, CompanionLogEntry.undo(back, List.of(back + 1), Math.max(ph.getTurn(), 0),
+            append(CompanionLogEntry.undo(back, List.of(back + 1), Math.max(ph.getTurn(), 0),
                     active == null ? null : active.getName(), text));
             if (!parked.isEmpty()) {
                 List<String> affected = affectedBy(parked.get(0));
@@ -520,12 +716,16 @@ public class CompanionTable {
 
     private void runOne(Game game, Op op) {
         TableEditor.Result result;
+        tableActing = true;
         try {
             result = op.run(game);
         } catch (RuntimeException e) {
             // one bad action mustn't stop the table
             e.printStackTrace();
+            forgetCache(); // an undo may have stopped between its files and the log
             result = new TableEditor.Result(false, "That didn't work: " + e);
+        } finally {
+            tableActing = false;
         }
         if (!(op instanceof Undo)) {
             ranSinceSave = true; // even one that failed may have changed something; a save of no change writes nothing
@@ -546,7 +746,7 @@ public class CompanionTable {
         if (card != null) {
             entry = entry.withCard(card, result.fromHand());
         }
-        store.appendLog(id, entry);
+        append(entry);
         onResult.accept(result);
     }
 
@@ -574,7 +774,7 @@ public class CompanionTable {
         if (settledPoint) {
             save(game);
         }
-        int latest = store.latestStep(id);
+        int latest = latestStep();
         // as Undo decides: past step 0 there's always a save to go back to; at step 0 only when the game has moved
         // on from it (something on the stack, a combat stop, a save that failed), as then step 0 itself is the target
         boolean asSaved = settledPoint && !saveFailing && !game.getStack().hasSimultaneousStackEntries();
@@ -655,7 +855,7 @@ public class CompanionTable {
         try {
             List<CompanionLogEntry.Added> found = new ArrayList<>();
             int turn = game.getPhaseHandler().getTurn();
-            for (CompanionLogEntry.Added added : CompanionLogEntry.addedInTurn(store.loadLog(id), turn)) {
+            for (CompanionLogEntry.Added added : CompanionLogEntry.addedInTurn(log(), turn)) {
                 Player owner = seat(game, added.player());
                 if (owner != null && TableEditor.findToReassign(owner, added.card()) != null) {
                     found.add(added);
@@ -707,13 +907,14 @@ public class CompanionTable {
                 ranSinceSave = false;
                 return;
             }
-            store.saveState(id, state);
+            setLatestStep(store.saveState(id, state));
             lastSaved = state;
             saveFailing = false;
             ranSinceSave = false;
         } catch (RuntimeException e) {
             // the game goes on unsaved rather than stopping; the operator is told once, not at every prompt
             e.printStackTrace();
+            forgetCache();
             if (!saveFailing) {
                 saveFailing = true;
                 onResult.accept(new TableEditor.Result(false, "The game couldn't be saved: " + e.getMessage()));
