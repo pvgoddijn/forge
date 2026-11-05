@@ -140,9 +140,8 @@ public final class TableEditor {
                     + (mode == Mode.CAST ? "it couldn't be cast, or the cast was cancelled." : "it isn't a permanent."));
         }
         settle(game);
-        // AC-19/AC-20: the known copy, else an unknown card, else nothing (not from the hand, or the hand was empty)
-        CompanionLogEntry.FromHand left = known != null ? CompanionLogEntry.FromHand.KNOWN
-                : hidden != null ? CompanionLogEntry.FromHand.PLACEHOLDER : CompanionLogEntry.FromHand.NONE;
+        // AC-19/AC-20: the known copy, else an unknown card, else nothing (the hand was empty); none when not from it
+        CompanionLogEntry.FromHand left = fromHand ? handSide(known, hidden) : CompanionLogEntry.FromHand.NONE;
         return Result.add(seat, name, left, true,
                 player.getName() + (mode == Mode.CAST ? " casts " : " puts in ") + name);
     }
@@ -188,8 +187,10 @@ public final class TableEditor {
      * controls it. Its owner, the player it was logged for, gets back what left their hand ({@code fromHand}, from the
      * add's log entry): an unknown card for {@code placeholder}; the known copy, as a known card, for {@code known}
      * (the operator says they never played it, so it's still in their hand); nothing for {@code none} (not from the
-     * hand, or their hand was empty then; null reads as none). Then AC-19/AC-20 for {@code to}: their known copy of
-     * that name leaves their hand if they have one, otherwise one unknown card, otherwise nothing.
+     * hand, or their hand was empty then; null reads as none). Then, only when it was from the hand
+     * ({@link CompanionLogEntry.FromHand#isFromHand}; null reads as not), AC-19/AC-20 for {@code to}: their known copy
+     * of that name leaves their hand if they have one, otherwise one unknown card, otherwise nothing. A card that
+     * wasn't from the hand (a token, from elsewhere) leaves {@code to}'s hand alone.
      * <p>
      * Nothing triggers: it's a correction of the log, not something that happened at the table. The card isn't moved
      * through the game's zone changes; it's taken out of one zone and put into the other as a game load does, with
@@ -230,16 +231,19 @@ public final class TableEditor {
         }
         CompanionLogEntry.FromHand toSide;
         try {
-            // to's hand first, so the card itself, if it's in a hand, isn't taken for their known copy
-            Card known = findKnownInHand(to, name);
-            Card hidden = known == null ? firstPlaceholderInHand(to) : null;
-            if (known != null) {
-                game.getAction().ceaseToExist(known, true);
-            } else if (hidden != null) {
-                game.getAction().ceaseToExist(hidden, true);
+            if (fromHand != null && fromHand.isFromHand()) {
+                // to's hand first, so the card itself, if it's in a hand, isn't taken for their known copy
+                Card known = findKnownInHand(to, name);
+                Card hidden = known == null ? firstPlaceholderInHand(to) : null;
+                if (known != null) {
+                    game.getAction().ceaseToExist(known, true);
+                } else if (hidden != null) {
+                    game.getAction().ceaseToExist(hidden, true);
+                }
+                toSide = handSide(known, hidden);
+            } else {
+                toSide = CompanionLogEntry.FromHand.NONE;
             }
-            toSide = known != null ? CompanionLogEntry.FromHand.KNOWN
-                    : hidden != null ? CompanionLogEntry.FromHand.PLACEHOLDER : CompanionLogEntry.FromHand.NONE;
 
             if (fromHand == CompanionLogEntry.FromHand.PLACEHOLDER) {
                 from.getZone(ZoneType.Hand).add(CompanionCards.newPlaceholder(from));
@@ -264,6 +268,12 @@ public final class TableEditor {
         }
         settle(game);
         return new Result(true, name + " is " + to.getName() + "'s, not " + from.getName() + "'s", seats, name, toSide);
+    }
+
+    /** What left a hand for a card from it (AC-19/AC-20): the known copy, else an unknown card, else nothing. */
+    private static CompanionLogEntry.FromHand handSide(Card known, Card hidden) {
+        return known != null ? CompanionLogEntry.FromHand.KNOWN
+                : hidden != null ? CompanionLogEntry.FromHand.PLACEHOLDER : CompanionLogEntry.FromHand.EMPTY;
     }
 
     /** A fresh known copy of {@code card}'s printing for {@code player}'s hand, front face up as in any hand. */

@@ -62,8 +62,18 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         PLACEHOLDER,
         /** The player's known copy. */
         KNOWN,
-        /** Nothing: it wasn't from the hand, or the hand count was already 0. */
-        NONE
+        /** Nothing, as it was from the hand but the hand count was already 0 (AC-19/AC-20 clamped). */
+        EMPTY,
+        /**
+         * Nothing, as it wasn't from the hand: from elsewhere, a token, an emblem. A log written before {@link #EMPTY}
+         * has this for an empty hand as well.
+         */
+        NONE;
+
+        /** Whether the card was added from the hand, so a correction applies AC-19/AC-20 to the right player. */
+        public boolean isFromHand() {
+            return this != NONE;
+        }
     }
 
     public CompanionLogEntry {

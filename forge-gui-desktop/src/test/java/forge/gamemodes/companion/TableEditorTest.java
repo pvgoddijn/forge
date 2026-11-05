@@ -1343,7 +1343,7 @@ public class TableEditorTest extends AITest {
         }
         TableEditor.Result result = TableEditor.addCard(p, "Sol Ring", true, TableEditor.Mode.CAST);
         assertTrue(result.done(), result.message());
-        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.NONE);
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.EMPTY, "from the hand, but nothing left it");
         assertEquals(p.getCardsIn(ZoneType.Hand).size(), 0);
     }
 
@@ -1831,7 +1831,7 @@ public class TableEditorTest extends AITest {
             }
         }
         TableEditor.Result add = castFromHand(game, ann, "Grizzly Bears");
-        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE);
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.EMPTY);
 
         TableEditor.Result fix = TableEditor.reassign(TableEditor.findToReassign(ann, "Grizzly Bears"), bo,
                 add.fromHand());
@@ -1839,8 +1839,74 @@ public class TableEditorTest extends AITest {
         assertTrue(fix.done(), fix.message());
         assertEquals(ann.getCardsIn(ZoneType.Hand).size(), 0, "no extra card for Ann");
         assertEquals(bo.getCardsIn(ZoneType.Hand).size(), 0);
-        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.NONE);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.EMPTY);
         assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+    }
+
+    /** Ann's hand was empty (clamped at 0), so she gets nothing back; but it was from the hand, so AC-19 for Bo. */
+    @Test
+    public void aClampedHandGetsNothingBackButTheTargetStillGivesUpACard() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        for (Card c : new ArrayList<>(ann.getCardsIn(ZoneType.Hand))) {
+            game.getAction().ceaseToExist(c, true);
+        }
+        TableEditor.Result add = castFromHand(game, ann, "Grizzly Bears");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.EMPTY);
+
+        TableEditor.Result fix = TableEditor.reassign(TableEditor.findToReassign(ann, "Grizzly Bears"), bo,
+                add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(ann.getCardsIn(ZoneType.Hand).size(), 0, "no extra card for Ann");
+        assertEquals(CompanionCards.hiddenInHand(bo), 6, "AC-19 for Bo");
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+    }
+
+    /** A token never comes from a hand: corrected from Ann to Bo, neither hand changes (AC-22a). */
+    @Test
+    public void aTokenCorrectedToAnotherPlayerLeavesTheirHandAlone() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        TableEditor.Result add = TableEditor.addCard(ann, "Treasure Token", true,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertTrue(add.done(), add.message());
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE);
+        Card treasure = ann.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isToken).findFirst().orElseThrow();
+
+        TableEditor.Result fix = TableEditor.reassign(treasure, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(treasure.getOwner(), bo);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7, "nothing left Bo's hand for a token");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), 7);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.NONE);
+    }
+
+    /** A card added from elsewhere, not from the hand: corrected from Ann to Bo, Bo's hand doesn't change. */
+    @Test
+    public void aCardFromElsewhereCorrectedToAnotherPlayerLeavesTheirHandAlone() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        addCardToZone("Grizzly Bears", bo, ZoneType.Hand);
+        TableEditor.Result add = TableEditor.addCard(ann, "Grizzly Bears", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertTrue(add.done(), add.message());
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE);
+        Card bears = named(ann, ZoneType.Battlefield, "Grizzly Bears").get(0);
+
+        TableEditor.Result fix = TableEditor.reassign(bears, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+        assertEquals(named(bo, ZoneType.Hand, "Grizzly Bears").size(), 1, "Bo's known copy stays");
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.NONE);
     }
 
     /** AC-20 for the target: Bo's known copy leaves his hand, not an unknown card. */
@@ -1931,6 +1997,8 @@ public class TableEditorTest extends AITest {
         assertEquals(named(bo, ZoneType.Graveyard, "Grizzly Bears"), List.of(dead));
         assertEquals(named(ann, ZoneType.Graveyard, "Grizzly Bears"), List.of());
         assertEquals(dead.getOwner(), bo);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7, "it wasn't from the hand, so Bo's hand is left alone");
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
     }
 
     /**

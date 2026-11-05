@@ -99,4 +99,23 @@ public class CompanionLogEntryShould {
 
         assertThat(CompanionLogEntry.addedInTurn(log, 0)).isEmpty();
     }
+
+    @Test
+    public void keepAnEmptyHandApartFromNotFromTheHandThroughJson() {
+        add(1, 1, "Ann", "Grizzly Bears", FromHand.EMPTY);
+        add(1, 1, "Ann", "Treasure", FromHand.NONE);
+
+        assertThat(CompanionLogEntry.fromLine(log.get(0).toLine(), 0).fromHand()).isEqualTo(FromHand.EMPTY);
+        assertThat(CompanionLogEntry.fromLine(log.get(1).toLine(), 0).fromHand()).isEqualTo(FromHand.NONE);
+        assertThat(FromHand.EMPTY.isFromHand()).isTrue();
+        assertThat(FromHand.NONE.isFromHand()).isFalse();
+    }
+
+    @Test
+    public void readAnOlderLogsNoneAsNotFromTheHand() {
+        String line = "{\"seq\":1,\"step\":1,\"turn\":1,\"affected\":[\"Ann\"],\"kind\":\"add\","
+                + "\"text\":\"Treasure\",\"card\":\"Treasure\",\"fromHand\":\"none\"}";
+
+        assertThat(CompanionLogEntry.fromLine(line, 0).fromHand()).isEqualTo(FromHand.NONE);
+    }
 }
