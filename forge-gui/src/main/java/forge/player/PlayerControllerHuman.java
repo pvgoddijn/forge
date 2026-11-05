@@ -4003,6 +4003,14 @@ public class PlayerControllerHuman extends PlayerController implements IGameCont
         return false;
     }
 
+    /**
+     * A line a game mode adds under the turn and phase in this seat's priority prompt, or null for none. Asked each
+     * time the prompt is shown, possibly off the game thread, so it may only read state that is safe from any thread.
+     */
+    public String getPriorityPromptNote() {
+        return null;
+    }
+
     public boolean isUiSetToSkipPhase(final PlayerView turnPlayer, final PhaseType phase) {
         if (macros != null && macros.isReplaying()) {
             return false;

@@ -901,6 +901,11 @@ public class MatchController extends NetworkGuiGame {
         return extension;
     }
 
+    /** Whether the current match offers Forge's Concede: any match, unless its extension says no. */
+    public static boolean offersConcede() {
+        return extension == null || extension.offersConcede();
+    }
+
     /** The current match's extra menu items. Only a single-operator match has them; any other match doesn't. */
     public static MatchExtension getGameMenuExtension() {
         return isSingleOperator() ? extension : null;

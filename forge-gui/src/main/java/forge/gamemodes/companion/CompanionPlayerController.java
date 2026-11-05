@@ -67,15 +67,37 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         if (stackEmpty && !mainPhase && !isCombatStop(ph, ph.getPhase())) {
             return null;
         }
-        if (stackEmpty && mainPhase) {
-            // only main phases are saved: a game state can't hold a combat in progress
-            table.save(game);
+        if (!mayAutoPass() || table.ranSinceSave()) {
+            // saves in a main phase with an empty stack. Not while a yield (End Turn) only passes through Main 2 with
+            // no prompt: one undo after End Turn then goes back to where it was tapped, not to that Main 2. An action
+            // made during the yield is saved, though, so it's a step of its own and that undo doesn't take it back too
+            table.atPrompt(game);
         }
-        List<SpellAbility> chosen = super.chooseSpellAbilityToPlay();
+        List<SpellAbility> chosen = prompt();
         if (chosen == null && table.hasPending()) {
             return Collections.emptyList(); // an action came in instead of a pass: run it, don't move on
         }
         return chosen;
+    }
+
+    /** Forge's priority prompt, or its pass while a yield runs. A test answers it in place of a screen. */
+    List<SpellAbility> prompt() {
+        return super.chooseSpellAbilityToPlay();
+    }
+
+    /**
+     * Forge's own undo stays off (plan decision 6): its {@code UndoManager} is in memory only, with a barrier at every
+     * draw, phase and reveal. With nothing to undo, the prompt shows no undo button and Cancel stays End Turn.
+     */
+    @Override
+    public boolean canUndoLastAction() {
+        return false;
+    }
+
+    /** The prompt's undo (Ctrl+Z) takes back the table's last step instead, as the game menu's Undo does. */
+    @Override
+    public void undoLastAction() {
+        table.undo();
     }
 
     /**
@@ -98,6 +120,12 @@ public class CompanionPlayerController extends PlayerControllerHuman {
             return false;
         }
         return super.isUiSetToSkipPhase(turnPlayer, phase);
+    }
+
+    /** Whether combat goes through the engine this turn, in the active seat's Main 1 ({@link CompanionTable#promptNote}). */
+    @Override
+    public String getPriorityPromptNote() {
+        return table.promptNote();
     }
 
     @Override

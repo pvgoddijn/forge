@@ -46,3 +46,7 @@ On the dev build, 3 players:
 
 ## Out of scope
 Exporting or sharing the history (spec section 6). Replaying a past game step by step.
+
+## Carried over from slice 4's review (2026-11-05)
+- **L2:** a crash between `discardAfter` and `appendLog` in `CompanionTable`'s Undo leaves no undo entry. The next action reuses step n, so the old step-n entries never show as undone. The board is right; only the history is wrong. Fix it here, since this slice reads the log as history. For example, write the undo entry first and make `loadLog` ignore an undo whose target steps still exist, or detect reused step numbers by seq.
+- **L3:** `CompanionTable.atPrompt` re-reads the whole log at every prompt, and every log entry lists the `states/` folder. The cost grows with game length and with this slice's engine entries. Cache the log and the latest step in memory.

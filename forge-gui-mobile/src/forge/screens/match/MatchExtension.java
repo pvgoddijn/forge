@@ -43,6 +43,14 @@ public interface MatchExtension {
     }
 
     /**
+     * Whether the game menu offers Forge's Concede, and Ctrl+Q concedes. A mode whose game a concede doesn't end, as
+     * it has its own way out, says no.
+     */
+    default boolean offersConcede() {
+        return true;
+    }
+
+    /**
      * Whether the match screen closes as soon as the game is over, without the results screen. Asked on the UI thread
      * when the game is over; a mode that ends the game itself to leave the match says yes.
      */

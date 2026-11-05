@@ -762,6 +762,7 @@ public class TableEditorTest extends AITest {
     /** A table with a real store in a temp directory, collecting what it reports. */
     private static final class Recorded {
         final CompanionTable table;
+        final CompanionStore store;
         final List<String> notices = new ArrayList<>();
         final List<String> results = new ArrayList<>();
 
@@ -771,10 +772,19 @@ public class TableEditorTest extends AITest {
                 assertTrue(new java.io.File(dir, "t").mkdir());
                 CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
                         new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
-                table = new CompanionTable("t", setup, new CompanionStore(dir));
+                store = new CompanionStore(dir);
+                table = new CompanionTable("t", setup, store);
             } catch (java.io.IOException e) {
                 throw new java.io.UncheckedIOException(e);
             }
+            table.setOnNotice(notices::add);
+            table.setOnResult(r -> results.add(r.message()));
+        }
+
+        /** A new table on {@code before}'s store, as a relaunch of the app makes. */
+        Recorded(Recorded before) {
+            store = before.store;
+            table = new CompanionTable("t", before.table.setup(), store);
             table.setOnNotice(notices::add);
             table.setOnResult(r -> results.add(r.message()));
         }
@@ -1059,8 +1069,8 @@ public class TableEditorTest extends AITest {
 
     /**
      * A seat on the real game loop, without a screen. What it does is {@link CompanionPlayerController}'s own, except
-     * where the active seat would show the operator a priority prompt (nothing parked or queued, and a main phase, a
-     * non-empty stack or a combat with attackers): there the test's
+     * where the active seat would show the operator a priority prompt (nothing parked or queued, no yield running,
+     * and a main phase, a non-empty stack or a combat with attackers): there the test's
      * {@code operator} answers instead, as a tap would. The attack and block declarations, which open their own
      * prompts, are recorded and answered by the test too.
      */
@@ -1087,11 +1097,30 @@ public class TableEditorTest extends AITest {
             forge.game.phase.PhaseHandler ph = getGame().getPhaseHandler();
             boolean noStop = getGame().getStack().isEmpty() && !ph.getPhase().isMain()
                     && (ph.getCombat() == null || ph.getCombat().getAttackers().isEmpty());
-            if (table.isParked() || table.hasPending() || getPlayer() != ph.getPlayerTurn() || noStop) {
+            if (table.isParked() || table.hasPending() || getPlayer() != ph.getPlayerTurn() || noStop
+                    || mayAutoPass()) {
                 return super.chooseSpellAbilityToPlay(); // passes or runs ops, without a prompt
             }
             asked.add("priority " + ph.getPhase());
             return operator.apply(this);
+        }
+
+        /** The operator taps End Turn: the seat yields until the end of the turn, and passes. */
+        List<forge.game.spellability.SpellAbility> endTurn() {
+            getYieldController().setAutoPassUntilEndOfTurn(true);
+            return null;
+        }
+
+        /** While a yield runs, Forge's prompt passes without showing anything; this does that without the screen. */
+        @Override
+        List<forge.game.spellability.SpellAbility> prompt() {
+            return mayAutoPass() ? null : super.prompt();
+        }
+
+        /** As Forge's, without the screen it would clear. */
+        @Override
+        public void autoPassCancel() {
+            getYieldController().clearEndOfTurnYieldAndDispatch();
         }
 
         /** The operator's tap: run what this seat does when the prompt ends without an answer. */
@@ -1278,5 +1307,1176 @@ public class TableEditorTest extends AITest {
         CardNameMatcher matcher = CardNameMatcher.fromStaticData();
         assertTrue(matcher.match(CompanionCards.PLACEHOLDER_NAME, 5).stream()
                 .noneMatch(s -> s.card().equals(CompanionCards.PLACEHOLDER_NAME)));
+    }
+    /** AC-19: with no known copy, one of the unknown cards leaves the hand, and the result says so. */
+    @Test
+    public void anAddFromHandSaysAPlaceholderLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        TableEditor.Result result = TableEditor.addCard(p, "Sol Ring", true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEquals(result.affected(), List.of(p.getName()));
+        assertEquals(result.card(), "Sol Ring");
+        assertEquals(CompanionCards.hiddenInHand(p), 6);
+    }
+
+    /** AC-20: the player's known copy leaves the hand instead of an unknown card. */
+    @Test
+    public void anAddFromHandSaysTheKnownCopyLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        addCardToZone("Sol Ring", p, ZoneType.Hand);
+        TableEditor.Result result = TableEditor.addCard(p, "Sol Ring", true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(CompanionCards.hiddenInHand(p), 7);
+    }
+
+    /** AC-19 clamped: an empty hand gives nothing up, so nothing would be given back. */
+    @Test
+    public void anAddFromAnEmptyHandSaysNothingLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        for (Card c : new ArrayList<>(p.getCardsIn(ZoneType.Hand))) {
+            game.getAction().ceaseToExist(c, true);
+        }
+        TableEditor.Result result = TableEditor.addCard(p, "Sol Ring", true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.EMPTY, "from the hand, but nothing left it");
+        assertEquals(p.getCardsIn(ZoneType.Hand).size(), 0);
+    }
+
+    @Test
+    public void anAddNotFromHandOrOfATokenSaysNothingLeft() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        addCardToZone("Sol Ring", p, ZoneType.Hand);
+        TableEditor.Result put = TableEditor.addCard(p, "Sol Ring", false, TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertEquals(put.fromHand(), CompanionLogEntry.FromHand.NONE, "the known copy stays in the hand");
+        assertEquals(countCardsWithName(game, "Sol Ring", ZoneType.Hand), 1);
+        TableEditor.Result token = TableEditor.addCard(p, "Treasure", true, TableEditor.Mode.CAST);
+        assertTrue(token.done(), token.message());
+        assertEquals(token.fromHand(), CompanionLogEntry.FromHand.NONE, "a token never comes from a hand");
+        assertEquals(CompanionCards.hiddenInHand(p), 7);
+    }
+
+    @Test
+    public void aFailedAddSaysNothingAboutTheHand() {
+        Game game = startTable();
+        Player p = game.getPhaseHandler().getPlayerTurn();
+        TableEditor.Result result = TableEditor.addCard(p, "Lightning Bolt", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertFalse(result.done());
+        assertNull(result.fromHand());
+        assertEquals(result.affected(), List.of(p.getName()));
+        assertEquals(CompanionCards.hiddenInHand(p), 7, "the unknown card went back");
+    }
+
+    @Test
+    public void lifeAndReadyResultsNameTheSeat() {
+        Game game = startTable();
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Player other = game.getNextPlayerAfter(active);
+        assertEquals(TableEditor.setLife(other, 30, false).affected(), List.of(other.getName()));
+        Card bears = putIn(game, other, "Grizzly Bears");
+        Card ring = putIn(game, active, "Sol Ring");
+        TableEditor.Result ready = TableEditor.readyCreatures(game, List.of(bears.getId(), ring.getId()));
+        assertTrue(ready.done(), ready.message());
+        assertEquals(ready.affected(), List.of(other.getName()), "only the readied creature's controller");
+        assertNull(ready.fromHand());
+    }
+
+    /** The log entries the table writes carry the seat, the card and what left the hand, from the result. */
+    @Test
+    public void theTableLogsTheSeatCardAndHandFromTheResult() {
+        Game game = startTable();
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Player other = game.getNextPlayerAfter(active);
+        addCardToZone("Sol Ring", other, ZoneType.Hand);
+        Recorded rec = new Recorded();
+        rec.table.submit(new CompanionTable.AddCard(active.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.submit(new CompanionTable.AddCard(other.getName(), "Sol Ring", true, TableEditor.Mode.CAST));
+        rec.table.submit(new CompanionTable.AddCard(other.getName(), "Grizzly Bears", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        rec.table.submit(g -> TableEditor.setLife(other, 30, false));
+        rec.table.submit(new CompanionTable.AddCard("Nobody", "Sol Ring", true, TableEditor.Mode.CAST));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.size(), 5, log.toString());
+        assertEntry(log.get(0), CompanionLogEntry.Kind.ADD, active.getName(), "Grizzly Bears",
+                CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEntry(log.get(1), CompanionLogEntry.Kind.ADD, other.getName(), "Sol Ring",
+                CompanionLogEntry.FromHand.KNOWN);
+        assertEntry(log.get(2), CompanionLogEntry.Kind.ADD, other.getName(), "Grizzly Bears",
+                CompanionLogEntry.FromHand.NONE);
+        assertEntry(log.get(3), CompanionLogEntry.Kind.ACTION, other.getName(), null, null);
+        assertEntry(log.get(4), CompanionLogEntry.Kind.NOTICE, "Nobody", "Sol Ring", null);
+
+        Card bears = other.getCardsIn(ZoneType.Battlefield).stream()
+                .filter(c -> c.getName().equals("Grizzly Bears")).findFirst().orElseThrow();
+        rec.table.submit(g -> TableEditor.readyCreatures(g, List.of(bears.getId())));
+        rec.table.runPending(game);
+        List<CompanionLogEntry> after = rec.store.loadLog("t");
+        assertEntry(after.get(after.size() - 1), CompanionLogEntry.Kind.ACTION, other.getName(), null, null);
+    }
+
+    // ---- Undo (slice 4, AC-27) ----
+
+    /** What the active seat's controller does before its prompt: saves in a main phase with an empty stack. */
+    private static void saveAsTheTableDoes(Recorded rec, Game game) {
+        rec.table.atPrompt(game);
+    }
+
+    /** Runs {@code op} and then the save the next prompt would make. */
+    private static void act(Recorded rec, Game game, CompanionTable.Op op) {
+        rec.table.submit(op);
+        assertTrue(rec.table.runPending(game));
+        rec.table.save(game);
+    }
+
+    /** Undoes, as a tap on the menu item does, then saves as the next prompt would. */
+    private static void undo(Recorded rec, Game game) {
+        rec.table.undo();
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+    }
+
+    private static CompanionLogEntry lastEntry(Recorded rec) {
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        return log.get(log.size() - 1);
+    }
+
+    /**
+     * Through the real loop: Ann taps End Turn in Main 1, the yield passes her Main 2 without saving it, Bo draws,
+     * and his Main 1 is saved. One undo there puts Bo's draw back in his library, and the game, and its view, back
+     * where End Turn was tapped: Ann's Main 1 of turn 1, where she is asked again (item 8, one tap).
+     */
+    @Test
+    public void onTheGameLoopOneUndoAfterEndTurnGoesBackToWhereItWasTapped() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        int boHand = bo.getCardsIn(ZoneType.Hand).size();
+        int boLibrary = bo.getCardsIn(ZoneType.Library).size();
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        List<Integer> boHandInHisTurn = new ArrayList<>();
+        boolean[] undone = {false};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (!undone[0] && ph.getPlayerTurn() == ann) {
+                return seat.endTurn();
+            }
+            if (!undone[0]) {
+                assertEquals(ph.getPlayerTurn(), bo);
+                boHandInHisTurn.add(bo.getCardsIn(ZoneType.Hand).size());
+                undone[0] = true;
+                rec.table.undo();
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN1"),
+                "End Turn passed Ann's Main 2 unasked, and after the undo she is asked in Main 1 again");
+        assertEquals(boHandInHisTurn, List.of(boHand + 1), "Bo drew in his turn");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), boHand, "the draw is back");
+        assertEquals(bo.getCardsIn(ZoneType.Library).size(), boLibrary);
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getTurn(), 1);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1, "back where End Turn was tapped, in one undo");
+        assertEquals(game.getView().getTurn(), 1, "the view's turn went back too");
+        assertEquals(game.getView().getPlayerTurn(), ann.getView());
+        assertEquals(rec.store.latestStep("t"), 0, "Bo's turn is gone from disk, and Ann's prompt saved nothing new");
+        CompanionLogEntry undo = lastEntry(rec);
+        assertEquals(undo.kind(), CompanionLogEntry.Kind.UNDO);
+        assertEquals(undo.step(), 0);
+        assertEquals(undo.undid(), List.of(1));
+        assertEquals(undo.active(), ann.getName());
+    }
+
+    /**
+     * Through the real loop: a life total set in Ann's Main 2, before she taps End Turn there, is saved as its own
+     * step. The undo after End Turn goes back to it, with the new life total, not past it.
+     */
+    @Test
+    public void onTheGameLoopAChangeInMain2BeforeEndTurnIsKeptByTheUndo() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        boolean[] lifeSet = {false};
+        boolean[] undone = {false};
+        int[] stepAtEndTurn = {-1};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (undone[0]) {
+                throw new OperatorAsked();
+            }
+            if (ph.getPlayerTurn() == ann && ph.getPhase() == PhaseType.MAIN1) {
+                return null; // a pass, not End Turn: on to Main 2
+            }
+            if (ph.getPlayerTurn() == ann && !lifeSet[0]) {
+                lifeSet[0] = true;
+                rec.table.submit(g -> TableEditor.setLife(bo, 33, false));
+                return seat.asTheTableDoes(); // the edit runs, and Ann is asked again
+            }
+            if (ph.getPlayerTurn() == ann) {
+                stepAtEndTurn[0] = rec.store.latestStep("t");
+                return seat.endTurn();
+            }
+            assertEquals(ph.getPlayerTurn(), bo);
+            undone[0] = true;
+            rec.table.undo();
+            return seat.asTheTableDoes();
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN2", "priority MAIN2", "priority MAIN1",
+                "priority MAIN2"));
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getPhase(), PhaseType.MAIN2, "back where End Turn was tapped");
+        assertEquals(bo.getLife(), 33, "the life total set before End Turn was saved, so it stays");
+        assertEquals(rec.store.latestStep("t"), stepAtEndTurn[0]);
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.UNDO);
+        assertEquals(lastEntry(rec).undid(), List.of(stepAtEndTurn[0] + 1), "only Bo's turn was taken back");
+    }
+
+    @DataProvider
+    public Object[][] stepsTheEndTurnYieldPasses() {
+        return new Object[][] {{PhaseType.MAIN2}, {PhaseType.END_OF_TURN}};
+    }
+
+    /**
+     * Through the real loop: an undo tapped right after End Turn runs while the yield still passes Ann's turn, in her
+     * Main 2 or end step. It puts Main 1 back and ends the yield, so the turn doesn't end again: Ann is asked in Main 1.
+     */
+    @Test(dataProvider = "stepsTheEndTurnYieldPasses")
+    public void onTheGameLoopAnUndoDuringEndTurnStopsInMain1(PhaseType undoneIn) {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        boolean[] endTurn = {false};
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (!endTurn[0]) {
+                endTurn[0] = true;
+                return seat.endTurn();
+            }
+            throw new OperatorAsked();
+        });
+        LoopSeat annSeat = seats.stream().filter(s -> s.getPlayer() == ann).findFirst().orElseThrow();
+        List<PhaseType> undoSubmittedIn = new ArrayList<>();
+        for (LoopSeat s : seats) {
+            s.onEveryAsk = seat -> {
+                if (undoSubmittedIn.isEmpty() && ph.getPlayerTurn() == ann && ph.getPhase() == undoneIn) {
+                    assertTrue(annSeat.mayAutoPass(), "the End Turn yield is passing " + undoneIn);
+                    undoSubmittedIn.add(undoneIn);
+                    rec.table.undo();
+                }
+            };
+        }
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(undoSubmittedIn, List.of(undoneIn), "the undo ran during the yield");
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1"), "asked again in Main 1, not passed by");
+        assertEquals(ph.getPlayerTurn(), ann, "still Ann's turn");
+        assertEquals(ph.getTurn(), 1);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        for (LoopSeat s : seats) {
+            assertFalse(s.getYieldController().autoPassUntilEndOfTurn(), s.getPlayer().getName() + "'s yield ended");
+            assertFalse(s.mayAutoPass());
+        }
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.UNDO);
+    }
+
+    /**
+     * Through the real loop: a card added just after End Turn runs while the yield passes Ann's Main 2. It is saved
+     * there as its own step, though the plain pass isn't. So the undo in Bo's turn takes back only the rest of
+     * Ann's turn, back to her Main 2 with the card, and a second undo takes the card back, to where End Turn was tapped.
+     */
+    @Test
+    public void onTheGameLoopACardAddedDuringEndTurnIsItsOwnStep() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        List<Integer> bearsWhenAsked = new ArrayList<>();
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            bearsWhenAsked.add(named(ann, ZoneType.Battlefield, "Grizzly Bears").size());
+            switch (asked.size()) {
+                case 1:
+                    return seat.endTurn();
+                case 2:
+                    assertEquals(ph.getPlayerTurn(), bo);
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                case 3:
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                default:
+                    throw new OperatorAsked();
+            }
+        });
+        boolean[] added = {false};
+        for (LoopSeat s : seats) {
+            s.onEveryAsk = seat -> {
+                if (!added[0] && ph.getPlayerTurn() == ann && ph.getPhase() == PhaseType.MAIN2) {
+                    added[0] = true; // logged just after the tap, reaching the game as the yield passes Main 2
+                    rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", false,
+                            TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+                }
+            };
+        }
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertTrue(added[0]);
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN2", "priority MAIN1"),
+                "Bo's Main 1, then the first undo goes back to Ann's Main 2, the second to her Main 1");
+        assertEquals(bearsWhenAsked, List.of(0, 1, 1, 0), "the first undo kept the card, the second took it back");
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        assertEquals(rec.store.latestStep("t"), 0, "back at the step End Turn was tapped in");
+    }
+
+    /**
+     * Through the real loop: an edit made in Main 1 is saved at the prompt that follows it, so End Turn tapped there
+     * still passes Main 2 without a save. One undo in Bo's turn goes back to Ann's Main 1, with the edit.
+     */
+    @Test
+    public void onTheGameLoopAnEditSavedBeforeEndTurnDoesNotMakeMain2AStep() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        int[] stepAtEndTurn = {-1};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            switch (asked.size()) {
+                case 1:
+                    rec.table.submit(g -> TableEditor.setLife(bo, 33, false));
+                    return seat.asTheTableDoes(); // the edit runs, and Ann is asked again
+                case 2:
+                    stepAtEndTurn[0] = rec.store.latestStep("t");
+                    return seat.endTurn();
+                case 3:
+                    assertEquals(ph.getPlayerTurn(), bo);
+                    assertEquals(rec.store.latestStep("t"), stepAtEndTurn[0] + 1, "Ann's Main 2 wasn't saved");
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                default:
+                    throw new OperatorAsked();
+            }
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN1", "priority MAIN1"));
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1, "back where End Turn was tapped, in one undo");
+        assertEquals(bo.getLife(), 33, "the edit was saved before End Turn, so it stays");
+        assertEquals(rec.store.latestStep("t"), stepAtEndTurn[0]);
+    }
+
+    /** Undo goes back one save at a time to the start, then says there's nothing left. */
+    @Test
+    public void undoRepeatsBackToTheStartThenRefuses() {
+        Game game = startTable();
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // step 0, the start
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false));
+        act(rec, game, g -> TableEditor.setLife(bo, 20, false));
+        assertEquals(rec.store.latestStep("t"), 2);
+
+        undo(rec, game);
+        assertEquals(bo.getLife(), 30);
+        assertEquals(rec.store.latestStep("t"), 1, "the prompt after the undo saved nothing new");
+        undo(rec, game);
+        assertEquals(bo.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertEquals(rec.store.latestStep("t"), 0);
+
+        undo(rec, game);
+        assertEquals(rec.results.get(rec.results.size() - 1), "Nothing to undo: this is the start of the game");
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.NOTICE, "a refusal is logged as a notice");
+        assertEquals(bo.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertEquals(rec.store.latestStep("t"), 0);
+    }
+
+    /** Before the first save there is nothing to go back to. */
+    @Test
+    public void undoBeforeAnySaveRefuses() {
+        Game game = startTable();
+        Recorded rec = new Recorded();
+        rec.table.undo();
+        rec.table.runPending(game);
+        assertEquals(rec.results, List.of("Nothing to undo yet"));
+    }
+
+    /**
+     * The game menu's Undo is enabled from {@link CompanionTable#canUndo}, as of the latest prompt: off before the
+     * first save and at the start of the game, on once there's a step to go back to, and on at step 0 with a spell on
+     * the stack, as the cast can be taken back.
+     */
+    @Test
+    public void canUndoFollowsThePromptsSteps() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        assertFalse(rec.table.canUndo(), "no prompt, no save yet");
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.store.latestStep("t"), 0);
+        assertFalse(rec.table.canUndo(), "the start of the game");
+
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.runPending(game);
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.store.latestStep("t"), 0, "nothing saved with a spell on the stack");
+        assertTrue(rec.table.canUndo(), "the cast can be taken back");
+        undo(rec, game);
+        assertFalse(rec.table.canUndo(), "back at the start");
+
+        rec.table.submit(g -> TableEditor.setLife(bo, 30, false));
+        rec.table.runPending(game);
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.store.latestStep("t"), 1);
+        assertTrue(rec.table.canUndo());
+        undo(rec, game);
+        assertFalse(rec.table.canUndo());
+        undo(rec, game);
+        assertEquals(rec.results.get(rec.results.size() - 1), "Nothing to undo: this is the start of the game",
+                "an undo sent anyway is refused");
+    }
+
+    /** The undone entries stay in the log, marked by the undo; a new action after it writes the step again, unmarked. */
+    @Test
+    public void anUndoneEntryStaysMarkedAndTheNextActionWritesItsStepAgain() {
+        Game game = startTable();
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false));
+        long undoneSeq = lastEntry(rec).seq();
+        assertEquals(lastEntry(rec).step(), 1);
+
+        undo(rec, game);
+        act(rec, game, g -> TableEditor.setLife(bo, 25, false));
+
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.size(), 3, log.toString());
+        assertEquals(log.get(1).kind(), CompanionLogEntry.Kind.UNDO);
+        CompanionLogEntry redone = log.get(2);
+        assertEquals(redone.step(), 1, "step 1 again");
+        assertEquals(CompanionLogEntry.undone(log), java.util.Set.of(undoneSeq), "only the undone life edit");
+        assertEquals(rec.store.latestStep("t"), 1);
+        assertTrue(String.join("\n", rec.store.loadStep("t", 1).orElseThrow()).contains("p1life=25"));
+    }
+
+    /**
+     * A relaunch after an undo loads the step undo went back to, its first prompt doesn't save that again as a new
+     * step, and the next undo carries on from there.
+     */
+    @Test
+    public void aRestartAfterAnUndoLoadsItsStepAndTheNextUndoCarriesOn() {
+        Game game = startTable();
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        act(rec, game, g -> TableEditor.setLife(g.getPlayers().get(1), 30, false));
+        act(rec, game, g -> TableEditor.setLife(g.getPlayers().get(1), 20, false));
+        undo(rec, game);
+        assertEquals(rec.store.latestStep("t"), 1);
+
+        Recorded relaunched = new Recorded(rec);
+        Game loaded = initAndCreateThreePlayerGame();
+        relaunched.table.startFromLatest(loaded);
+        Player bo = loaded.getPlayers().get(1);
+        assertEquals(bo.getLife(), 30, "the undone 20 isn't loaded");
+        seatsFor(loaded, relaunched, new ArrayList<>(), seat -> {
+            saveAsTheTableDoes(relaunched, loaded);
+            throw new OperatorAsked();
+        });
+        runLoopUntilTheOperatorIsAsked(loaded);
+        assertEquals(rec.store.latestStep("t"), 1, "the loaded game isn't saved again as a new step");
+
+        undo(relaunched, loaded);
+        assertEquals(bo.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertEquals(rec.store.latestStep("t"), 0);
+    }
+
+    /**
+     * A spell on the stack isn't saved yet, so undo takes back just that cast, to the latest save, not the one before
+     * it. The stack is emptied: nothing is left pointing at a card the load removed, and nothing resolves later.
+     */
+    @Test
+    public void undoWithASpellOnTheStackTakesBackOnlyTheCast() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false)); // step 1
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.runPending(game);
+        assertFalse(game.getStack().isEmpty(), "on the stack");
+        assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND - 1);
+
+        undo(rec, game);
+
+        assertTrue(game.getStack().isEmpty());
+        assertTrue(game.getStackZone().getCards().isEmpty(), "no card left in the stack zone");
+        assertEquals(bo.getLife(), 30, "step 1 stays");
+        assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND, "the card is back in the hand");
+        resolveAll(game);
+        assertEquals(countCardsWithName(game, "Grizzly Bears", ZoneType.Battlefield), 0, "nothing resolved later");
+        assertEquals(rec.store.latestStep("t"), 1);
+        assertEquals(lastEntry(rec).undid(), List.of(2), "the cast's entry carries step 2, the save it never got");
+    }
+
+    /** Through the real loop: undo at a combat stop ends the combat and goes back to the main phase before it. */
+    @Test
+    public void onTheGameLoopUndoInACombatEndsItAndGoesBackToMain1() {
+        Game game = startTableInTurn2(PhaseType.MAIN1, "p0battlefield=Grizzly Bears");
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player active = ph.getPlayerTurn();
+        Player defender = game.getNextPlayerAfter(active);
+        Recorded rec = new Recorded();
+        rec.table.setEngineCombatForTurn(2, true);
+        List<String> asked = new ArrayList<>();
+        boolean[] undone = {false};
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            if (undone[0]) {
+                throw new OperatorAsked();
+            }
+            if (ph.getPhase() == PhaseType.COMBAT_DECLARE_ATTACKERS) {
+                assertTrue(ph.inCombat());
+                undone[0] = true;
+                rec.table.undo();
+                return seat.asTheTableDoes();
+            }
+            return null; // on to combat
+        });
+        seats.stream().filter(s -> s.getPlayer() == active).findFirst().orElseThrow().attacker =
+                active.getCardsIn(ZoneType.Battlefield).stream().filter(c -> c.getName().equals("Grizzly Bears"))
+                        .findFirst().orElseThrow();
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "attackers " + active.getName(),
+                "priority COMBAT_DECLARE_ATTACKERS", "priority MAIN1"));
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        assertFalse(ph.inCombat(), "the combat ended");
+        Card bears = active.getCardsIn(ZoneType.Battlefield).stream()
+                .filter(c -> c.getName().equals("Grizzly Bears")).findFirst().orElseThrow();
+        assertFalse(bears.isTapped(), "untapped, as saved");
+        assertEquals(defender.getLife(), CompanionSetup.DEFAULT_LIFE);
+        assertTrue(rec.table.engineCombat(2), "the same turn: combat for it stays on");
+    }
+
+    /**
+     * A sorcery parked for Bo's Main 1 after End Turn was submitted after the latest save, so undo drops it and says
+     * so. Combat for Bo's turn goes too: the game is back in Ann's.
+     */
+    @Test
+    public void undoDropsAParkedSorceryAndCombatForAnotherTurnWithANotice() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // Ann's Main 1, turn 1
+        ph.devModeSet(PhaseType.UPKEEP, bo, 2); // End Turn reached Bo's upkeep
+        rec.table.setEngineCombatForTurn(2, true);
+        rec.table.submit(cast(bo, "Divination"));
+        rec.table.runPending(game);
+        assertTrue(rec.table.isParked());
+
+        undo(rec, game);
+
+        assertFalse(rec.table.isParked());
+        assertEquals(rec.notices, List.of("Divination waits for Main 1",
+                "Undone: Divination and anything after it wasn't added"));
+        assertEquals(ph.getPlayerTurn(), ann);
+        assertEquals(ph.getTurn(), 1);
+        assertEquals(castCount(game, "Divination"), 0);
+        assertFalse(rec.table.engineCombat(2), "combat for Bo's turn went with it");
+        assertEquals(rec.store.latestStep("t"), 0);
+    }
+
+    // ---- "Wrong player" correction (slice 4, AC-22a) ----
+
+    private static List<Card> named(Player player, ZoneType zone, String name) {
+        return player.getCardsIn(zone).stream().filter(c -> c.getName().equals(name)).toList();
+    }
+
+    /** Adds {@code name} from {@code player}'s hand, cast, and lets it resolve. */
+    private static TableEditor.Result castFromHand(Game game, Player player, String name) {
+        TableEditor.Result add = TableEditor.addCard(player, name, true, TableEditor.Mode.CAST);
+        assertTrue(add.done(), add.message());
+        resolveAll(game);
+        return add;
+    }
+
+    /**
+     * AC-22a's example: Ann and Bo at 7, a card logged to Ann (6). Reassigned to Bo, Ann has 7, Bo 6, and the card is
+     * on Bo's battlefield, his own.
+     */
+    @Test
+    public void aCorrectionGivesTheCardToTheRightPlayerAndBothHandsComeOutRight() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        TableEditor.Result add = castFromHand(game, ann, "Grizzly Bears");
+        assertEquals(CompanionCards.hiddenInHand(ann), 6);
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        Card bears = TableEditor.findToReassign(ann, "Grizzly Bears");
+        TableEditor.Result fix = TableEditor.reassign(bears, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(CompanionCards.hiddenInHand(ann), 7, "the unknown card is back");
+        assertEquals(CompanionCards.hiddenInHand(bo), 6, "AC-19 for Bo");
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears"), List.of());
+        assertEquals(bears.getOwner(), bo);
+        assertEquals(bears.getController(), bo);
+        assertEquals(fix.affected(), List.of(ann.getName(), bo.getName()));
+        assertEquals(fix.card(), "Grizzly Bears");
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER, "Bo's side");
+        assertTrue(bears.isSick(), "it still came in this turn");
+    }
+
+    /** Ann's hand was empty (clamped at 0), so she gets nothing back; Bo's is empty too, so he gives up nothing. */
+    @Test
+    public void aClampedHandGetsNothingBackAndAnEmptyTargetHandGivesNothing() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        for (Player p : List.of(ann, bo)) {
+            for (Card c : new ArrayList<>(p.getCardsIn(ZoneType.Hand))) {
+                game.getAction().ceaseToExist(c, true);
+            }
+        }
+        TableEditor.Result add = castFromHand(game, ann, "Grizzly Bears");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.EMPTY);
+
+        TableEditor.Result fix = TableEditor.reassign(TableEditor.findToReassign(ann, "Grizzly Bears"), bo,
+                add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(ann.getCardsIn(ZoneType.Hand).size(), 0, "no extra card for Ann");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), 0);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.EMPTY);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+    }
+
+    /** Ann's hand was empty (clamped at 0), so she gets nothing back; but it was from the hand, so AC-19 for Bo. */
+    @Test
+    public void aClampedHandGetsNothingBackButTheTargetStillGivesUpACard() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        for (Card c : new ArrayList<>(ann.getCardsIn(ZoneType.Hand))) {
+            game.getAction().ceaseToExist(c, true);
+        }
+        TableEditor.Result add = castFromHand(game, ann, "Grizzly Bears");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.EMPTY);
+
+        TableEditor.Result fix = TableEditor.reassign(TableEditor.findToReassign(ann, "Grizzly Bears"), bo,
+                add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(ann.getCardsIn(ZoneType.Hand).size(), 0, "no extra card for Ann");
+        assertEquals(CompanionCards.hiddenInHand(bo), 6, "AC-19 for Bo");
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+    }
+
+    /** A token never comes from a hand: corrected from Ann to Bo, neither hand changes (AC-22a). */
+    @Test
+    public void aTokenCorrectedToAnotherPlayerLeavesTheirHandAlone() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        TableEditor.Result add = TableEditor.addCard(ann, "Treasure Token", true,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertTrue(add.done(), add.message());
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE);
+        Card treasure = ann.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isToken).findFirst().orElseThrow();
+
+        TableEditor.Result fix = TableEditor.reassign(treasure, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(treasure.getOwner(), bo);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7, "nothing left Bo's hand for a token");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), 7);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.NONE);
+    }
+
+    /** A card added from elsewhere, not from the hand: corrected from Ann to Bo, Bo's hand doesn't change. */
+    @Test
+    public void aCardFromElsewhereCorrectedToAnotherPlayerLeavesTheirHandAlone() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        addCardToZone("Grizzly Bears", bo, ZoneType.Hand);
+        TableEditor.Result add = TableEditor.addCard(ann, "Grizzly Bears", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD);
+        assertTrue(add.done(), add.message());
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE);
+        Card bears = named(ann, ZoneType.Battlefield, "Grizzly Bears").get(0);
+
+        TableEditor.Result fix = TableEditor.reassign(bears, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+        assertEquals(named(bo, ZoneType.Hand, "Grizzly Bears").size(), 1, "Bo's known copy stays");
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.NONE);
+    }
+
+    /** AC-20 for the target: Bo's known copy leaves his hand, not an unknown card. */
+    @Test
+    public void theTargetsKnownCopyLeavesTheirHand() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        addCardToZone("Grizzly Bears", bo, ZoneType.Hand);
+        castFromHand(game, ann, "Grizzly Bears");
+        Card bears = TableEditor.findToReassign(ann, "Grizzly Bears");
+
+        TableEditor.Result fix = TableEditor.reassign(bears, bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(named(bo, ZoneType.Hand, "Grizzly Bears"), List.of());
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears"), List.of(bears));
+        assertEquals(countCardsWithName(game, "Grizzly Bears"), 1);
+    }
+
+    /**
+     * Decision for {@code known}: Ann's known copy left her hand when it was logged; the operator says she never
+     * played it, so it goes back to her hand as a known card, and the card on the table is Bo's.
+     */
+    @Test
+    public void aKnownCardGoesBackToTheOriginalHandAsAKnownCard() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        addCardToZone("Sol Ring", ann, ZoneType.Hand);
+        TableEditor.Result add = castFromHand(game, ann, "Sol Ring");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        Card ring = TableEditor.findToReassign(ann, "Sol Ring");
+
+        TableEditor.Result fix = TableEditor.reassign(ring, bo, add.fromHand());
+
+        assertTrue(fix.done(), fix.message());
+        List<Card> backInHand = named(ann, ZoneType.Hand, "Sol Ring");
+        assertEquals(backInHand.size(), 1, "Ann has her Sol Ring again");
+        assertFalse(CompanionCards.isPlaceholder(backInHand.get(0)));
+        assertEquals(backInHand.get(0).getOwner(), ann);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 6);
+        assertEquals(named(bo, ZoneType.Battlefield, "Sol Ring"), List.of(ring));
+    }
+
+    /** Effects that resolved aren't redone: Gray Merchant's drain doesn't run again for Bo, nor undo for Ann. */
+    @Test
+    public void aCorrectionSetsOffNoTrigger() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        castFromHand(game, ann, "Gray Merchant of Asphodel");
+        assertEquals(ann.getLife(), 44);
+        assertEquals(bo.getLife(), 38);
+
+        TableEditor.Result fix = TableEditor.reassign(TableEditor.findToReassign(ann, "Gray Merchant of Asphodel"),
+                bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        assertTrue(fix.done(), fix.message());
+        assertTrue(game.getStack().isEmpty(), "no trigger went on the stack");
+        resolveAll(game);
+        assertEquals(ann.getLife(), 44);
+        assertEquals(bo.getLife(), 38);
+        assertEquals(cy.getLife(), 38);
+        assertFalse(game.getTriggerHandler().isTriggerSuppressed(forge.game.trigger.TriggerType.ChangesZone),
+                "the suppression is lifted");
+    }
+
+    /** The card died since it was logged: it's reassigned where it is now, Bo's graveyard. */
+    @Test
+    public void aCardThatDiedIsReassignedInTheGraveyard() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        game.getAction().moveToGraveyard(bears, null);
+        resolveAll(game);
+        Card dead = TableEditor.findToReassign(ann, "Grizzly Bears");
+        assertTrue(dead.isInZone(ZoneType.Graveyard));
+
+        TableEditor.Result fix = TableEditor.reassign(dead, bo, CompanionLogEntry.FromHand.NONE);
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(named(bo, ZoneType.Graveyard, "Grizzly Bears"), List.of(dead));
+        assertEquals(named(ann, ZoneType.Graveyard, "Grizzly Bears"), List.of());
+        assertEquals(dead.getOwner(), bo);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7, "it wasn't from the hand, so Bo's hand is left alone");
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+    }
+
+    /**
+     * The card bounced to Ann's hand since: it goes to Bo's hand, and isn't taken for Bo's known copy (AC-20 is asked
+     * of Bo's hand before the card arrives), so he gives up an unknown card and holds the bounced one.
+     */
+    @Test
+    public void aBouncedCardGoesToTheRightHand() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        castFromHand(game, ann, "Grizzly Bears");
+        Card bears = TableEditor.findToReassign(ann, "Grizzly Bears");
+        game.getAction().moveToHand(bears, null);
+        resolveAll(game);
+        Card inHand = TableEditor.findToReassign(ann, "Grizzly Bears");
+
+        TableEditor.Result fix = TableEditor.reassign(inHand, bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        assertTrue(fix.done(), fix.message());
+        assertEquals(named(bo, ZoneType.Hand, "Grizzly Bears"), List.of(inHand));
+        assertEquals(named(ann, ZoneType.Hand, "Grizzly Bears"), List.of());
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 6);
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+    }
+
+    /** Refused, changing nothing: the same player, and a spell still on the stack. */
+    @Test
+    public void aCorrectionToTheSamePlayerOrOfASpellOnTheStackIsRefused() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        TableEditor.Result same = TableEditor.reassign(bears, ann, CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertFalse(same.done());
+        assertNull(same.fromHand());
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+
+        assertTrue(TableEditor.addCard(ann, "Divination", true, TableEditor.Mode.CAST).done());
+        Card spell = TableEditor.findToReassign(ann, "Divination");
+        assertTrue(spell.isInZone(ZoneType.Stack));
+        TableEditor.Result onStack = TableEditor.reassign(spell, bo, CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertFalse(onStack.done());
+        assertEquals(spell.getOwner(), ann);
+        assertEquals(CompanionCards.hiddenInHand(ann), 6);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+    }
+
+    /** Through the table: refusals are notices, and a token that ceased to exist isn't found. */
+    @Test
+    public void theTableRefusesACardItCantFindOrTheSamePlayer() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        assertTrue(TableEditor.addCard(ann, "Treasure Token", false, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
+        Card treasure = ann.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isToken).findFirst().orElseThrow();
+        assertEquals(TableEditor.findToReassign(ann, "Treasure Token"), treasure, "found while it exists");
+        game.getAction().ceaseToExist(treasure, true);
+        putIn(game, ann, "Grizzly Bears");
+
+        rec.table.submit(new CompanionTable.Reassign(ann.getName(), "Treasure Token", bo.getName(),
+                CompanionLogEntry.FromHand.NONE));
+        rec.table.submit(new CompanionTable.Reassign(ann.getName(), "Grizzly Bears", ann.getName(),
+                CompanionLogEntry.FromHand.PLACEHOLDER));
+        assertTrue(rec.table.runPending(game));
+
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        assertEquals(log.size(), 2, log.toString());
+        for (CompanionLogEntry entry : log) {
+            assertEquals(entry.kind(), CompanionLogEntry.Kind.NOTICE, entry.toString());
+        }
+        assertEquals(rec.results.get(0), ann.getName() + "'s Treasure Token wasn't found: nothing was changed");
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+    }
+
+    /**
+     * The table logs a correction as {@code correction}, about both seats, with Bo's side of the hand. Undoing it is
+     * an ordinary undo: the card is Ann's again (6 and 7), and a second undo takes the add back (7 and 7).
+     */
+    @Test
+    public void aCorrectionIsLoggedAndUndoneLikeAnyStep() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // step 0
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+        rec.table.save(game); // step 1
+        CompanionLogEntry add = lastEntry(rec);
+
+        act(rec, game, new CompanionTable.Reassign(ann.getName(), add.card(), bo.getName(), add.fromHand()));
+
+        CompanionLogEntry fix = lastEntry(rec);
+        assertEquals(fix.kind(), CompanionLogEntry.Kind.CORRECTION, fix.toString());
+        assertEquals(fix.affected(), List.of(ann.getName(), bo.getName()));
+        assertEquals(fix.card(), "Grizzly Bears");
+        assertEquals(fix.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEquals(fix.step(), 2);
+        assertEquals(rec.store.latestStep("t"), 2);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+
+        undo(rec, game);
+        ann = game.getPlayers().get(0);
+        bo = game.getPlayers().get(1);
+        assertEquals(named(ann, ZoneType.Battlefield, "Grizzly Bears").size(), 1, "Ann's again");
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 0);
+        assertEquals(CompanionCards.hiddenInHand(ann), 6);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+        assertEquals(CompanionLogEntry.undone(rec.store.loadLog("t")), java.util.Set.of(fix.seq()));
+
+        undo(rec, game);
+        assertEquals(countCardsWithName(game, "Grizzly Bears"), 0);
+        assertEquals(CompanionCards.hiddenInHand(ann), 7);
+        assertEquals(CompanionCards.hiddenInHand(bo), 7);
+    }
+
+    /**
+     * What the game menu's "Wrong player…" offers, worked out at each prompt: this turn's adds still in the game, a
+     * token that ceased to exist left out, and a corrected card under its new seat, ready to be corrected again.
+     */
+    @Test
+    public void wrongPlayerOffersThisTurnsAddsThatAreStillInTheGame() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        // a seat, so the entries carry the game's turn as they do in a match
+        new CompanionPlayerController(game, ann, new forge.ai.LobbyPlayerAi("Ann", null), rec.table)
+                .getInputQueue().deleteObservers();
+        saveAsTheTableDoes(rec, game);
+        assertTrue(rec.table.addedThisTurn().isEmpty(), "nothing added yet");
+
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", true, TableEditor.Mode.CAST));
+        rec.table.submit(new CompanionTable.AddCard(ann.getName(), "Treasure Token", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.table.addedThisTurn().stream().map(CompanionLogEntry.Added::card).toList(),
+                List.of("Grizzly Bears", "Treasure Token"));
+
+        Card treasure = ann.getCardsIn(ZoneType.Battlefield).stream().filter(Card::isToken).findFirst().orElseThrow();
+        game.getAction().ceaseToExist(treasure, true);
+        saveAsTheTableDoes(rec, game);
+        List<CompanionLogEntry.Added> offered = rec.table.addedThisTurn();
+        assertEquals(offered.size(), 1, offered.toString());
+        assertEquals(offered.get(0).player(), ann.getName());
+        assertEquals(offered.get(0).fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+
+        rec.table.submit(offered.get(0).reassignTo(bo.getName()));
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+        assertEquals(named(bo, ZoneType.Battlefield, "Grizzly Bears").size(), 1);
+        assertEquals(rec.table.addedThisTurn(), List.of(new CompanionLogEntry.Added(offered.get(0).seq(),
+                bo.getName(), "Grizzly Bears", CompanionLogEntry.FromHand.PLACEHOLDER)), "Bo's now");
+    }
+
+    private static void assertEntry(CompanionLogEntry entry, CompanionLogEntry.Kind kind, String seat, String card,
+                                    CompanionLogEntry.FromHand fromHand) {
+        assertEquals(entry.kind(), kind, entry.toString());
+        assertEquals(entry.affected(), List.of(seat), entry.toString());
+        assertEquals(entry.card(), card, entry.toString());
+        assertEquals(entry.fromHand(), fromHand, entry.toString());
+    }
+
+    // ---- Combat hint (slice 4, item 10) ----
+
+    /**
+     * The active seat's Main 1 prompt says whether combat goes through the engine, and with it on, how many of its
+     * creatures can't attack for being logged this turn: those the game menu offers to ready when combat is switched
+     * on. Another seat's sick creature and a haste creature aren't among them.
+     */
+    @Test
+    public void theMain1PromptSaysWhetherCombatIsOnAndWhichCreaturesAreSick() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        new CompanionPlayerController(game, ann, new forge.ai.LobbyPlayerAi("Ann", null), rec.table)
+                .getInputQueue().deleteObservers();
+        Card bears = putIn(game, ann, "Grizzly Bears");
+        Card elves = putIn(game, ann, "Llanowar Elves");
+        putIn(game, ann, "Raging Goblin"); // haste
+        putIn(game, bo, "Grizzly Bears");
+        saveAsTheTableDoes(rec, game);
+
+        assertEquals(rec.table.sickBeforeCombat(), List.of(bears.getId(), elves.getId()));
+        assertEquals(rec.table.promptNote(), "Combat: off (game menu → Combat this turn)");
+
+        rec.table.setEngineCombatThisTurn(true); // read live: the refreshed prompt says so
+        assertEquals(rec.table.promptNote(),
+                "Combat: on, but 2 creatures are summoning sick (game menu → Ready creatures…)");
+
+        rec.table.submit(g -> TableEditor.readyCreatures(g, List.of(bears.getId())));
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.table.sickBeforeCombat(), List.of(elves.getId()));
+        assertEquals(rec.table.promptNote(),
+                "Combat: on, but 1 creature is summoning sick (game menu → Ready creatures…)");
+
+        rec.table.submit(g -> TableEditor.readyCreatures(g, List.of(elves.getId())));
+        assertTrue(rec.table.runPending(game));
+        saveAsTheTableDoes(rec, game);
+        assertTrue(rec.table.sickBeforeCombat().isEmpty());
+        assertEquals(rec.table.promptNote(), "Combat: on");
+    }
+
+    /** After this turn's combat, readying changes nothing until the next turn, so nothing is offered or noted. */
+    @Test
+    public void afterCombatNoCreatureIsOfferedAndThePromptHasNoCombatLine() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        new CompanionPlayerController(game, ann, new forge.ai.LobbyPlayerAi("Ann", null), rec.table)
+                .getInputQueue().deleteObservers();
+        putIn(game, ann, "Grizzly Bears");
+        moveTo(game, PhaseType.MAIN2);
+        saveAsTheTableDoes(rec, game);
+
+        assertTrue(rec.table.sickBeforeCombat().isEmpty());
+        assertNull(rec.table.promptNote());
+    }
+
+    /** Before the first prompt there's nothing to say. */
+    @Test
+    public void beforeAnyPromptThereIsNoCombatLine() {
+        assertNull(new Recorded().table.promptNote());
+        assertTrue(new Recorded().table.sickBeforeCombat().isEmpty());
+    }
+
+    // ---- Who could have cast an instant (slice 4, item 11) ----
+
+    /** Ann has two Islands, Bo two Mountains, Cy a lone Plains. Lands go in untapped or not: it makes no difference. */
+    private Game tableWithLands() {
+        Game game = startTable();
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        putIn(game, ann, "Island");
+        putIn(game, ann, "Island").setTapped(true);
+        putIn(game, bo, "Mountain");
+        putIn(game, bo, "Mountain");
+        putIn(game, cy, "Plains");
+        return game;
+    }
+
+    private static List<String> names(List<Player> players) {
+        return players.stream().map(Player::getName).toList();
+    }
+
+    @Test
+    public void onlyTheSeatWithBlueCouldHaveCastCounterspell() {
+        Game game = tableWithLands();
+        String ann = game.getPlayers().get(0).getName();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Counterspell")), List.of(ann),
+                "UU from two Islands, one of them tapped");
+    }
+
+    @Test
+    public void onlyTheSeatWithRedCouldHaveCastLightningBolt() {
+        Game game = tableWithLands();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Lightning Bolt")),
+                List.of(game.getPlayers().get(1).getName()));
+    }
+
+    @Test
+    public void nobodyCouldHaveCastOptWithoutBlue() {
+        Game game = startTable();
+        putIn(game, game.getPlayers().get(1), "Mountain");
+        putIn(game, game.getPlayers().get(2), "Plains");
+        assertTrue(TableEditor.couldHaveCast(game, "Opt").isEmpty(), "the dialog then offers every seat (AC-39)");
+    }
+
+    /** A generic cost needs only enough sources, of any color: Cy's lone Plains isn't enough for {2}. */
+    @Test
+    public void aGenericInstantNeedsOnlyEnoughSources() {
+        Game game = tableWithLands();
+        List<Player> players = game.getPlayers();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Energybending")),
+                List.of(players.get(0).getName(), players.get(1).getName()), "{2}");
+        assertTrue(TableEditor.couldHaveCast(game, "Titan's Presence").isEmpty(), "{3}: nobody has three");
+        assertEquals(TableEditor.couldHaveCast(game, "Gut Shot").size(), 3, "{R/P}: life pays it");
+    }
+
+    /** An adventure's instant half counts, though the card itself is an artifact: {1}{B}, and nobody has black. */
+    @Test
+    public void anInstantFaceIsEnough() {
+        Game game = tableWithLands();
+        assertTrue(TableEditor.couldHaveCast(game, "My Precious").isEmpty());
+    }
+
+    @Test
+    public void aCardWithFlashIsNarrowedButASorceryOrCreatureIsNot() {
+        Game game = tableWithLands();
+        assertEquals(names(TableEditor.couldHaveCast(game, "Spectral Sailor")),
+                List.of(game.getPlayers().get(0).getName()), "{U} with flash");
+        assertEquals(TableEditor.couldHaveCast(game, "Divination").size(), 3, "a sorcery isn't narrowed");
+        assertEquals(TableEditor.couldHaveCast(game, "Grizzly Bears").size(), 3, "nor a creature without flash");
+    }
+
+    @Test
+    public void colorsAreMatchedToSourcesAndHybridTakesEitherColor() {
+        List<Integer> islandAndMountain = List.of((int) forge.card.mana.ManaAtom.BLUE,
+                (int) forge.card.mana.ManaAtom.RED);
+        assertFalse(TableEditor.couldPay(new forge.card.mana.ManaCost("U U"), islandAndMountain),
+                "two sources, but only one makes blue");
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("U R"), islandAndMountain));
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("U/R U/R"), islandAndMountain));
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("X U"), islandAndMountain), "X is 0");
+        assertTrue(TableEditor.couldPay(new forge.card.mana.ManaCost("2/W"), islandAndMountain), "{2/W} as two");
+        assertFalse(TableEditor.couldPay(new forge.card.mana.ManaCost("C"), islandAndMountain), "{C} needs a colorless source");
+        int any = forge.card.mana.ManaAtom.ALL_MANA_COLORS;
+        assertFalse(TableEditor.couldPay(new forge.card.mana.ManaCost("W U"), List.of(any)),
+                "one any-color source isn't counted twice");
+    }
+
+    /** The UI asks the table, which answers from what the latest prompt published, on any thread. */
+    @Test
+    public void theTableAnswersFromTheLatestPrompt() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Recorded rec = new Recorded();
+        assertTrue(rec.table.couldHaveCast("Counterspell").isEmpty(), "before any prompt: every seat is offered");
+        Player bo = game.getPlayers().get(1);
+        putIn(game, bo, "Island");
+        putIn(game, bo, "Island");
+        saveAsTheTableDoes(rec, game);
+        assertEquals(rec.table.couldHaveCast("Counterspell"), List.of(bo.getName()));
+        assertEquals(rec.table.couldHaveCast("Divination").size(), 3);
     }
 }

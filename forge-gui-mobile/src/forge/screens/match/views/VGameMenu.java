@@ -30,9 +30,11 @@ public class VGameMenu extends FDropDownMenu {
         if (MatchController.getGameMenuExtension() != null) {
             MatchController.getGameMenuExtension().addGameMenuItems(this);
         }
-        addItem(new FMenuItem(MatchController.instance.getConcedeCaption(), FSkinImage.CONCEDE, e ->
-                ThreadUtil.invokeInGameThread(MatchController.instance::concede)
-        ));
+        if (MatchController.offersConcede()) {
+            addItem(new FMenuItem(MatchController.instance.getConcedeCaption(), FSkinImage.CONCEDE, e ->
+                    ThreadUtil.invokeInGameThread(MatchController.instance::concede)
+            ));
+        }
         // Called directly, not via invokeInGameThread like concede: the offer must register even while
         // the game thread is busy (a frozen thread would never drain a queued task). It's applied
         // off-thread like concede, safe because a human acts only while the game thread is parked at priority.
