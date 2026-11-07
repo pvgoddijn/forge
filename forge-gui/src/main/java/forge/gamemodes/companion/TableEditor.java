@@ -668,6 +668,11 @@ public final class TableEditor {
         return could;
     }
 
+    /** Whether {@code name} is a card with a face that can be cast at instant speed: an instant, or with flash. */
+    public static boolean castsAtInstantSpeed(String name) {
+        return instantSpeedCosts(name) != null;
+    }
+
     /**
      * The mana costs of {@code name}'s faces that can be cast at instant speed (an instant, or with flash), or
      * {@code null} when there are none, or it isn't a card: only those faces are narrowed down. The faces that can be

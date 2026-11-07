@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 /**
@@ -315,7 +316,7 @@ public class CompanionTable {
     }
 
     /**
-     * Turns Commander mode on or off for this game, and saves the choice with it (AC-43). {@link #couldHaveCast} and
+     * Turns Commander mode on or off for this game, and saves the choice with it (AC-43). {@link #offerSeats} and
      * the add dialog read it live. Any thread.
      */
     public void setCommanderMode(boolean on) {
@@ -956,25 +957,38 @@ public class CompanionTable {
 
     /**
      * The seats, by setup name, whose mana sources at the latest priority prompt could have paid for {@code card}
-     * when it's an instant or has flash, for the add dialog to offer (item 11); every seat for any other card. Empty
-     * before the first prompt, or when nobody could have: the dialog then offers every seat (AC-39). See
-     * {@link TableEditor#couldHaveCast(Game, String)}. With Commander mode on, only the seats whose commanders'
-     * colour identity allows the card are left, any card, not just instants ({@link CommanderLegality#legalSeats});
-     * a name that isn't in the card database isn't narrowed. Safe from any thread: it reads only what the prompt
-     * published, the setup and card data, and like {@link #canUndo} it can be out of date only between prompts.
+     * when it's an instant or has flash (item 11); every seat for any other card. Empty before the first prompt, or
+     * when nobody could have: the dialog then offers every seat (AC-39). See
+     * {@link TableEditor#couldHaveCast(Game, String)}. Safe from any thread: it reads only what the prompt published
+     * and card data, and like {@link #canUndo} it can be out of date only between prompts.
      */
     public List<String> couldHaveCast(String card) {
-        List<String> could = TableEditor.couldHaveCast(manaSources, card);
-        CompanionSetup current = setup;
-        if (!current.commanderMode()) {
-            return could;
+        return TableEditor.couldHaveCast(manaSources, card);
+    }
+
+    /**
+     * The seats the add dialog offers for {@code card}, and the one it chooses ({@link SeatOffer#forCard}): every
+     * seat in {@link CompanionSetup#gameOrder()}, narrowed for an instant-speed card from hand to the seats that
+     * {@link #couldHaveCast} it and, with Commander mode on, whose commanders allow it, the active seat always kept.
+     * The setup is read now, as Commander mode can be switched in the game menu. Safe from any thread.
+     *
+     * @param activeSeat the seat whose turn it is; may be null
+     * @param current    the seat chosen before; may be null
+     */
+    public SeatOffer offerSeats(String card, boolean fromHand, String activeSeat, String current) {
+        CompanionSetup now = setup;
+        List<String> all = new ArrayList<>();
+        for (CompanionSetup.Seat seat : now.gameOrder()) {
+            all.add(seat.name());
         }
-        PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(card);
-        if (printing == null) {
-            return could;
+        if (card == null) {
+            return SeatOffer.forCard(all, activeSeat, current, false, false, List.of(), null);
         }
-        return CommanderLegality.legalSeats(printing, could,
-                seat -> CommanderLegality.commanders(current.commandersOf(seat)));
+        PaperCard printing = now.commanderMode() ? StaticData.instance().getCommonCards().getUniqueByName(card) : null;
+        Predicate<String> allows = printing == null ? null
+                : seat -> CommanderLegality.isLegal(printing, CommanderLegality.commanders(now.commandersOf(seat)));
+        return SeatOffer.forCard(all, activeSeat, current, fromHand, TableEditor.castsAtInstantSpeed(card),
+                couldHaveCast(card), allows);
     }
 
     /**

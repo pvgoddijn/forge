@@ -34,7 +34,7 @@ public class CommanderLegalityShould {
     private static final PaperCard AZORIUS_CHANCERY = card("Azorius Chancery");
     private static final PaperCard SWORDS = card("Swords to Plowshares");
 
-    private static PaperCard card(String name) {
+    static PaperCard card(String name) {
         String file = name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9 ]", "").replace(' ', '_') + ".txt";
         Path path = Paths.get("res", "cardsfolder", file.substring(0, 1), file);
         try {
@@ -116,7 +116,29 @@ public class CommanderLegalityShould {
             new CompanionSetup.Seat("Carol", false)));
 
     private Optional<CommanderLegality.SeatAhead> after(PaperCard card, CompanionSetup setup, String active) {
-        return CommanderLegality.firstLegalSeatAfter(card, setup, active, commanders::get);
+        return CommanderLegality.firstLegalSeatAfter(card, setup, active, allOf(setup), commanders::get);
+    }
+
+    private static List<String> allOf(CompanionSetup setup) {
+        return setup.seats().stream().map(CompanionSetup.Seat::name).toList();
+    }
+
+    /** A seat that has left the game takes no turns, so it's neither offered nor counted. */
+    @Test
+    public void passOverASeatThatLeftTheGame() {
+        // Alice, Bob, Carol, Dan; Carol (Marwyn) lost: the elves fit Dan, two turns on, not Carol
+        assertThat(CommanderLegality.firstLegalSeatAfter(LLANOWAR_ELVES, table, "Alice", List.of("Alice", "Bob", "Dan"),
+                commanders::get)).contains(new CommanderLegality.SeatAhead("Dan", 2));
+        // Swords fits only Dan, three turns on with everyone in; two with Bob gone
+        assertThat(CommanderLegality.firstLegalSeatAfter(SWORDS, table, "Alice", List.of("Alice", "Carol", "Dan"),
+                commanders::get)).contains(new CommanderLegality.SeatAhead("Dan", 2));
+    }
+
+    @Test
+    public void refuseWhenOnlyASeatThatLeftCouldPlayIt() {
+        CommanderLegality.AddCheck check = CommanderLegality.checkAdd(LLANOWAR_ELVES, "Llanowar Elves", true,
+                threeSeats, "Alice", "Alice", List.of("Alice", "Bob"), commanders::get);
+        assertThat(check.verdict()).isEqualTo(CommanderLegality.Verdict.NO_SEAT);
     }
 
     @Test
@@ -152,17 +174,10 @@ public class CommanderLegalityShould {
         assertThatThrownBy(() -> after(SOL_RING, threeSeats, "Eve")).isInstanceOf(IllegalArgumentException.class);
     }
 
-    @Test
-    public void narrowCandidateSeatsByColourIdentity() {
-        assertThat(CommanderLegality.legalSeats(LLANOWAR_ELVES, List.of("Alice", "Carol", "Dan"), commanders::get))
-                .containsExactly("Carol", "Dan");
-        assertThat(CommanderLegality.legalSeats(SWORDS, List.of("Alice", "Bob"), commanders::get)).isEmpty();
-    }
-
     private CommanderLegality.AddCheck check(PaperCard card, boolean fromHand, CompanionSetup setup, String target,
                                              String active) {
         String name = card == null ? "Goblin" : card.getName();
-        return CommanderLegality.checkAdd(card, name, fromHand, setup, target, active, commanders::get);
+        return CommanderLegality.checkAdd(card, name, fromHand, setup, target, active, allOf(setup), commanders::get);
     }
 
     @Test

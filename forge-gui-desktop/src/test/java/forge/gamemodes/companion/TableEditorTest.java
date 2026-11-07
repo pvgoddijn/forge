@@ -1281,11 +1281,13 @@ public class TableEditorTest extends AITest {
     }
 
     /**
-     * Slice 4's item 11 with Commander mode on: only the seats whose commander's colour identity allows the card are
-     * offered, on top of the mana check, for any card. Off, or a name not in the database, isn't narrowed.
+     * Slice 4's item 11 with Commander mode on: an instant from hand is offered to the seats whose mana could have
+     * cast it and whose commander's colour identity allows it, but the active seat is never taken out by the identity
+     *: an off-colour card for it must reach the turn-skip check. Any other card, a card from elsewhere, or a name
+     * not in the database isn't narrowed, so the active seat stays chosen.
      */
     @Test
-    public void commanderModeNarrowsCouldHaveCastByColourIdentity() {
+    public void commanderModeNarrowsTheOfferedSeatsByColourIdentity() {
         Game game = startTableIn(PhaseType.MAIN1);
         List<Player> players = game.getPlayers();
         putIn(game, players.get(0), "Island");
@@ -1304,13 +1306,23 @@ public class TableEditorTest extends AITest {
         on.atPrompt(game);
         off.atPrompt(game);
 
-        assertEquals(off.couldHaveCast("Counterspell"), List.of(ann, bo), "the mana check alone");
-        assertEquals(on.couldHaveCast("Counterspell"), List.of(bo), "Krenko's red identity rules out Ann");
-        assertEquals(on.couldHaveCast("Divination"), List.of(bo, cy), "a sorcery too; Cy has no commander");
-        assertEquals(on.couldHaveCast("Llanowar Elves"), List.of(cy));
-        assertEquals(on.couldHaveCast("Sol Ring"), List.of(ann, bo, cy), "colourless fits everyone");
-        assertEquals(on.couldHaveCast("Not A Card Name"), List.of(ann, bo, cy), "a token name isn't narrowed");
-        assertTrue(on.couldHaveCast("Lightning Bolt").isEmpty(), "Ann has no red mana: the dialog offers all");
+        assertEquals(off.offerSeats("Counterspell", true, ann, ann).seats(), List.of(ann, bo), "the mana check alone");
+        assertEquals(on.offerSeats("Counterspell", true, bo, bo).seats(), List.of(bo),
+                "Krenko's red identity rules out Ann, who isn't active");
+        SeatOffer annActive = on.offerSeats("Counterspell", true, ann, ann);
+        assertEquals(annActive.seats(), List.of(ann, bo), "the active seat stays, for the turn skip to see it");
+        assertEquals(annActive.preselected(), ann);
+        SeatOffer elves = on.offerSeats("Llanowar Elves", true, ann, ann);
+        assertEquals(elves.seats(), List.of(ann, bo, cy), "a non-instant isn't narrowed by identity");
+        assertEquals(elves.preselected(), ann, "so the elves stay Ann's, and Add offers to move to Cy's turn");
+        assertEquals(CommanderLegality.checkAdd(card("Llanowar Elves"), "Llanowar Elves", true, setup,
+                elves.preselected(), ann, List.of(ann, bo, cy)).verdict(), CommanderLegality.Verdict.SKIP);
+        assertEquals(on.offerSeats("Counterspell", false, bo, bo).seats(), List.of(ann, bo, cy),
+                "from elsewhere isn't narrowed");
+        assertEquals(on.offerSeats("Not A Card Name", true, ann, ann).seats(), List.of(ann, bo, cy),
+                "a token name isn't narrowed");
+        assertFalse(on.offerSeats("Lightning Bolt", true, ann, ann).narrowed(),
+                "Ann has no red mana: nobody could have, so the dialog offers all");
     }
 
     /** Chunk 11: Commander mode switched in the game menu is read live by could-have-cast, and saved with the game. */
@@ -1318,6 +1330,10 @@ public class TableEditorTest extends AITest {
     public void switchingCommanderModeIsReadLiveAndSaved() {
         Game game = startTableIn(PhaseType.MAIN1);
         List<Player> players = game.getPlayers();
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(2), "Island");
+        putIn(game, players.get(2), "Island");
         String ann = players.get(0).getName();
         String bo = players.get(1).getName();
         String cy = players.get(2).getName();
@@ -1328,12 +1344,13 @@ public class TableEditorTest extends AITest {
         rec.store.saveSetup("t", rec.table.setup());
         rec.table.atPrompt(game);
         assertTrue(rec.table.commanderMode(), "on by default");
-        assertEquals(rec.table.couldHaveCast("Llanowar Elves"), List.of(cy));
+        assertEquals(rec.table.offerSeats("Counterspell", true, bo, bo).seats(), List.of(cy), "Ann is off-colour");
 
         rec.table.setCommanderMode(false);
 
         assertFalse(rec.table.commanderMode());
-        assertEquals(rec.table.couldHaveCast("Llanowar Elves"), List.of(ann, bo, cy), "not narrowed any more");
+        assertEquals(rec.table.offerSeats("Counterspell", true, bo, bo).seats(), List.of(ann, cy),
+                "not narrowed by identity any more");
         assertFalse(rec.store.loadActive().orElseThrow().setup().commanderMode(), "saved in setup.json");
         assertEquals(rec.results, List.of(), "saved without a problem");
     }
@@ -3734,9 +3751,10 @@ public class TableEditorTest extends AITest {
         PaperCard elves = StaticData.instance().getCommonCards().getUniqueByName("Llanowar Elves");
         PaperCard swords = StaticData.instance().getCommonCards().getUniqueByName("Swords to Plowshares");
 
-        assertEquals(CommanderLegality.firstLegalSeatAfter(elves, setup, "Alice"),
+        List<String> all = List.of("Alice", "Bob", "Carol");
+        assertEquals(CommanderLegality.firstLegalSeatAfter(elves, setup, "Alice", all),
                 java.util.Optional.of(new CommanderLegality.SeatAhead("Carol", 2)));
-        assertEquals(CommanderLegality.firstLegalSeatAfter(swords, setup, "Alice"), java.util.Optional.empty());
+        assertEquals(CommanderLegality.firstLegalSeatAfter(swords, setup, "Alice", all), java.util.Optional.empty());
     }
 
     private static PaperCard card(String name) {

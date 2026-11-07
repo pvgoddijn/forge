@@ -7,6 +7,7 @@ import forge.gamemodes.companion.CommanderLegality;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.DeckListNames;
+import forge.gamemodes.companion.SeatOffer;
 import forge.gamemodes.companion.TableEditor;
 import forge.item.PaperCard;
 import forge.toolbox.FComboBox;
@@ -15,6 +16,7 @@ import forge.toolbox.FTextField;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,6 +54,7 @@ public class CardSearchDialog extends CardPicker {
     private final Map<String, Set<String>> decks = new HashMap<>(); // seat name to its deck's card names
     private final Map<String, Boolean> greyed = new HashMap<>(); // card name to greyed, for greyedFor
     private String greyedFor; // the target the greyed cache is for
+    private String selectedCard; // the card chosen in the list; null while none is
 
     /** @param gameView the running game, for the active player, who is the default target (AC-17); may be null */
     public CardSearchDialog(CompanionTable table0, GameView gameView0) {
@@ -75,6 +78,7 @@ public class CardSearchDialog extends CardPicker {
         });
         playerBeforeShowAll = activePlayer;
         cbFrom.setItems(List.of(FROM_HAND, FROM_ELSEWHERE), FROM_HAND);
+        cbFrom.setDropDownChangeHandler(e -> offerPlayers()); // only a card from hand is narrowed
         cbMode.setItems(List.of(CAST, PUT), CAST);
     }
 
@@ -93,25 +97,27 @@ public class CardSearchDialog extends CardPicker {
 
     @Override
     protected void onSelectionChanged(String card) {
-        offerPlayers(card);
+        selectedCard = card;
+        offerPlayers();
     }
 
     /**
-     * For an instant or a flash card, offers only the seats that could have cast it (item 11), as the latest prompt
-     * worked out on the game thread ({@link CompanionTable#couldHaveCast}), always with "show all", as the mana
-     * check is approximate and the operator must be able to pick anyone (AC-39); a single one is chosen for the
-     * operator. When nobody could have, or for any other card, every seat, as before (AC-39). The choice
+     * Offers the seats {@link CompanionTable#offerSeats} works out for the card chosen ({@link SeatOffer}): for an
+     * instant or a flash card from hand, only the seats that could have cast it (item 11), with Commander mode on
+     * only those whose commanders allow it, but always the active player; always with "show all" then, as the mana
+     * check is approximate and the operator must be able to pick anyone (AC-39). Otherwise every seat. The choice
      * already made stays when it's still offered; otherwise the active player if offered, else the first one.
      */
-    private void offerPlayers(String card) {
-        List<String> could = card == null ? List.of() : table.couldHaveCast(card);
-        boolean narrowed = !could.isEmpty() && could.size() < allPlayers.size();
-        // in the setup's order, and the setup's own Strings, as the combo box compares items by identity
-        List<String> offered = narrowed ? allPlayers.stream().filter(could::contains).toList() : allPlayers;
-        String current = cbPlayer.getSelectedItem();
-        String pick = offered.contains(current) ? current : offered.contains(activePlayer) ? activePlayer : offered.get(0);
-        List<String> items = new ArrayList<>(offered);
-        if (narrowed) {
+    private void offerPlayers() {
+        boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
+        SeatOffer offer = table.offerSeats(selectedCard, fromHand, activePlayer, target());
+        // the combo box compares items by identity: map back to the setup's own Strings
+        List<String> items = new ArrayList<>();
+        for (String seat : offer.seats()) {
+            items.add(allPlayers.get(allPlayers.indexOf(seat)));
+        }
+        String pick = allPlayers.get(allPlayers.indexOf(offer.preselected()));
+        if (offer.narrowed()) {
             items.add(SHOW_ALL);
         }
         cbPlayer.setItems(items, pick);
@@ -173,7 +179,7 @@ public class CardSearchDialog extends CardPicker {
         PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
         // the setup read now, as Commander mode can be switched in the game menu; the turn from the view, on this thread
         CommanderLegality.AddCheck check = CommanderLegality.checkAdd(card, name, fromHand, table.setup(), player,
-                activeSeat());
+                activeSeat(), liveSeats());
         switch (check.verdict()) {
             case SKIP:
                 FOptionPane.showOptionDialog(check.message(), "Commander mode", null,
@@ -209,6 +215,21 @@ public class CardSearchDialog extends CardPicker {
     private String activeSeat() {
         PlayerView active = gameView == null ? null : gameView.getPlayerTurn();
         return active == null ? null : active.getName();
+    }
+
+    /**
+     * The seats still in the game, by name, from the view: the game's players leave out those who lost, so a turn
+     * skip never moves to one of them. Every seat when there is no view. UI thread.
+     */
+    private Set<String> liveSeats() {
+        if (gameView == null) {
+            return new HashSet<>(allPlayers);
+        }
+        Set<String> live = new HashSet<>();
+        for (PlayerView p : gameView.getPlayers()) {
+            live.add(p.getName());
+        }
+        return live;
     }
 
     private String retakeLabel() {
