@@ -78,7 +78,10 @@ public final class OcrCardNameReader implements CardNameReader {
             }
         }
         String text = result.textRead() == null ? "" : result.textRead().trim();
-        return new Reading(text, cards, !ReadVerdict.unreadable(result.matches()));
+        List<ReadResult.Match> matches = result.matches();
+        double best = matches.isEmpty() ? 0 : matches.get(0).score();
+        double second = matches.size() < 2 ? Double.NaN : matches.get(1).score();
+        return new Reading(text, cards, !ReadVerdict.unreadable(matches), best, second);
     }
 
     private static CardQuad quad(float[] corners, double scale) {
