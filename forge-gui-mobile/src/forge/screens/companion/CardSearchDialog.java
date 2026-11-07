@@ -190,18 +190,21 @@ public class CardSearchDialog extends CardPicker {
     @Override
     protected boolean handledWithoutDialog(CardNameReader.Reading reading) {
         boolean on = CompanionPreferences.get().getPrefBoolean(CPref.AUTO_ADD);
-        AutoAdd.Plan plan = AutoAdd.plan(on, reading, AutoAddPolicy.THRESHOLD, activePlayer,
-                card -> table.offerSeats(card, true, activePlayer, activePlayer),
-                card -> check(card, true, activePlayer).verdict());
+        // the active seat now, from the live view: the turn may have moved on since the dialog opened for the photo
+        String live = activeSeat();
+        String active = live != null && allPlayers.contains(live) ? live : activePlayer;
+        AutoAdd.Plan plan = AutoAdd.plan(on, reading, AutoAddPolicy.THRESHOLD, active,
+                card -> table.offerSeats(card, true, active, active),
+                card -> check(card, true, active).verdict());
         switch (plan.action()) {
             case ADD:
                 hide();
-                table.submit(new CompanionTable.AddCard(activePlayer, plan.card(), true, TableEditor.Mode.CAST),
+                table.submit(new CompanionTable.AddCard(active, plan.card(), true, TableEditor.Mode.CAST),
                         ran -> CompanionMatchExtension.afterAutoAdd(table, ran));
                 return true;
             case COMMANDER_CHOICE:
                 hide();
-                addChecked(activePlayer, plan.card(), true, TableEditor.Mode.CAST);
+                addChecked(active, plan.card(), true, TableEditor.Mode.CAST);
                 return true;
             default:
                 return false;

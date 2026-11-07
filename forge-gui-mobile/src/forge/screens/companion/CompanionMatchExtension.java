@@ -101,12 +101,22 @@ class CompanionMatchExtension implements MatchExtension {
 
     /**
      * After an auto-add has run (AC-9), from its own result callback, so after any target or mode prompt the cast
-     * asked: what was added, with OK and Undo. Undo takes back that add only while nothing else ran since
-     * ({@link CompanionTable#undoAdd}); otherwise the table says so. An add that didn't happen, such as a cast
+     * asked: what was added, with OK and Undo. Undo is offered only when it would take back that add alone
+     * ({@link CompanionTable.Ran#undoable}), and {@link CompanionTable#undoAdd} checks again when it runs; otherwise
+     * the prompt says what was added, with OK, and points to the game menu's Undo. A sorcery that waited for a main
+     * phase gets no prompt: it runs long after the photo, so a prompt then would surprise, and the table's own
+     * notices already said it waits and its result says it was cast. An add that didn't happen, such as a cast
      * cancelled at its target prompt, has nothing to undo: the table's own result message says why. Game loop thread.
      */
     static void afterAutoAdd(CompanionTable table, CompanionTable.Ran ran) {
-        if (!ran.result().done()) {
+        if (!ran.result().done() || ran.waited()) {
+            return;
+        }
+        if (!ran.undoable()) {
+            String card = ran.result().card();
+            String added = card == null ? ran.result().message() : "Added " + card + ".";
+            FThreads.invokeInEdtLater(() -> FOptionPane.showOptionDialog(added + " Undo in the game menu takes back"
+                    + " the latest action.", "Added", null, List.of("OK"), 0, null));
             return;
         }
         FThreads.invokeInEdtLater(() -> FOptionPane.showOptionDialog(ran.result().message(), "Added", null,
