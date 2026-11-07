@@ -33,6 +33,12 @@ public final class CardReader {
      * in the full frame, which took 5 s to read on the phone without changing the answer.
      */
     private static final int MAX_CROP_BOXES = 8;
+    /**
+     * Read when the budget's windows gave a weak title: a shorter band makes the name taller in the recogniser's input,
+     * which helps a blurred title. On the phone captures it fixed 2 of 15 misses at a third of the cost of always
+     * reading them.
+     */
+    private static final List<TitleBands.Window> RETRY_WINDOWS = List.of(TitleBands.WIDE_HIGH, TitleBands.WIDE_LOW);
 
     private final TextModels models;
     private final CardNames names;
@@ -81,6 +87,7 @@ public final class CardReader {
                 first = quads.get(0);
             }
             readTitles(image, quads, budget, pass);
+            retryWindows(image, quads, budget, pass);
         }
 
         List<ReadResult.Match> titleOnly = toMatches(pass.best);
@@ -133,6 +140,7 @@ public final class CardReader {
             if (fresh != null) {
                 card = fresh;
                 readTitles(image, List.of(fresh), budget, pass);
+                retryWindows(image, List.of(fresh), budget, pass);
             }
         }
         List<ReadResult.Match> titleOnly = toMatches(pass.best);
@@ -229,13 +237,27 @@ public final class CardReader {
         }
     }
 
+    /** Reads the title again through the windows the budget hasn't read, if what it read is weak. */
+    private void retryWindows(ArgbImage image, List<CardQuad> quads, ReadBudget budget, Pass pass) {
+        List<TitleBands.Window> windows = new ArrayList<>(RETRY_WINDOWS);
+        windows.removeAll(budget.windows());
+        if (!windows.isEmpty() && !quads.isEmpty() && strength(pass).weak()) {
+            readTitles(image, quads, windows, budget, pass);
+        }
+    }
+
     private void readTitles(ArgbImage image, List<CardQuad> quads, ReadBudget budget, Pass pass) {
+        readTitles(image, quads, budget.windows(), budget, pass);
+        pass.quads += quads.size();
+    }
+
+    private void readTitles(ArgbImage image, List<CardQuad> quads, List<TitleBands.Window> windows, ReadBudget budget, Pass pass) {
         long start = System.nanoTime();
         List<CardQuad> orientedQuads = new ArrayList<>();
         List<TitleBands.Band> bands = new ArrayList<>();
         for (CardQuad quad : quads) {
             for (CardQuad oriented : List.of(quad, quad.flipped())) {
-                for (TitleBands.Window window : budget.windows()) {
+                for (TitleBands.Window window : windows) {
                     orientedQuads.add(oriented);
                     bands.add(TitleBands.title(image, oriented, window));
                 }
@@ -265,7 +287,6 @@ public final class CardReader {
         pass.rectify += ms(afterRectify - start);
         pass.recognise += ms(afterRecognise - afterRectify);
         pass.match += ms(afterMatch - afterRecognise);
-        pass.quads += quads.size();
         pass.bands += bands.size();
     }
 
