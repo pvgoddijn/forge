@@ -5,6 +5,7 @@ import forge.assets.FSkinImage;
 import forge.game.Game;
 import forge.game.card.CardView;
 import forge.game.player.PlayerView;
+import forge.gamemodes.companion.CardCameras;
 import forge.gamemodes.companion.CompanionCards;
 import forge.gamemodes.companion.CompanionPreferences;
 import forge.gamemodes.companion.CompanionPreferences.CPref;
@@ -83,6 +84,16 @@ class CompanionMatchExtension implements MatchExtension {
             prefs.setPref(CPref.AUTO_ADD, !autoAdd);
             prefs.save();
         }));
+        // slice 8, only where photos are taken: keeps each photo, labelled with the card picked, for the OCR
+        // benchmark; the one exception to AC-7
+        if (CardCameras.get() != null && CardCameras.get().canPhotograph()) {
+            boolean keepPhotos = prefs.getPrefBoolean(CPref.KEEP_PHOTOS);
+            menu.addItem(new FMenuItem(keepPhotos ? "Keep photos for training: on" : "Keep photos for training: off",
+                    e -> {
+                        prefs.setPref(CPref.KEEP_PHOTOS, !keepPhotos);
+                        prefs.save();
+                    }));
+        }
         // read from the views on the UI thread; the op re-checks each card on the game thread
         List<CardView> sick = new ArrayList<>();
         for (PlayerView p : MatchController.instance.getGameView().getPlayers()) {

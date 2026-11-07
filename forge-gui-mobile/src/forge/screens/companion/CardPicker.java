@@ -8,6 +8,7 @@ import forge.gamemodes.companion.CardCamera;
 import forge.gamemodes.companion.CardCameras;
 import forge.gamemodes.companion.CardNameMatcher;
 import forge.gamemodes.companion.CardNameReader;
+import forge.gamemodes.companion.TrainingCaptures;
 import forge.gui.FThreads;
 import forge.item.PaperCard;
 import forge.toolbox.FButton;
@@ -56,6 +57,7 @@ public class CardPicker extends FDialog {
     private boolean everShown; // false until the first photo comes back, so a hidden dialog wasn't closed by the operator
     private boolean fromPhoto; // whether the search shows a photo's read, not touched by typing since
     private CardNameReader.Reading lastReading; // the photo's read the list shows, while fromPhoto; for re-ranking
+    private TrainingCaptures.Run trainingRun; // the last photo, while it's kept for training; null otherwise
 
     /**
      * @param title0  what is being picked, such as "Alice's commander"
@@ -109,6 +111,32 @@ public class CardPicker extends FDialog {
         if (canPhotograph()) {
             initButton(PHOTO, "Photo", e -> photograph());
         }
+    }
+
+    /**
+     * The card in the last photo, when it's kept for training (slice 8): its name goes in the training labels. Called
+     * for each pick; a later pick for the same photo, as after an edit, replaces the label.
+     */
+    protected void photoPicked(String name) {
+        if (trainingRun != null) {
+            label(trainingRun, name);
+        }
+    }
+
+    private static void label(TrainingCaptures.Run run, String card) {
+        try {
+            run.label(card);
+        } catch (RuntimeException e) {
+            e.printStackTrace(); // a label lost is no reason to stop the game
+        }
+    }
+
+    /** A new photo, or none: the one before, if no card was picked for it, is labelled as having none. */
+    private void replaceTrainingRun(TrainingCaptures.Run run) {
+        if (trainingRun != null && trainingRun != run) {
+            label(trainingRun, TrainingCaptures.UNLABELLED);
+        }
+        trainingRun = run;
     }
 
     /** Run when the operator cancels, with nothing picked. */
@@ -246,6 +274,7 @@ public class CardPicker extends FDialog {
     }
 
     private void cancel() {
+        replaceTrainingRun(null);
         hide();
         if (onCancel != null) {
             onCancel.run();
@@ -274,6 +303,7 @@ public class CardPicker extends FDialog {
                 return;
             }
             FThreads.invokeInEdtLater(() -> {
+                replaceTrainingRun(photo.training());
                 showIfHidden();
                 getButton(PHOTO).setText("Reading...");
             });
@@ -286,6 +316,13 @@ public class CardPicker extends FDialog {
                     // this bare thread an uncaught one would end the app mid-game.
                     e.printStackTrace();
                     reading = CardNameReader.Reading.NOTHING;
+                }
+                if (photo.training() != null) {
+                    try {
+                        photo.training().recordReading(reading);
+                    } catch (RuntimeException e) {
+                        e.printStackTrace(); // the read still goes to the dialog
+                    }
                 }
                 CardNameReader.Reading read = reading;
                 FThreads.invokeInEdtLater(() -> showReading(read));
@@ -388,6 +425,7 @@ public class CardPicker extends FDialog {
             return;
         }
         hide();
+        photoPicked(name);
         picked(name);
     }
 
