@@ -69,6 +69,10 @@ class CompanionMatchExtension implements MatchExtension {
                     table.setEngineCombat(!everyTurn);
                     combatSwitched(!everyTurn);
                 }));
+        // AC-43: switched off, a card outside a commander's colour identity is added as asked
+        boolean commanderMode = table.commanderMode();
+        menu.addItem(new FMenuItem(commanderMode ? "Commander mode: on" : "Commander mode: off",
+                e -> table.setCommanderMode(!commanderMode)));
         // read from the views on the UI thread; the op re-checks each card on the game thread
         List<CardView> sick = new ArrayList<>();
         for (PlayerView p : MatchController.instance.getGameView().getPlayers()) {

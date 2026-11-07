@@ -309,6 +309,25 @@ public class CompanionTable {
         }
     }
 
+    /** Whether Commander mode is on: cards outside a seat's commanders' colour identity aren't added (AC-43). */
+    public boolean commanderMode() {
+        return setup.commanderMode();
+    }
+
+    /**
+     * Turns Commander mode on or off for this game, and saves the choice with it (AC-43). {@link #couldHaveCast} and
+     * the add dialog read it live. Any thread.
+     */
+    public void setCommanderMode(boolean on) {
+        CompanionSetup changed = setup.withCommanderMode(on);
+        setup = changed;
+        try {
+            store.saveSetup(id, changed);
+        } catch (java.io.UncheckedIOException e) {
+            onResult.accept(new TableEditor.Result(false, "Commander mode couldn't be saved: " + e.getMessage()));
+        }
+    }
+
     /** Where results go, for example to tell the operator a card couldn't be cast. Called on the game thread. */
     public void setOnResult(Consumer<TableEditor.Result> onResult0) {
         onResult = onResult0;

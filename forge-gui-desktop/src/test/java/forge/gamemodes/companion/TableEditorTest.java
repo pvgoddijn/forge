@@ -1313,6 +1313,31 @@ public class TableEditorTest extends AITest {
         assertTrue(on.couldHaveCast("Lightning Bolt").isEmpty(), "Ann has no red mana: the dialog offers all");
     }
 
+    /** Chunk 11: Commander mode switched in the game menu is read live by could-have-cast, and saved with the game. */
+    @Test
+    public void switchingCommanderModeIsReadLiveAndSaved() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        List<Player> players = game.getPlayers();
+        String ann = players.get(0).getName();
+        String bo = players.get(1).getName();
+        String cy = players.get(2).getName();
+        Recorded rec = new Recorded(CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat(ann, true, List.of("Krenko, Mob Boss"), ""),
+                new CompanionSetup.Seat(bo, false, List.of("Talrand, Sky Summoner"), ""),
+                new CompanionSetup.Seat(cy, false))));
+        rec.store.saveSetup("t", rec.table.setup());
+        rec.table.atPrompt(game);
+        assertTrue(rec.table.commanderMode(), "on by default");
+        assertEquals(rec.table.couldHaveCast("Llanowar Elves"), List.of(cy));
+
+        rec.table.setCommanderMode(false);
+
+        assertFalse(rec.table.commanderMode());
+        assertEquals(rec.table.couldHaveCast("Llanowar Elves"), List.of(ann, bo, cy), "not narrowed any more");
+        assertFalse(rec.store.loadActive().orElseThrow().setup().commanderMode(), "saved in setup.json");
+        assertEquals(rec.results, List.of(), "saved without a problem");
+    }
+
     /** Ends a run of the real main loop where the table would show the operator a priority prompt. */
     private static final class OperatorAsked extends RuntimeException {
         OperatorAsked() {
