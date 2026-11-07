@@ -89,12 +89,6 @@ public final class CommanderLegality {
         return legal;
     }
 
-    /**
-     * The first seat after {@code activeSeat} in turn order ({@link CompanionSetup#seats()}, wrapping round) whose
-     * commanders allow {@code card}, never the active seat itself; empty when there is none.
-     *
-     * @param commandersOf a seat name's commanders, empty for none
-     */
     /** {@link #firstLegalSeatAfter(PaperCard, CompanionSetup, String, Function)} with the setup's own commanders. */
     public static Optional<SeatAhead> firstLegalSeatAfter(PaperCard card, CompanionSetup setup, String activeSeat) {
         return firstLegalSeatAfter(card, setup, activeSeat, seat -> commanders(setup.commandersOf(seat)));
@@ -115,6 +109,12 @@ public final class CommanderLegality {
         return cards;
     }
 
+    /**
+     * The first seat after {@code activeSeat} in turn order ({@link CompanionSetup#seats()}, wrapping round) whose
+     * commanders allow {@code card}, never the active seat itself; empty when there is none.
+     *
+     * @param commandersOf a seat name's commanders, empty for none
+     */
     public static Optional<SeatAhead> firstLegalSeatAfter(PaperCard card, CompanionSetup setup, String activeSeat,
                                                           Function<String, List<PaperCard>> commandersOf) {
         List<CompanionSetup.Seat> seats = setup.seats();
@@ -135,5 +135,94 @@ public final class CommanderLegality {
             }
         }
         return Optional.empty();
+    }
+
+    /** What the add dialog does with a card (slice 6, chunk 8). */
+    public enum Verdict {
+        /** Add it as asked: legal for the target, or not checked. */
+        LEGAL,
+        /** Illegal for the active seat, legal for a later one: offer to move the turn ahead to it (AC-45). */
+        SKIP,
+        /** Illegal for the active seat and for every other seat: refuse it (AC-46). */
+        NO_SEAT,
+        /** Illegal for a target that isn't the active seat: refuse it (AC-46). */
+        NOT_FOR_TARGET;
+
+        /** Whether the card is refused, with Retake and Cancel. */
+        public boolean refused() {
+            return this == NO_SEAT || this == NOT_FOR_TARGET;
+        }
+    }
+
+    /**
+     * The add dialog's answer for a card, and what it says.
+     *
+     * @param card   the card's name
+     * @param target the seat the operator picked
+     * @param skip   the seat to move ahead to, for {@link Verdict#SKIP} only; otherwise null
+     */
+    public record AddCheck(Verdict verdict, String card, String target, SeatAhead skip) {
+        private static final String MODE_OFF = " To add it anyway, turn Commander mode off in the game menu.";
+
+        /** The "move ahead" button, such as "Move to Carol's turn (2 turns ahead)". For {@link Verdict#SKIP} only. */
+        public String moveLabel() {
+            return "Move to " + skip.seat() + "'s turn (" + turns(skip.turnsAhead()) + " ahead)";
+        }
+
+        /** Why the card can't go to the target, and for a skip, who it fits. Empty for {@link Verdict#LEGAL}. */
+        public String message() {
+            String outside = card + " is outside the colour identity of " + target + "'s commander.";
+            switch (verdict) {
+                case SKIP:
+                    return outside + " It fits " + skip.seat() + ", whose turn is " + turns(skip.turnsAhead())
+                            + " ahead. Moving there plays the turns in between, their draws and upkeeps included, and"
+                            + " adds it on " + skip.seat() + "'s turn." + MODE_OFF;
+                case NO_SEAT:
+                    return outside + " It fits no other player either, so it wasn't added." + MODE_OFF;
+                case NOT_FOR_TARGET:
+                    return outside + " It wasn't added." + MODE_OFF;
+                default:
+                    return "";
+            }
+        }
+
+        private static String turns(int n) {
+            return n == 1 ? "1 turn" : n + " turns";
+        }
+    }
+
+    /**
+     * {@link #checkAdd(PaperCard, String, boolean, CompanionSetup, String, String, Function)} with the setup's own
+     * commanders, looked up in Forge's card database.
+     */
+    public static AddCheck checkAdd(PaperCard card, String name, boolean fromHand, CompanionSetup setup,
+                                    String target, String activeSeat) {
+        return checkAdd(card, name, fromHand, setup, target, activeSeat, seat -> commanders(setup.commandersOf(seat)));
+    }
+
+    /**
+     * What the add dialog does with a card for {@code target} (AC-43, AC-45, AC-46). Only a card from hand that is in
+     * the card database is checked, and only with Commander mode on: tokens, emblems and cards from elsewhere are
+     * always {@link Verdict#LEGAL}. An illegal card for the active seat is a {@link Verdict#SKIP} to the first later
+     * seat it fits, in the setup's seat order, or {@link Verdict#NO_SEAT}; for any other target, or when the active
+     * seat isn't known, it is {@link Verdict#NOT_FOR_TARGET}. Pure: the active seat comes from the caller.
+     *
+     * @param card       the card, or null when the name isn't in the card database
+     * @param name       the name as picked, for the messages
+     * @param activeSeat the seat whose turn it is, by setup name; null when not known
+     */
+    public static AddCheck checkAdd(PaperCard card, String name, boolean fromHand, CompanionSetup setup,
+                                    String target, String activeSeat,
+                                    Function<String, List<PaperCard>> commandersOf) {
+        if (card == null || !fromHand || !setup.commanderMode() || isLegal(card, commandersOf.apply(target))) {
+            return new AddCheck(Verdict.LEGAL, name, target, null);
+        }
+        boolean activeKnown = setup.seats().stream().anyMatch(seat -> seat.name().equals(activeSeat));
+        if (!activeKnown || !target.equals(activeSeat)) {
+            return new AddCheck(Verdict.NOT_FOR_TARGET, name, target, null);
+        }
+        return firstLegalSeatAfter(card, setup, activeSeat, commandersOf)
+                .map(ahead -> new AddCheck(Verdict.SKIP, name, target, ahead))
+                .orElseGet(() -> new AddCheck(Verdict.NO_SEAT, name, target, null));
     }
 }

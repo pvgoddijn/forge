@@ -158,4 +158,68 @@ public class CommanderLegalityShould {
                 .containsExactly("Carol", "Dan");
         assertThat(CommanderLegality.legalSeats(SWORDS, List.of("Alice", "Bob"), commanders::get)).isEmpty();
     }
+
+    private CommanderLegality.AddCheck check(PaperCard card, boolean fromHand, CompanionSetup setup, String target,
+                                             String active) {
+        String name = card == null ? "Goblin" : card.getName();
+        return CommanderLegality.checkAdd(card, name, fromHand, setup, target, active, commanders::get);
+    }
+
+    @Test
+    public void addALegalCardAsAsked() {
+        assertThat(check(LLANOWAR_ELVES, true, threeSeats, "Carol", "Alice").verdict())
+                .isEqualTo(CommanderLegality.Verdict.LEGAL);
+        assertThat(check(SOL_RING, true, threeSeats, "Alice", "Alice").verdict())
+                .isEqualTo(CommanderLegality.Verdict.LEGAL);
+    }
+
+    @Test
+    public void notCheckWithCommanderModeOffACardFromElsewhereOrATokenName() {
+        assertThat(check(LLANOWAR_ELVES, true, threeSeats.withCommanderMode(false), "Alice", "Alice").verdict())
+                .isEqualTo(CommanderLegality.Verdict.LEGAL);
+        assertThat(check(LLANOWAR_ELVES, false, threeSeats, "Alice", "Alice").verdict())
+                .isEqualTo(CommanderLegality.Verdict.LEGAL);
+        assertThat(check(null, true, threeSeats, "Alice", "Alice").verdict())
+                .isEqualTo(CommanderLegality.Verdict.LEGAL);
+    }
+
+    @Test
+    public void offerToMoveAheadForTheActiveSeat() {
+        CommanderLegality.AddCheck check = check(LLANOWAR_ELVES, true, threeSeats, "Alice", "Alice");
+        assertThat(check.verdict()).isEqualTo(CommanderLegality.Verdict.SKIP);
+        assertThat(check.verdict().refused()).isFalse();
+        assertThat(check.skip()).isEqualTo(new CommanderLegality.SeatAhead("Carol", 2));
+        assertThat(check.moveLabel()).isEqualTo("Move to Carol's turn (2 turns ahead)");
+        assertThat(check.message()).contains("Llanowar Elves", "Alice", "Carol", "Commander mode off");
+    }
+
+    @Test
+    public void sayOneTurnAheadInTheSingular() {
+        CommanderLegality.AddCheck check = check(LLANOWAR_ELVES, true, threeSeats, "Bob", "Bob");
+        assertThat(check.moveLabel()).isEqualTo("Move to Carol's turn (1 turn ahead)");
+    }
+
+    @Test
+    public void refuseACardNobodyCanPlay() {
+        CommanderLegality.AddCheck check = check(SWORDS, true, threeSeats, "Alice", "Alice");
+        assertThat(check.verdict()).isEqualTo(CommanderLegality.Verdict.NO_SEAT);
+        assertThat(check.verdict().refused()).isTrue();
+        assertThat(check.skip()).isNull();
+        assertThat(check.message()).contains("no other player", "Commander mode off");
+    }
+
+    /** AC-46: a target the operator picked who isn't the active seat is never moved ahead to another seat. */
+    @Test
+    public void refuseAnIllegalCardForATargetThatIsNotActive() {
+        CommanderLegality.AddCheck check = check(LLANOWAR_ELVES, true, threeSeats, "Bob", "Alice");
+        assertThat(check.verdict()).isEqualTo(CommanderLegality.Verdict.NOT_FOR_TARGET);
+        assertThat(check.verdict().refused()).isTrue();
+        assertThat(check.message()).contains("Bob", "Commander mode off");
+    }
+
+    @Test
+    public void refuseRatherThanSkipWhenTheActiveSeatIsUnknown() {
+        assertThat(check(LLANOWAR_ELVES, true, threeSeats, "Alice", null).verdict())
+                .isEqualTo(CommanderLegality.Verdict.NOT_FOR_TARGET);
+    }
 }

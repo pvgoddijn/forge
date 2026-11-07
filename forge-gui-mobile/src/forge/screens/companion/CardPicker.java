@@ -52,6 +52,7 @@ public class CardPicker extends FDialog {
     private String selectedCard; // a name from the database; null while the text is only what was typed
     private boolean photographing; // a photo is being taken or read; UI thread only
     private boolean everShown; // false until the first photo comes back, so a hidden dialog wasn't closed by the operator
+    private boolean fromPhoto; // whether the search shows a photo's read, not touched by typing since
 
     /**
      * @param title0  what is being picked, such as "Alice's commander"
@@ -72,7 +73,10 @@ public class CardPicker extends FDialog {
 
         txtSearch.setGhostText(filter == null ? "Card or token name" : "Card name");
         txtSearch.setLiveChangeEvents(true);
-        txtSearch.setChangedHandler(e -> updateMatches());
+        txtSearch.setChangedHandler(e -> {
+            fromPhoto = false; // only typing fires this
+            updateMatches();
+        });
 
         lstMatches.setListItemRenderer(new FList.ListItemRenderer<>() {
             @Override
@@ -134,6 +138,33 @@ public class CardPicker extends FDialog {
 
     /** Opens the dialog to type a name, without the camera: for tokens and emblems, which have no card to photograph. */
     public void pickByName() {
+        everShown = true;
+        show();
+    }
+
+    /**
+     * Whether the last pick came from a photo, so a refused card is retaken with the camera; otherwise it was typed,
+     * or the read was changed by typing, and is edited in the search.
+     */
+    protected boolean pickedFromPhoto() {
+        return fromPhoto && canPhotograph();
+    }
+
+    /**
+     * After a pick was refused: a new photo, the dialog showing again once there is one, as {@link #pickByPhoto}
+     * does. Whatever the subclass shows above the search stays as it was.
+     */
+    protected void retake() {
+        if (!canPhotograph()) {
+            edit();
+            return;
+        }
+        everShown = false;
+        photograph();
+    }
+
+    /** After a pick was refused: shows the dialog again as it was picked from, to change the search. */
+    protected void edit() {
         everShown = true;
         show();
     }
@@ -228,6 +259,7 @@ public class CardPicker extends FDialog {
         if (!isVisible()) {
             return; // the operator moved on while it was reading
         }
+        fromPhoto = true;
         List<CardNameMatcher.Suggestion> suggestions = new ArrayList<>();
         for (String card : reading.cards()) {
             if (CardNameMatcher.passes(card, filter)) {
