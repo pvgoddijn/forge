@@ -50,6 +50,7 @@ public class CardPicker extends FDialog {
     private Consumer<String> onPick;
     private Runnable onCancel;
     private FButton btnSkip; // null without a skip
+    private String photoPrompt; // shown with the camera; null for none
     private String selectedCard; // a name from the database; null while the text is only what was typed
     private boolean photographing; // a photo is being taken or read; UI thread only
     private boolean everShown; // false until the first photo comes back, so a hidden dialog wasn't closed by the operator
@@ -113,6 +114,15 @@ public class CardPicker extends FDialog {
     /** Run when the operator cancels, with nothing picked. */
     public CardPicker withCancel(Runnable onCancel0) {
         onCancel = onCancel0;
+        return this;
+    }
+
+    /**
+     * What the camera shows while it takes this picker's photos, so the operator knows why it opened, such as "Ann's
+     * commander: photograph it".
+     */
+    public CardPicker withPhotoPrompt(String prompt) {
+        photoPrompt = prompt;
         return this;
     }
 
@@ -255,7 +265,7 @@ public class CardPicker extends FDialog {
         photographing = true;
         CardCamera camera = CardCameras.get();
         CardNameReader reader = camera.reader();
-        camera.photograph(photo -> {
+        camera.photograph(photoPrompt, photo -> {
             if (photo == null) {
                 FThreads.invokeInEdtLater(() -> {
                     photographing = false;

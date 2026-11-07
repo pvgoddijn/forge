@@ -13,8 +13,10 @@ public interface CardCamera {
     /**
      * Lets the operator photograph one card: the camera on a phone, a file chooser on the dev build. {@code onResult}
      * gets the photo, or null if there is none: cancelled, or the camera refused. It may be called on any thread.
+     *
+     * @param prompt what to photograph, such as "Ann's commander: photograph it", shown with the camera; null for none
      */
-    void photograph(Consumer<CardPhoto> onResult);
+    void photograph(String prompt, Consumer<CardPhoto> onResult);
 
     /** Reads card names from photos, or null where this device has no reader. */
     CardNameReader reader();

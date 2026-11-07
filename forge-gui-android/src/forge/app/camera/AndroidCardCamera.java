@@ -21,8 +21,8 @@ public final class AndroidCardCamera implements CardCamera {
     }
 
     @Override
-    public void photograph(Consumer<CardPhoto> onResult) {
-        AndroidCardPhotos.photograph(activity, onResult);
+    public void photograph(String prompt, Consumer<CardPhoto> onResult) {
+        AndroidCardPhotos.photograph(activity, prompt, onResult);
     }
 
     @Override

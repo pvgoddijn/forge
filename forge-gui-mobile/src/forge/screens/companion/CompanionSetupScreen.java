@@ -298,9 +298,14 @@ public class CompanionSetupScreen extends LaunchScreen {
                 new CardPicker(seat.name() + "'s second commander", CommanderLegality.secondCommanderFor(first),
                         second -> next.accept(List.of(name, second)))
                         .withSkip("No second commander", () -> next.accept(List.of(name)))
+                        .withPhotoPrompt(seat.name() + "'s second commander (" + name + "'s partner): photograph"
+                                + " it, or Cancel to type its name or choose none.")
                         .pickByPhoto();
             });
-        }).withSkip("No commander", () -> next.accept(List.of())).pickByPhoto();
+        }).withSkip("No commander", () -> next.accept(List.of()))
+                .withPhotoPrompt(seat.name() + "'s commander: photograph it, or Cancel to type its name or choose"
+                        + " No commander.")
+                .pickByPhoto();
     }
 
     private void createAndOpen(CompanionSetup setup) {
