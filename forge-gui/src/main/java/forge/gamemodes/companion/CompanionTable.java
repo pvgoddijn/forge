@@ -254,6 +254,14 @@ public class CompanionTable {
      * isn't something that happened. Game loop thread only.
      */
     private boolean tableActing;
+    /**
+     * The reveal or message the seats were last shown ({@link #firstToShow}), or null when something else happened
+     * since. Game loop thread only.
+     */
+    private RevealRun revealRun;
+
+    /** A reveal or message, by what makes it the same one, and the seat in the game's order it went to last. */
+    private record RevealRun(Object key, int lastSeatIndex) { }
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -985,6 +993,7 @@ public class CompanionTable {
      * can't hold a combat in progress), then works out {@link #canUndo} for that prompt. Game loop thread.
      */
     void atPrompt(Game game) {
+        endRevealRun();
         PhaseType phase = game.getPhaseHandler().getPhase();
         boolean settledPoint = game.getStack().isEmpty() && phase != null && phase.isMain();
         if (settledPoint) {
@@ -1006,6 +1015,24 @@ public class CompanionTable {
             // an unreadable log mustn't stop the prompt; the history keeps what it showed last
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Whether {@code seat} shows the reveal or message {@code key} stands for. The engine shows one to each seat in
+     * turn, in the game's order of players, and every seat is on the operator's one screen, so only the first of a
+     * run shows it: a later seat given the same one is part of that run. The same one given to an earlier seat again
+     * is a new run, as is anything after {@link #endRevealRun}. Game loop thread.
+     */
+    boolean firstToShow(Game game, Player seat, Object key) {
+        int index = game.getPlayers().indexOf(seat);
+        boolean sameRun = revealRun != null && revealRun.key().equals(key) && index > revealRun.lastSeatIndex();
+        revealRun = new RevealRun(key, index);
+        return !sameRun;
+    }
+
+    /** Ends the current run of reveals ({@link #firstToShow}): a seat is asked for priority, or the prompt is shown. */
+    void endRevealRun() {
+        revealRun = null;
     }
 
     /**

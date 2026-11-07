@@ -4218,4 +4218,100 @@ public class TableEditorTest extends AITest {
         assertEquals(coins.size(), 3, String.valueOf(coins));
         assertEquals(coins.stream().filter(c -> c.endsWith("(heads)")).count(), 1L, "one seat won");
     }
+
+    /** A screen shared by every seat, recording the caption of each reveal and message it shows. */
+    private static forge.gui.interfaces.IGuiGame screenRecordingReveals(List<String> shown) {
+        return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
+                TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("reveal") || method.getName().equals("message")) {
+                        shown.add(String.valueOf(args[0]));
+                    }
+                    Class<?> type = method.getReturnType();
+                    if (type == boolean.class) {
+                        return false;
+                    }
+                    if (type == int.class) {
+                        return 0;
+                    }
+                    if (type.isPrimitive() && type != void.class) {
+                        throw new UnsupportedOperationException(method.getName());
+                    }
+                    return null;
+                });
+    }
+
+    /** Seats every player of {@code game} with {@code seatFor}'s controller, all on {@code screen}. */
+    private static void seatEveryoneOn(Game game, forge.gui.interfaces.IGuiGame screen,
+            java.util.function.Function<Player, forge.player.PlayerControllerHuman> seatFor) {
+        for (Player p : game.getPlayers()) {
+            forge.player.PlayerControllerHuman seat = seatFor.apply(p);
+            seat.getInputQueue().deleteObservers();
+            seat.setGui(screen);
+            p.dangerouslySetController(seat);
+        }
+    }
+
+    /**
+     * Every seat is on the operator's one screen, so a card revealed to the whole table shows once, naming its owner,
+     * not once per seat; a card shown to one player alone still shows, for them. The same reveal to an earlier seat
+     * than the last one shown is a new reveal, and shows again.
+     */
+    @Test
+    public void aRevealToTheTableShowsOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        Card top = addCardToZone("Island", bo, ZoneType.Library);
+        forge.game.card.CardCollection cards = new forge.game.card.CardCollection(top);
+
+        game.getAction().reveal(cards, bo, false);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s library"), shown.get(0));
+
+        shown.clear();
+        game.getAction().reveal(cards, bo); // to everyone but its owner
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+
+        shown.clear();
+        game.getAction().notifyOfValue(null, bo, "Bo chose red", null);
+        assertEquals(shown, List.of("Bo chose red"));
+
+        shown.clear();
+        game.getAction().revealTo(cards, bo); // looking at the top card, privately
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s library"), shown.get(0));
+
+        shown.clear();
+        game.getAction().revealTo(cards, game.getPlayers().get(0)); // an earlier seat than Bo: a reveal of its own
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+
+        shown.clear();
+        table.endRevealRun(); // a seat is asked for priority in between
+        game.getAction().revealTo(cards, game.getPlayers().get(2));
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+    }
+
+    /** With a seat per player, as in hotseat, each seat is still shown the reveal. */
+    @Test
+    public void aRevealStillShowsForEachSeatOutsideCompanion() {
+        Game game = startTable();
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new forge.player.PlayerControllerHuman(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null)));
+        Player bo = game.getPlayers().get(1);
+        forge.game.card.CardCollection cards = new forge.game.card.CardCollection(addCardToZone("Island", bo, ZoneType.Library));
+
+        game.getAction().reveal(cards, bo, false);
+        assertEquals(shown.size(), 3, String.valueOf(shown));
+
+        shown.clear();
+        game.getAction().notifyOfValue(null, bo, "Bo chose red", null);
+        assertEquals(shown.size(), 3, String.valueOf(shown));
+    }
 }
