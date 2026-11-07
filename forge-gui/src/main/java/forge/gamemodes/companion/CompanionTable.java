@@ -21,9 +21,12 @@ import forge.gui.interfaces.IGuiGame;
 import forge.item.PaperCard;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -202,6 +205,8 @@ public class CompanionTable {
     private final List<CompanionPlayerController> seats = new CopyOnWriteArrayList<>();
     private volatile Consumer<TableEditor.Result> onResult = r -> { };
     private volatile Consumer<String> onNotice = n -> { };
+    /** The ops submitted with their own callback ({@link #submit(Op, Consumer)}), by identity, until they've run. */
+    private final Map<Op, Consumer<Ran>> watched = Collections.synchronizedMap(new IdentityHashMap<>());
     private String lastSaved;
     private boolean saveFailing;
     /** Whether an op other than undo has run since the latest save. See {@link #ranSinceSave}. Game loop thread only. */
@@ -350,10 +355,15 @@ public class CompanionTable {
         onNotice.accept(notice);
     }
 
-    /** Writes {@code entry} through the store, which never throws for it, and keeps it in {@link #log}. */
-    private synchronized void append(CompanionLogEntry entry) {
+    /**
+     * Writes {@code entry} through the store, which never throws for it, and keeps it in {@link #log}. Returns it as
+     * written, with its seq.
+     */
+    private synchronized CompanionLogEntry append(CompanionLogEntry entry) {
         List<CompanionLogEntry> entries = cachedLog();
-        entries.add(store.appendLog(id, entry));
+        CompanionLogEntry written = store.appendLog(id, entry);
+        entries.add(written);
+        return written;
     }
 
     private synchronized List<CompanionLogEntry> cachedLog() {
@@ -554,6 +564,24 @@ public class CompanionTable {
                 + "(?![\\p{L}\\p{N}])").matcher(text).find();
     }
 
+    /**
+     * What an op submitted with {@link #submit(Op, Consumer)} did, once it has run.
+     *
+     * @param result what it said, as {@link #setOnResult} is told too
+     * @param seq    the seq of the log entry it wrote, as {@link CompanionLogEntry#seq}
+     */
+    public record Ran(TableEditor.Result result, long seq) { }
+
+    /**
+     * {@link #submit(Op)}, and once {@code op} has run, after any prompt it asked (a cast's target) and after it's in
+     * the log, {@code onRan} is told what it did, then the table's {@link #setOnResult} as usual. On the game loop
+     * thread. An op that parks is told when it runs; one dropped while parked (an undo, a restart) is never told.
+     */
+    public void submit(Op op, Consumer<Ran> onRan) {
+        watched.put(op, onRan);
+        submit(op);
+    }
+
     /** Queues {@code op}, and ends the priority prompt so the game runs it. Any thread. */
     public void submit(Op op) {
         pending.add(op);
@@ -630,7 +658,16 @@ public class CompanionTable {
      * {@link Undo}. Any thread.
      */
     public void undo() {
-        submit(new Undo());
+        submit(new Undo(0));
+    }
+
+    /**
+     * Takes back the add that wrote log entry {@code addSeq}, as {@link #undo} would, but only while that undo
+     * would still reach it ({@link AutoAdd#undoReaches}): when anything else ran since, it says so and undoes nothing
+     * (slice 7's undo prompt after an auto-add). Any thread.
+     */
+    public void undoAdd(long addSeq) {
+        submit(new Undo(addSeq));
     }
 
     /**
@@ -643,6 +680,13 @@ public class CompanionTable {
      * undo during a turn skip goes back to before the skip, and drops it), and every seat's yield (End Turn).
      */
     private final class Undo implements Op {
+        /** The add this undo is for, by log seq, or 0 for whatever was last. */
+        private final long addSeq;
+
+        Undo(long addSeq0) {
+            addSeq = addSeq0;
+        }
+
         @Override
         public TableEditor.Result run(Game game) {
             int latest = latestStep();
@@ -653,6 +697,12 @@ public class CompanionTable {
             int back = settled ? latest - 1 : latest;
             if (back < 0) {
                 return new TableEditor.Result(false, "Nothing to undo: this is the start of the game");
+            }
+            if (addSeq > 0 && !AutoAdd.undoReaches(log(), addSeq, back)) {
+                String card = log().stream().filter(e -> e.seq() == addSeq).map(CompanionLogEntry::card)
+                        .filter(c -> c != null).findFirst().orElse("the card");
+                return new TableEditor.Result(false, "Something else happened after " + card + " was added, so it"
+                        + " wasn't undone. Undo in the game menu takes back the latest action.");
             }
             List<String> state = store.loadStep(id, back).orElse(null);
             if (state == null) {
@@ -882,7 +932,15 @@ public class CompanionTable {
         if (card != null) {
             entry = entry.withCard(card, result.fromHand());
         }
-        append(entry);
+        CompanionLogEntry written = append(entry);
+        Consumer<Ran> onRan = watched.remove(op);
+        if (onRan != null) {
+            try {
+                onRan.accept(new Ran(result, written.seq()));
+            } catch (RuntimeException e) {
+                e.printStackTrace(); // the op ran; a callback's failure mustn't stop the table
+            }
+        }
         onResult.accept(result);
     }
 

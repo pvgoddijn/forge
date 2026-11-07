@@ -2279,6 +2279,76 @@ public class TableEditorTest extends AITest {
         assertEquals(lastEntry(rec).undid(), List.of(2), "the cast's entry carries step 2, the save it never got");
     }
 
+    // ---- Auto mode's undo prompt (slice 7) ----
+
+    /** Submits an add as auto mode does, and returns what its callback was told once it ran. */
+    private static List<CompanionTable.Ran> autoAdd(Recorded rec, Game game, String seat, String card) {
+        List<CompanionTable.Ran> ran = new ArrayList<>();
+        rec.table.submit(new CompanionTable.AddCard(seat, card, true, TableEditor.Mode.CAST), ran::add);
+        assertTrue(rec.table.runPending(game));
+        return ran;
+    }
+
+    /** The undo prompt's Undo takes back the auto-add, before or after its spell resolved and the game was saved. */
+    @Test
+    public void theUndoPromptTakesBackTheAutoAdd() {
+        for (boolean resolved : new boolean[] {false, true}) {
+            Game game = startTable();
+            Player ann = game.getPhaseHandler().getPlayerTurn();
+            Recorded rec = new Recorded();
+            rec.table.save(game);
+            List<CompanionTable.Ran> ran = autoAdd(rec, game, ann.getName(), "Grizzly Bears");
+            assertEquals(ran.size(), 1, "told once, after it ran");
+            assertTrue(ran.get(0).result().done());
+            assertEquals(ran.get(0).seq(), lastEntry(rec).seq(), "the seq of the add's own entry");
+            if (resolved) {
+                resolveAll(game);
+                rec.table.save(game); // step 1, as the next Main 1 prompt saves
+                assertEquals(rec.store.latestStep("t"), 1);
+            }
+
+            rec.table.undoAdd(ran.get(0).seq());
+            assertTrue(rec.table.runPending(game));
+
+            assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.UNDO, "resolved: " + resolved);
+            assertEquals(countCardsWithName(game, "Grizzly Bears", ZoneType.Battlefield), 0);
+            assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND, "the hand count is back");
+            assertEquals(rec.store.latestStep("t"), 0);
+        }
+    }
+
+    /** When another action ran after the auto-add, the prompt's Undo says so and takes nothing back. */
+    @Test
+    public void theUndoPromptRefusesWhenSomethingElseRanSince() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        List<CompanionTable.Ran> ran = autoAdd(rec, game, ann.getName(), "Grizzly Bears");
+        resolveAll(game);
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false));
+
+        rec.table.undoAdd(ran.get(0).seq());
+        assertTrue(rec.table.runPending(game));
+
+        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened after Grizzly Bears"),
+                rec.results.toString());
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.NOTICE);
+        assertEquals(bo.getLife(), 30, "the later action stays");
+        assertEquals(countCardsWithName(game, "Grizzly Bears", ZoneType.Battlefield), 1, "and so does the add");
+    }
+
+    /** An add that didn't happen is reported not done to its callback too, so no undo prompt is offered for it. */
+    @Test
+    public void anAutoAddThatDidNotHappenIsReportedNotDone() {
+        Game game = startTable();
+        Recorded rec = new Recorded();
+        List<CompanionTable.Ran> ran = autoAdd(rec, game, "Nobody", "Grizzly Bears");
+        assertEquals(ran.size(), 1);
+        assertFalse(ran.get(0).result().done());
+    }
+
     /** Through the real loop: undo at a combat stop ends the combat and goes back to the main phase before it. */
     @Test
     public void onTheGameLoopUndoInACombatEndsItAndGoesBackToMain1() {
