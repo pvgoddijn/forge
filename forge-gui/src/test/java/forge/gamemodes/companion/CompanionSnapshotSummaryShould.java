@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -74,6 +75,15 @@ public class CompanionSnapshotSummaryShould {
 
         assertThat(summary.active()).isNull();
         assertThat(summary.seats()).extracting(Seat::life).containsExactly(40, 12, 40);
+    }
+
+    /** A commander's cast count is saved after the board; it isn't part of one, and changes nothing. */
+    @Test
+    public void ignoreACommandersCastCount() {
+        List<String> state = new ArrayList<>(fixture());
+        state.add("p1commandercast=2|Atraxa, Praetors' Voice");
+
+        assertThat(CompanionSnapshotSummary.of(state, SETUP)).isEqualTo(CompanionSnapshotSummary.of(fixture(), SETUP));
     }
 
     @Test

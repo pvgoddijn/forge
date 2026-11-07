@@ -3741,6 +3741,81 @@ public class TableEditorTest extends AITest {
         assertEquals(CompanionCards.hiddenInHand(bo), CompanionSetup.DEFAULT_HAND);
     }
 
+    /** Bo always takes the Command zone for his dying commander. */
+    private static void boTakesTheCommandZone(Game game) {
+        Player bo = game.getPlayers().get(1);
+        bo.dangerouslySetController(new forge.ai.PlayerControllerAi(game, bo, bo.getLobbyPlayer()) {
+            @Override
+            public boolean confirmAction(forge.game.spellability.SpellAbility sa,
+                    forge.game.player.PlayerActionConfirmMode mode, String message, List<String> options,
+                    Card cardToShow, java.util.Map<String, Object> params) {
+                return true;
+            }
+        });
+    }
+
+    /**
+     * On a table that saves: Bo casts Krenko (step 1), Krenko dies and goes back to the Command zone (step 2), and Bo
+     * casts him again (step 3), so the engine has counted 2 casts from the Command zone.
+     */
+    private static Recorded krenkoCastTwice(CompanionSetup setup, Game game) {
+        Player bo = game.getPlayers().get(1);
+        boTakesTheCommandZone(game);
+        Recorded rec = new Recorded(setup);
+        rec.table.save(game); // step 0, the start
+        act(rec, game, g -> {
+            TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+            resolveAll(g);
+            return add;
+        });
+        act(rec, game, g -> {
+            TableEditor.Result dies = TableEditor.moveTo(named(bo, ZoneType.Battlefield, KRENKO).get(0), bo,
+                    ZoneType.Graveyard);
+            g.getAction().checkStateEffects(true);
+            return dies;
+        });
+        act(rec, game, g -> {
+            TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+            resolveAll(g);
+            return add;
+        });
+        assertEquals(bo.getCommanderCast(named(bo, ZoneType.Battlefield, KRENKO).get(0)), 2, "cast twice");
+        return rec;
+    }
+
+    /** The tax is saved with the game: a relaunch on the store still counts Krenko's 2 casts. */
+    @Test
+    public void theCommanderTaxSurvivesAResume() {
+        CompanionSetup setup = setupWithBosCommander();
+        Recorded rec = krenkoCastTwice(setup, startCommanderTable(setup));
+
+        Recorded relaunched = new Recorded(rec);
+        Game loaded = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(setup, loaded.getRules());
+        relaunched.table.startFromLatest(loaded);
+
+        Player bo = loaded.getPlayers().get(1);
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+        assertTrue(krenko.isCommander());
+        assertEquals(bo.getCommanderCast(krenko), 2, "the tax after a resume");
+        assertEquals(bo.getTotalCommanderCast(), 2, "nothing counted twice");
+    }
+
+    /** An undo of the second cast puts Krenko back in the Command zone with 1 cast counted, not 0 or 2. */
+    @Test
+    public void anUndoOfACommanderCastTakesBackItsTax() {
+        CompanionSetup setup = setupWithBosCommander();
+        Game game = startCommanderTable(setup);
+        Recorded rec = krenkoCastTwice(setup, game);
+
+        undo(rec, game);
+
+        Player bo = game.getPlayers().get(1);
+        assertKrenkoIsBosCommanderInCommand(game, "after the undo");
+        assertEquals(bo.getCommanderCast(named(bo, ZoneType.Command, KRENKO).get(0)), 1, "the first cast only");
+        assertEquals(bo.getTotalCommanderCast(), 1, "the counts for the cards the load removed are gone");
+    }
+
     /** The legality check looks the setup's commanders up by name, in Forge's card database (slice 6 chunk 3). */
     @Test
     public void theNextLegalSeatComesFromTheSetupsCommanders() {
