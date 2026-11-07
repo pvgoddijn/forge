@@ -36,8 +36,9 @@ import org.junit.jupiter.api.Test;
  * file in the folder, or a subfolder holding one photo, as the camera PoC's capture runs do), its card's name, and
  * optionally its group. A header row names the columns ({@code file}, {@code photo} or {@code run}; {@code name} or
  * {@code card}; {@code group}); without one they're in that order. A name of {@code NO_CARD} or nothing marks a photo
- * with no card, reported on its own. A folder without a csv takes every photo in it and its subfolders, its card named
- * by the file name ("ashnods-altar.jpg", "fire-ice-2.jpg" for a second copy), its group by the subfolder.
+ * with no card, reported on its own; {@code UNLABELLED}, a photo not labelled yet, is left out. A folder without a csv
+ * takes every photo in it and its subfolders, its card named by the file name ("ashnods-altar.jpg", "fire-ice-2.jpg"
+ * for a second copy), its group by the subfolder.
  * <p>
  * <b>Decks.</b> A photo's group is its csv group or subfolder, else {@code default}. If {@code decks/<group>.txt}
  * exists in the photo folder (or in {@code forge.companion.benchmarkDecks}, if set), the photo is also ranked with that
@@ -68,6 +69,8 @@ class CardNameBenchmark {
     private static final String FLAT = "flat.jpg";
     private static final String RAW = "photo.jpg";
     private static final String NO_CARD = "NO_CARD";
+    /** A row whose card isn't known yet: left out. */
+    private static final String UNLABELLED = "UNLABELLED";
     private static final String DEFAULT_GROUP = "default";
     private static final int TOP = 3;
     /** As the photo dialog lists. */
@@ -420,6 +423,9 @@ class CardNameBenchmark {
             String entry = field(fields, fileColumn);
             String name = field(fields, nameColumn);
             String group = groupColumn < 0 ? "" : field(fields, groupColumn);
+            if (name.equalsIgnoreCase(UNLABELLED)) {
+                continue;
+            }
             File run = new File(folder, entry);
             File file = photoFile(run);
             if (file == null) {

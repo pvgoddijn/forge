@@ -3,6 +3,8 @@ package forge.cardocr;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.*;
 
+import forge.cardocr.finder.CardQuad;
+import forge.cardocr.finder.Corner;
 import forge.cardocr.finder.PhotoFiles;
 import forge.cardocr.reader.ArgbImage;
 import forge.gamemodes.companion.CardNameReader;
@@ -64,5 +66,31 @@ class OcrCardNameReaderTest {
         assertEquals(CardNameReader.Reading.NOTHING, reading);
         assertEquals(0, reading.bestScore());
         assertFalse(broken.exists());
+    }
+
+    @Test
+    void anOutlineAwayFromTheCardReadsNothingConfident() {
+        File photo = new File(PhotoFiles.FOLDER, "westfold-rider.jpg");
+        assumeTrue(photo.exists(), "no photos");
+        PhotoFiles.Argb argb = PhotoFiles.load(photo);
+        float w = argb.width() * 0.08f;
+        float h = argb.height() * 0.08f;
+        // a card-shaped outline in the photo's corner: the rest of the photo, where the card is, is never searched
+        float[] corners = {0, 0, w, 0, w, h, 0, h};
+        CardNameReader reader = new OcrCardNameReader(
+                () -> List.of("Westfold Rider", "Woe Strider", "Wasteland Raider", "Lightning Bolt", "Plains"), DECODER);
+        CardNameReader.Reading reading = reader.read(new CardPhoto(photo, corners, false));
+        assertFalse(reading.confident() && reading.cards().get(0).equals("Westfold Rider"),
+                "the card outside the outline was read: " + reading.cards());
+    }
+
+    @Test
+    void anOutlineStartingOnALongSideIsTurnedToStartOnAShortOne() {
+        CardQuad longFirst = new CardQuad(new Corner(0, 0), new Corner(88, 0), new Corner(88, 63), new Corner(0, 63), 1, true);
+        CardQuad shortFirst = OcrCardNameReader.shortSideFirst(longFirst);
+        assertEquals(63, shortFirst.c0().distanceTo(shortFirst.c1()), 1e-9);
+        assertEquals(88, shortFirst.c0().distanceTo(shortFirst.c3()), 1e-9);
+        assertSame(shortFirst, OcrCardNameReader.shortSideFirst(shortFirst));
+        assertEquals(longFirst.c1(), OcrCardNameReader.quarterTurned(longFirst).c0());
     }
 }
