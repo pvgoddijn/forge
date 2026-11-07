@@ -90,6 +90,7 @@ public class CardSearchDialog extends CardPicker {
         cbFrom.setItems(List.of(FROM_HAND, FROM_ELSEWHERE), FROM_HAND);
         cbFrom.setDropDownChangeHandler(e -> offerPlayers()); // only a card from hand is narrowed
         cbMode.setItems(List.of(CAST, PUT), CAST);
+        withPhotoPrompt("Photograph a card for " + activePlayer);
     }
 
     /**
@@ -233,16 +234,18 @@ public class CardSearchDialog extends CardPicker {
         CommanderLegality.AddCheck check = check(name, fromHand, player);
         switch (check.verdict()) {
             case SKIP:
+                // the move, named for its seat, is the middle button: the only one sized to its text, so a long name
+                // keeps the normal text size; the corner buttons fit one short word
                 FOptionPane.showOptionDialog(check.message(), "Commander mode", null,
-                        List.of(check.moveLabel(), retakeLabel(), "Cancel"), 0, choice -> {
+                        List.of(retakeLabel(), check.moveLabel(), "Cancel"), 1, choice -> {
                             if (choice == null) {
                                 return; // dismissed: as Cancel
                             }
-                            if (choice == 0) {
+                            if (choice == 1) {
                                 // the card goes to the seat moved to; nothing is parked before this (Check early)
                                 String seat = check.skip().seat();
                                 table.submit(new CompanionTable.AddCard(seat, name, true, mode, seat));
-                            } else if (choice == 1) {
+                            } else if (choice == 0) {
                                 retakeOrEdit();
                             }
                         });

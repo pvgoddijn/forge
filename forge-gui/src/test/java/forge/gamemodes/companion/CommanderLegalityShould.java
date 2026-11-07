@@ -204,14 +204,16 @@ public class CommanderLegalityShould {
         assertThat(check.verdict()).isEqualTo(CommanderLegality.Verdict.SKIP);
         assertThat(check.verdict().refused()).isFalse();
         assertThat(check.skip()).isEqualTo(new CommanderLegality.SeatAhead("Carol", 2));
-        assertThat(check.moveLabel()).isEqualTo("Move to Carol's turn (2 turns ahead)");
-        assertThat(check.message()).contains("Llanowar Elves", "Alice", "Carol", "Commander mode off");
+        assertThat(check.moveLabel()).isEqualTo("Move to Carol");
+        assertThat(check.message()).contains("Llanowar Elves", "Alice", "Carol can play it, 2 turns ahead",
+                "Move the game to Carol's turn", "Commander mode off");
     }
 
     @Test
     public void sayOneTurnAheadInTheSingular() {
         CommanderLegality.AddCheck check = check(LLANOWAR_ELVES, true, threeSeats, "Bob", "Bob");
-        assertThat(check.moveLabel()).isEqualTo("Move to Carol's turn (1 turn ahead)");
+        assertThat(check.moveLabel()).isEqualTo("Move to Carol");
+        assertThat(check.message()).contains("Carol can play it, 1 turn ahead");
     }
 
     @Test
