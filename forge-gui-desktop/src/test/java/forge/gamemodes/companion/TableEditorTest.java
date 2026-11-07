@@ -3624,6 +3624,56 @@ public class TableEditorTest extends AITest {
         assertFalse(game.getRules().hasAppliedVariant(forge.game.GameType.Commander));
     }
 
+    /**
+     * Start with Commander mode off: Bo's deck names Krenko, but the game has no commander, no Commander variant and
+     * Krenko stays out of the Command zone; the deck list is kept for ranking.
+     */
+    @Test
+    public void withCommanderModeOffAtStartADecksCommandersArentAttached() {
+        String list = "Commander\n1 " + KRENKO + "\nDeck\n1 Mountain";
+        CompanionSetup off = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                new CompanionSetup.Seat("Bo", false, List.of(KRENKO), list), new CompanionSetup.Seat("Cy", false)))
+                .withCommanderMode(false).withoutCommanders();
+
+        assertFalse(off.hasCommanders());
+        assertEquals(off.seats().get(1).deckList(), list, "kept for ranking");
+        Game game = startCommanderTable(off);
+        Player bo = game.getPlayers().get(1);
+        assertFalse(game.getRules().hasAppliedVariant(forge.game.GameType.Commander));
+        assertEquals(bo.getCommanders(), List.of());
+        assertEquals(named(bo, ZoneType.Command, KRENKO), List.of());
+        assertEquals(bo.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
+
+    }
+
+    /**
+     * Commander mode switched on in the game menu after a Start with it off doesn't pretend a commander exists: Bo's
+     * deck named Krenko, but the game has none, so a blue instant isn't narrowed away from him by identity.
+     */
+    @Test
+    public void commanderModeSwitchedOnLaterFindsNoCommanderToNarrowBy() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        List<Player> players = game.getPlayers();
+        for (Player player : players) {
+            putIn(game, player, "Island");
+            putIn(game, player, "Island");
+        }
+        String ann = players.get(0).getName();
+        String bo = players.get(1).getName();
+        String cy = players.get(2).getName();
+        Recorded rec = new Recorded(CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat(ann, true),
+                new CompanionSetup.Seat(bo, false, List.of(KRENKO), ""), new CompanionSetup.Seat(cy, false)))
+                .withCommanderMode(false).withoutCommanders());
+        rec.store.saveSetup("t", rec.table.setup());
+        rec.table.atPrompt(game);
+
+        rec.table.setCommanderMode(true);
+
+        assertTrue(rec.table.commanderMode());
+        assertEquals(rec.table.offerSeats("Counterspell", true, ann, ann).seats(), List.of(ann, bo, cy),
+                "no commander to narrow by");
+    }
+
     @Test
     public void aCommanderStaysACommanderInCommandAfterAGameStateRoundTrip() {
         CompanionSetup setup = setupWithBosCommander();

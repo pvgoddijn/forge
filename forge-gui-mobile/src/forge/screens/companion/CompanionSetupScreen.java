@@ -234,7 +234,8 @@ public class CompanionSetupScreen extends LaunchScreen {
         CompanionSetup setup = CompanionSetup.withDefaults(seats).withLife(life)
                 .withCommanderMode(chkCommanderMode.isSelected());
         if (!setup.commanderMode()) {
-            createAndOpen(setup);
+            // a deck's commanders aren't this game's: none in a Command zone, no Commander variant
+            createAndOpen(setup.withoutCommanders());
             return;
         }
         chooseCommanders(new ArrayList<>(seats), 0, chosen -> createAndOpen(new CompanionSetup(chosen, setup.life(),

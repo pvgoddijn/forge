@@ -85,6 +85,18 @@ public record CompanionSetup(List<Seat> seats, int life, int handSize, int libra
         return new CompanionSetup(seats, life, handSize, librarySize, engineCombat, on);
     }
 
+    /**
+     * The setup as Start makes it with Commander mode off: no seat has a commander, so none is put in a Command zone
+     * and the Commander variant isn't applied. Each seat keeps its deck list, which still ranks its cards first.
+     */
+    public CompanionSetup withoutCommanders() {
+        List<Seat> without = new ArrayList<>();
+        for (Seat seat : seats) {
+            without.add(seat.withCommanders(List.of()));
+        }
+        return new CompanionSetup(without, life, handSize, librarySize, engineCombat, commanderMode);
+    }
+
     /** Whether any seat has a commander, so the game is played under the Commander variant's rules. */
     public boolean hasCommanders() {
         return seats.stream().anyMatch(seat -> !seat.commanders().isEmpty());
