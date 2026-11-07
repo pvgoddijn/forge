@@ -144,4 +144,6 @@ The existing Forge network play was surveyed on 2026-11-05. It is **not** reusab
 - Its wire format is Java serialization of Forge classes.
 - It blocks on remote prompts.
 
-What is reusable is its libraries (Netty, which has HTTP and WebSocket codecs, and Gson are already dependencies) and the idea of "full state on join, then changes". Companion's action log in JSON lines is a natural wire format for this.
+What is reusable is its libraries: Netty, which has HTTP and WebSocket codecs, and Gson are already dependencies.
+
+**Correction, 2026-11-07:** this note first called the v1 action log a natural wire format. Since the v1 engine revision (v1 plan §0, 2026-11-03), v1 saves a game-state snapshot per step, plus a log that only describes what happened. That log can't be replayed. See `plan.md` §0.
