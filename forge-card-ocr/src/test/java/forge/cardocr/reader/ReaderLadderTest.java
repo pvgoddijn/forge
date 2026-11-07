@@ -75,7 +75,7 @@ class ReaderLadderTest {
         ReadResult result = read(models, TRUSTING, OUTLINE);
         assertTrue(result.finderRan());
         assertTrue(result.wholeUsed());
-        assertEquals(1, models.detections);
+        assertEquals(2, models.detections, "the flattened card's text, then the whole image's");
         assertNotNull(result.card(), "the tracked outline is still shown");
     }
 
