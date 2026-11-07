@@ -20,6 +20,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.Normalizer;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -43,12 +45,28 @@ import org.junit.jupiter.api.Test;
  * <p>
  * Suggestions are what the photo dialog shows: for a confident read, {@link CardNameMatcher#mergeReading} of the
  * reader's names and the matches for the text read; otherwise the name search with the text read. Top 3 counts the
- * first 3 of them. Photos are read from the file with no camera outline, as the desktop dev build reads a file.
+ * first 3 of them.
+ * <p>
+ * <b>Images.</b> A capture run's folder holds the raw camera frame ({@code photo.jpg}) and, if the camera PoC found the
+ * card, the card cut out at the camera's outline and flattened ({@code flat.jpg}). By default the benchmark reads what
+ * the app reads after an Assisted capture: the flattened card, read inside its outline; without one, the raw frame with
+ * the run's final tracked outline, which the reader flattens the same way; without that, the whole raw frame.
+ * {@code -Dforge.companion.benchmarkImage=outline} always reads the raw frame with the run's final tracked outline, the
+ * app's own input; {@code photo} reads the raw frames with no outline, for reference. Other
+ * photos are read from the file with no outline, as the desktop dev build reads a file.
  */
 class CardNameBenchmark {
 
     static final String PHOTOS = "forge.companion.benchmarkPhotos";
     static final String DECKS = "forge.companion.benchmarkDecks";
+    /**
+     * Which image of a capture run to read: {@code flat} (the default) reads the flattened card as the app does after an
+     * Assisted capture, {@code photo} the raw camera frame with no outline, for reference.
+     */
+    static final String IMAGE = "forge.companion.benchmarkImage";
+    /** A capture run's flattened card, cut out at the camera's outline. */
+    private static final String FLAT = "flat.jpg";
+    private static final String RAW = "photo.jpg";
     private static final String NO_CARD = "NO_CARD";
     private static final String DEFAULT_GROUP = "default";
     private static final int TOP = 3;
@@ -57,8 +75,23 @@ class CardNameBenchmark {
     /** Forge's card data, from this module's folder. */
     private static final String RES = "../forge-gui/res/";
 
-    /** A labelled photo; {@code card} is null for a photo with no card. */
-    record Photo(File file, String label, String card, String group) {
+    /**
+     * A labelled photo; {@code card} is null for a photo with no card.
+     *
+     * @param corners the card's outline in the file's pixels, as the camera hands it over, or null for none
+     */
+    record Photo(File file, String label, String card, String group, float[] corners) {
+        Photo(File file, String label, String card, String group) {
+            this(file, label, card, group, null);
+        }
+
+        /** What the reader was given: the flattened card, a full frame with the camera's outline, or a full frame alone. */
+        String input() {
+            if (file.getName().equals(FLAT)) {
+                return "flat crop";
+            }
+            return corners == null ? "full frame, no outline" : "full frame with outline";
+        }
     }
 
     /** One photo's outcome. */
@@ -110,7 +143,7 @@ class CardNameBenchmark {
             }
             if (!warm) {
                 long start = System.nanoTime();
-                reader.read(new CardPhoto(photos.get(0).file(), null, false));
+                reader.read(new CardPhoto(photos.get(0).file(), photos.get(0).corners(), false));
                 System.out.printf("BENCH first read (models and name index load): %d ms%n", millisSince(start));
                 warm = true;
             }
@@ -118,7 +151,7 @@ class CardNameBenchmark {
             List<Result> results = new ArrayList<>();
             for (Photo photo : photos) {
                 long start = System.nanoTime();
-                CardNameReader.Reading reading = reader.read(new CardPhoto(photo.file(), null, false));
+                CardNameReader.Reading reading = reader.read(new CardPhoto(photo.file(), photo.corners(), false));
                 long millis = millisSince(start);
                 Set<String> deck = decks.get(photo.group());
                 results.add(new Result(photo, reading, millis, suggestions(reading, matcher, Set.of()),
@@ -152,6 +185,9 @@ class CardNameBenchmark {
     private static void report(String folder, List<Result> results, Set<String> deckGroups) {
         System.out.println();
         System.out.println("BENCH ===== " + folder + " =====");
+        Map<String, Integer> inputs = new TreeMap<>();
+        results.forEach(r -> inputs.merge(r.photo().input(), 1, Integer::sum));
+        System.out.println("BENCH images read: " + inputs);
         if (!deckGroups.isEmpty()) {
             System.out.println("BENCH decks for groups: " + deckGroups);
         }
@@ -384,13 +420,14 @@ class CardNameBenchmark {
             String entry = field(fields, fileColumn);
             String name = field(fields, nameColumn);
             String group = groupColumn < 0 ? "" : field(fields, groupColumn);
-            File file = photoFile(new File(folder, entry));
+            File run = new File(folder, entry);
+            File file = photoFile(run);
             if (file == null) {
                 System.out.println("BENCH no photo for " + csv.getName() + " row: " + line);
                 continue;
             }
             String card = name.isEmpty() || name.equalsIgnoreCase(NO_CARD) ? null : name;
-            photos.add(new Photo(file, entry, card, group.isEmpty() ? DEFAULT_GROUP : group));
+            photos.add(new Photo(file, entry, card, group.isEmpty() ? DEFAULT_GROUP : group, corners(run, file)));
         }
     }
 
@@ -406,6 +443,11 @@ class CardNameBenchmark {
             }
         }
         if (entry.isDirectory()) {
+            File flat = new File(entry, FLAT);
+            File raw = new File(entry, RAW);
+            if (raw.isFile()) {
+                return readFlat() && flat.isFile() ? flat : raw;
+            }
             File[] images = entry.listFiles(CardNameBenchmark::isImage);
             if (images != null && images.length == 1) {
                 return images[0];
@@ -414,6 +456,54 @@ class CardNameBenchmark {
             return photo.isFile() ? photo : null;
         }
         return null;
+    }
+
+    private static String mode() {
+        return System.getProperty(IMAGE, "flat").toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean readFlat() {
+        return mode().equals("flat");
+    }
+
+    /**
+     * The outline the camera would hand over with this image: all of a flattened card, or a capture run's final
+     * tracked outline scaled to its photo when the run saved no flattened card. Null when reading raw frames.
+     */
+    static float[] corners(File run, File image) {
+        if (mode().equals("photo")) {
+            return null;
+        }
+        if (image.getName().equals(FLAT)) {
+            PhotoFiles.Argb flat = PhotoFiles.load(image);
+            return new float[] {0, 0, flat.width(), 0, flat.width(), flat.height(), 0, flat.height()};
+        }
+        File json = new File(run, "run.json");
+        if (!json.isFile()) {
+            return null;
+        }
+        String text;
+        try {
+            text = Files.readString(json.toPath(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Can't read " + json, e);
+        }
+        Matcher outline = Pattern.compile("\"finalOutline\":\\s*\\[(.*?)\\]\\s*\\]").matcher(text);
+        Matcher analysis = Pattern.compile("\"analysisWidth\":\\s*(\\d+)").matcher(text);
+        Matcher photo = Pattern.compile("\"imageWidth\":\\s*(\\d+)").matcher(text);
+        if (!outline.find() || !analysis.find() || !photo.find()) {
+            return null;
+        }
+        String[] numbers = outline.group(1).replaceAll("[\\[\\]\\s]", "").split(",");
+        if (numbers.length != 8) {
+            return null;
+        }
+        double scale = Double.parseDouble(photo.group(1)) / Double.parseDouble(analysis.group(1));
+        float[] corners = new float[8];
+        for (int i = 0; i < 8; i++) {
+            corners[i] = (float) (Double.parseDouble(numbers[i]) * scale);
+        }
+        return corners;
     }
 
     private static void fromFileNames(File folder, String group, Map<String, String> bySlug, List<Photo> photos) {
