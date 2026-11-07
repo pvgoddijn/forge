@@ -19,6 +19,7 @@ import forge.util.Utils;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -53,6 +54,7 @@ public class CardPicker extends FDialog {
     private boolean photographing; // a photo is being taken or read; UI thread only
     private boolean everShown; // false until the first photo comes back, so a hidden dialog wasn't closed by the operator
     private boolean fromPhoto; // whether the search shows a photo's read, not touched by typing since
+    private CardNameReader.Reading lastReading; // the photo's read the list shows, while fromPhoto; for re-ranking
 
     /**
      * @param title0  what is being picked, such as "Alice's commander"
@@ -94,7 +96,9 @@ public class CardPicker extends FDialog {
             @Override
             public void drawValue(Graphics g, Integer index, CardNameMatcher.Suggestion value, FSkinFont font,
                     FSkinColor foreColor, FSkinColor backColor, boolean pressed, float x, float y, float w, float h) {
-                g.drawText(value.card(), font, foreColor, x, y, w, h, false, Align.left, true);
+                // a card the target can't have stays in the list, greyed (AC-43): the operator may still mean it
+                FSkinColor color = isGreyed(value.card()) ? foreColor.alphaColor(0.4f) : foreColor;
+                g.drawText(value.card(), font, color, x, y, w, h, false, Align.left, true);
             }
         });
 
@@ -189,6 +193,30 @@ public class CardPicker extends FDialog {
         onPick.accept(name);
     }
 
+    /** The names to rank above other matches (AC-12), such as the target player's deck; none by default. */
+    protected Set<String> preferredCards() {
+        return Set.of();
+    }
+
+    /** Whether {@code card} shows greyed in the list: still there to pick, but not expected. None by default. */
+    protected boolean isGreyed(String card) {
+        return false;
+    }
+
+    /**
+     * Ranks the list again, as when {@link #preferredCards} changed: a photo's read is merged again, typed text is
+     * matched again. What is chosen stays chosen.
+     */
+    protected void rerank() {
+        if (fromPhoto && lastReading != null && lastReading.confident()) {
+            showList(mergeReading(lastReading));
+            return;
+        }
+        List<CardNameMatcher.Suggestion> matches = matcher().matchWhere(txtSearch.getText(), MAX_MATCHES, filter,
+                preferredCards());
+        showList(matches);
+    }
+
     /** Lays out what a subclass shows above the search box, from {@code y}, and returns where the search box goes. */
     protected float layoutAboveSearch(float x, float y, float width) {
         return y;
@@ -260,18 +288,13 @@ public class CardPicker extends FDialog {
             return; // the operator moved on while it was reading
         }
         fromPhoto = true;
-        List<CardNameMatcher.Suggestion> suggestions = new ArrayList<>();
-        for (String card : reading.cards()) {
-            if (CardNameMatcher.passes(card, filter)) {
-                suggestions.add(new CardNameMatcher.Suggestion(card, 1));
-            }
-        }
-        if (reading.confident() && !suggestions.isEmpty()) {
+        lastReading = reading;
+        boolean readerFound = reading.cards().stream().anyMatch(card -> CardNameMatcher.passes(card, filter));
+        if (reading.confident() && readerFound) {
+            List<CardNameMatcher.Suggestion> suggestions = mergeReading(reading);
             String best = suggestions.get(0).card();
             txtSearch.setText(best);
-            lstMatches.setListData(suggestions);
-            lstMatches.setScrollTop(0);
-            lstMatches.revalidate();
+            showList(suggestions);
             select(best);
             return;
         }
@@ -285,14 +308,41 @@ public class CardPicker extends FDialog {
         }
     }
 
-    private void updateMatches() {
+    /**
+     * The reader's names merged with the matches for the text it read, the preferred cards first (AC-12), so a deck
+     * card the reader ranked low or missed still comes up; only cards passing the filter, at most
+     * {@value #MAX_MATCHES}. Each counts as sure, as the reader's own names did.
+     */
+    private List<CardNameMatcher.Suggestion> mergeReading(CardNameReader.Reading reading) {
+        Set<String> preferred = preferredCards();
+        List<CardNameMatcher.Suggestion> matches = matcher().matchWhere(reading.textRead(), MAX_MATCHES, filter,
+                preferred);
+        List<CardNameMatcher.Suggestion> merged = new ArrayList<>();
+        for (String card : CardNameMatcher.mergeReading(reading.cards(), matches, preferred)) {
+            if (merged.size() < MAX_MATCHES && CardNameMatcher.passes(card, filter)) {
+                merged.add(new CardNameMatcher.Suggestion(card, 1));
+            }
+        }
+        return merged;
+    }
+
+    private static CardNameMatcher matcher() {
         if (matcher == null) {
             matcher = CardNameMatcher.fromStaticData();
         }
-        List<CardNameMatcher.Suggestion> matches = matcher.matchWhere(txtSearch.getText(), MAX_MATCHES, filter);
-        lstMatches.setListData(matches);
+        return matcher;
+    }
+
+    private void showList(List<CardNameMatcher.Suggestion> suggestions) {
+        lstMatches.setListData(suggestions);
         lstMatches.setScrollTop(0);
         lstMatches.revalidate();
+    }
+
+    private void updateMatches() {
+        List<CardNameMatcher.Suggestion> matches = matcher().matchWhere(txtSearch.getText(), MAX_MATCHES, filter,
+                preferredCards());
+        showList(matches);
         if (!matches.isEmpty() && matches.get(0).confidence() == 1) {
             select(matches.get(0).card()); // typed in full, so it needn't be tapped too
         } else if (selectedCard != null) {

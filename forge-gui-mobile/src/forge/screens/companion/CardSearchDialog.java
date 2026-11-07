@@ -6,6 +6,7 @@ import forge.game.player.PlayerView;
 import forge.gamemodes.companion.CommanderLegality;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionTable;
+import forge.gamemodes.companion.DeckListNames;
 import forge.gamemodes.companion.TableEditor;
 import forge.item.PaperCard;
 import forge.toolbox.FComboBox;
@@ -13,7 +14,10 @@ import forge.toolbox.FOptionPane;
 import forge.toolbox.FTextField;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Adds a card by photo, falling back to typing: a {@link CardPicker} for any card, with the player and how it was
@@ -24,7 +28,11 @@ import java.util.List;
  * <p>
  * With Commander mode on, a card from hand outside the target's commanders' colour identity isn't added (AC-43): for
  * the active player it offers to move the turn ahead to the first player it fits (AC-45), otherwise it's refused
- * (AC-46), each with Retake (Edit for a typed card) and Cancel ({@link CommanderLegality#checkAdd}).
+ * (AC-46), each with Retake (Edit for a typed card) and Cancel ({@link CommanderLegality#checkAdd}). Such cards show
+ * greyed in the list, but stay in it.
+ * <p>
+ * The target player's deck, when one was loaded, ranks first, typed or photographed (AC-12); matches from the whole
+ * card database still follow. Choosing another player ranks the list again for that player's deck.
  */
 public class CardSearchDialog extends CardPicker {
     private static final String FROM_HAND = "From hand";
@@ -41,6 +49,9 @@ public class CardSearchDialog extends CardPicker {
     private final List<String> allPlayers = new ArrayList<>();
     private final String activePlayer; // the default target (AC-17)
     private String playerBeforeShowAll; // what "show all" keeps chosen
+    private final Map<String, Set<String>> decks = new HashMap<>(); // seat name to its deck's card names
+    private final Map<String, Boolean> greyed = new HashMap<>(); // card name to greyed, for greyedFor
+    private String greyedFor; // the target the greyed cache is for
 
     /** @param gameView the running game, for the active player, who is the default target (AC-17); may be null */
     public CardSearchDialog(CompanionTable table0, GameView gameView0) {
@@ -59,6 +70,7 @@ public class CardSearchDialog extends CardPicker {
                 cbPlayer.setItems(allPlayers, playerBeforeShowAll);
             } else {
                 playerBeforeShowAll = cbPlayer.getSelectedItem();
+                rerank(); // another player's deck (AC-12)
             }
         });
         playerBeforeShowAll = activePlayer;
@@ -104,6 +116,47 @@ public class CardSearchDialog extends CardPicker {
         }
         cbPlayer.setItems(items, pick);
         playerBeforeShowAll = pick;
+    }
+
+    /** The deck of the player chosen, or of the one chosen before "show all"; none when no deck was loaded. */
+    @Override
+    protected Set<String> preferredCards() {
+        String target = target();
+        if (target == null) {
+            return Set.of();
+        }
+        return decks.computeIfAbsent(target, seat -> table.setup().seats().stream()
+                .filter(s -> s.name().equals(seat))
+                .findFirst()
+                .map(s -> DeckListNames.cardNames(s.deckList()))
+                .orElse(Set.of()));
+    }
+
+    /**
+     * With Commander mode on, a card from hand that the target's commanders don't allow (AC-43), as {@link #picked}
+     * would refuse or move it. Asked for each row as it's drawn, so it follows the player and "from" chosen.
+     */
+    @Override
+    protected boolean isGreyed(String card) {
+        String target = target();
+        if (target == null || !table.setup().commanderMode() || !FROM_HAND.equals(cbFrom.getSelectedItem())) {
+            return false;
+        }
+        if (!target.equals(greyedFor)) {
+            greyed.clear();
+            greyedFor = target;
+        }
+        return greyed.computeIfAbsent(card, name -> {
+            PaperCard paper = StaticData.instance().getCommonCards().getUniqueByName(name);
+            return paper != null && !CommanderLegality.isLegal(paper,
+                    CommanderLegality.commanders(table.setup().commandersOf(target)));
+        });
+    }
+
+    /** The player chosen, or the one chosen before "show all" while that is showing. */
+    private String target() {
+        String player = cbPlayer.getSelectedItem();
+        return player == null || SHOW_ALL.equals(player) ? playerBeforeShowAll : player;
     }
 
     @Override
