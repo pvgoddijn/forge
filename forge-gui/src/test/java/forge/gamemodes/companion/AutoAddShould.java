@@ -113,4 +113,28 @@ public class AutoAddShould {
         assertThat(AutoAdd.undoReaches(List.of(ADD), 9, 2)).isFalse();
         assertThat(AutoAdd.undoReaches(List.of(entry(5, CompanionLogEntry.Kind.NOTICE, 3)), 5, 2)).isFalse();
     }
+
+    @Test
+    public void notReachTheAddPastAnActionBeforeItInItsStep() {
+        // a life change, or a turn skip's action, ran since the save; the undo would take it back too
+        for (CompanionLogEntry.Kind kind : List.of(CompanionLogEntry.Kind.ADD, CompanionLogEntry.Kind.ACTION,
+                CompanionLogEntry.Kind.MOVE, CompanionLogEntry.Kind.CORRECTION)) {
+            assertThat(AutoAdd.undoReaches(List.of(entry(4, kind, 3), ADD), 5, 2)).as(kind.name()).isFalse();
+        }
+    }
+
+    @Test
+    public void notReachTheAddPastACombatBeforeItInItsStep() {
+        List<CompanionLogEntry> log = List.of(entry(3, CompanionLogEntry.Kind.ENGINE, 3),
+                entry(4, CompanionLogEntry.Kind.ENGINE, 3), ADD);
+        assertThat(AutoAdd.undoReaches(log, 5, 2)).isFalse();
+    }
+
+    @Test
+    public void reachTheAddPastANoticeOrAnUndoneEntryBeforeIt() {
+        CompanionLogEntry undone = entry(2, CompanionLogEntry.Kind.ACTION, 3);
+        CompanionLogEntry undo = CompanionLogEntry.undo(2, List.of(3), 1, "Alice", "Undone").withSeq(3);
+        List<CompanionLogEntry> log = List.of(undone, undo, entry(4, CompanionLogEntry.Kind.NOTICE, 3), ADD);
+        assertThat(AutoAdd.undoReaches(log, 5, 2)).isTrue();
+    }
 }

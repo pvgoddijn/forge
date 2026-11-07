@@ -2,6 +2,7 @@ package forge.gamemodes.companion;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -68,9 +69,12 @@ public final class AutoAdd {
 
     /**
      * Whether an undo that goes back to step {@code backTo} takes back the add that wrote log entry {@code addSeq},
-     * and only that: the add's entry is in the log under step {@code backTo + 1}, and nothing but what the engine did
-     * (the cast resolving, its effects) was logged after it. Another action, a notice, or an undo since means the
-     * undo would reach something else, or not this add.
+     * and only that: the add's entry is in the log under step {@code backTo + 1}, it's the first entry of that step
+     * that changed the game ({@link CompanionLogEntry.Kind#changesState}; notices before it are fine, and so are
+     * entries an undo took back), and nothing but what the engine did (the cast resolving, its effects) was logged
+     * after it. Nothing is saved outside the main phases or while an op is parked, so one step can hold a combat, a
+     * life change or a turn skip before the add, which the undo would take back too. Another action, a notice, or an
+     * undo since means the undo would reach something else, or not this add.
      *
      * @param log    the game's log, oldest first
      * @param addSeq the add's entry, by {@link CompanionLogEntry#seq}
@@ -90,6 +94,12 @@ public final class AutoAdd {
         CompanionLogEntry add = log.get(at);
         if (add.kind() != CompanionLogEntry.Kind.ADD || add.step() != backTo + 1) {
             return false;
+        }
+        Set<Long> undone = CompanionLogEntry.undone(log);
+        for (CompanionLogEntry earlier : log.subList(0, at)) {
+            if (earlier.step() == add.step() && earlier.kind().changesState() && !undone.contains(earlier.seq())) {
+                return false;
+            }
         }
         for (CompanionLogEntry later : log.subList(at + 1, log.size())) {
             if (later.kind() != CompanionLogEntry.Kind.ENGINE || later.step() != add.step()) {

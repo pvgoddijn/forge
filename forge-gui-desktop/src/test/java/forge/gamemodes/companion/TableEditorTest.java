@@ -2301,6 +2301,8 @@ public class TableEditorTest extends AITest {
             assertEquals(ran.size(), 1, "told once, after it ran");
             assertTrue(ran.get(0).result().done());
             assertEquals(ran.get(0).seq(), lastEntry(rec).seq(), "the seq of the add's own entry");
+            assertTrue(ran.get(0).undoable(), "it ran on a settled table");
+            assertFalse(ran.get(0).waited());
             if (resolved) {
                 resolveAll(game);
                 rec.table.save(game); // step 1, as the next Main 1 prompt saves
@@ -2332,11 +2334,91 @@ public class TableEditorTest extends AITest {
         rec.table.undoAdd(ran.get(0).seq());
         assertTrue(rec.table.runPending(game));
 
-        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened after Grizzly Bears"),
+        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened besides adding Grizzly Bears"),
                 rec.results.toString());
         assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.NOTICE);
         assertEquals(bo.getLife(), 30, "the later action stays");
         assertEquals(countCardsWithName(game, "Grizzly Bears", ZoneType.Battlefield), 1, "and so does the add");
+    }
+
+    /** An action since the save, before the auto-add, would be undone with it: no Undo is offered, and it's refused. */
+    @Test
+    public void theUndoPromptIsNotOfferedWhenAnActionRanBeforeTheAutoAddInItsStep() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        rec.table.submit(g -> TableEditor.setLife(bo, 30, false)); // not saved: nothing is, outside a prompt
+        assertTrue(rec.table.runPending(game));
+        List<CompanionTable.Ran> ran = autoAdd(rec, game, ann.getName(), "Grizzly Bears");
+        assertTrue(ran.get(0).result().done());
+        assertFalse(ran.get(0).undoable(), "the life change ran since the save");
+
+        rec.table.undoAdd(ran.get(0).seq());
+        assertTrue(rec.table.runPending(game));
+
+        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened besides adding"
+                + " Grizzly Bears"), rec.results.toString());
+        assertEquals(bo.getLife(), 30, "the life change stays");
+    }
+
+    /**
+     * An auto-added sorcery that parked runs much later, with whatever ran while it waited in its step: it's reported
+     * as having waited, no Undo is offered, and an undo for it is refused rather than take back the life change too.
+     */
+    @Test
+    public void aParkedAutoAddedSorceryWithALifeChangeWhileParkedIsNotUndoneAlone() {
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        List<CompanionTable.Ran> ran = new ArrayList<>();
+        rec.table.submit(cast(ann, "Divination"), ran::add);
+        assertTrue(rec.table.runPending(game));
+        assertTrue(rec.table.isParked());
+        rec.table.submit(g -> TableEditor.setLife(bo, 30, false));
+        assertTrue(rec.table.runPending(game), "the life change runs at once, while the sorcery waits");
+        assertTrue(ran.isEmpty());
+
+        moveTo(game, PhaseType.MAIN1);
+        rec.table.runParked(game);
+        assertEquals(ran.size(), 1);
+        assertTrue(ran.get(0).result().done());
+        assertTrue(ran.get(0).waited());
+        assertFalse(ran.get(0).undoable());
+
+        rec.table.undoAdd(ran.get(0).seq());
+        assertTrue(rec.table.runPending(game));
+
+        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened besides adding"
+                + " Divination"), rec.results.toString());
+        assertEquals(bo.getLife(), 30, "the life change stays");
+        assertEquals(castCount(game, "Divination"), 1, "and so does the sorcery");
+    }
+
+    /** A parked auto-add that an undo drops is never run, so its callback is let go too. */
+    @Test
+    public void anUndoLetsGoOfAParkedAutoAddsCallback() {
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        rec.table.submit(g -> TableEditor.setLife(ann, 30, false));
+        assertTrue(rec.table.runPending(game));
+        CompanionTable.AddCard add = cast(ann, "Divination");
+        List<CompanionTable.Ran> ran = new ArrayList<>();
+        rec.table.submit(add, ran::add);
+        assertTrue(rec.table.runPending(game));
+        assertTrue(rec.table.isWatched(add), "parked, its callback waits");
+
+        rec.table.undo();
+        assertTrue(rec.table.runPending(game));
+
+        assertFalse(rec.table.isParked());
+        assertFalse(rec.table.isWatched(add), "dropped with it");
+        assertTrue(ran.isEmpty());
     }
 
     /** An add that didn't happen is reported not done to its callback too, so no undo prompt is offered for it. */

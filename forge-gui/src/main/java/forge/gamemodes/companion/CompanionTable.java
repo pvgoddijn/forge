@@ -429,7 +429,7 @@ public class CompanionTable {
             // they were for the old game; the restart is from a save made before they were submitted
             tell("The game was restarted: " + nameOf(parked.get(0)) + " and anything after it wasn't added",
                     affectedBy(parked.get(0)));
-            clearParked();
+            dropParked();
         }
         // An action can arrive just before a prompt opens. End that prompt as it opens, or the action would wait
         // for the operator's next tap.
@@ -568,9 +568,13 @@ public class CompanionTable {
      * What an op submitted with {@link #submit(Op, Consumer)} did, once it has run.
      *
      * @param result what it said, as {@link #setOnResult} is told too
-     * @param seq    the seq of the log entry it wrote, as {@link CompanionLogEntry#seq}
+     * @param seq      the seq of the log entry it wrote, as {@link CompanionLogEntry#seq}
+     * @param waited   whether it was parked first ({@link #isParked}), so it ran later than it was submitted
+     * @param undoable whether an undo right after it would take back only this op: it didn't wait, and the table was
+     *                 settled just before it ran (as the latest save left it, nothing run since, no stack or combat).
+     *                 {@link #undoAdd} still checks the log when it runs
      */
-    public record Ran(TableEditor.Result result, long seq) { }
+    public record Ran(TableEditor.Result result, long seq, boolean waited, boolean undoable) { }
 
     /**
      * {@link #submit(Op)}, and once {@code op} has run, after any prompt it asked (a cast's target) and after it's in
@@ -580,6 +584,11 @@ public class CompanionTable {
     public void submit(Op op, Consumer<Ran> onRan) {
         watched.put(op, onRan);
         submit(op);
+    }
+
+    /** Whether {@code op}'s callback ({@link #submit(Op, Consumer)}) is still waiting to be told. For tests. */
+    boolean isWatched(Op op) {
+        return watched.containsKey(op);
     }
 
     /** Queues {@code op}, and ends the priority prompt so the game runs it. Any thread. */
@@ -663,7 +672,8 @@ public class CompanionTable {
 
     /**
      * Takes back the add that wrote log entry {@code addSeq}, as {@link #undo} would, but only while that undo
-     * would still reach it ({@link AutoAdd#undoReaches}): when anything else ran since, it says so and undoes nothing
+     * would reach it alone ({@link AutoAdd#undoReaches}): when anything else ran since, or before it in its step, it
+     * says so and undoes nothing
      * (slice 7's undo prompt after an auto-add). Any thread.
      */
     public void undoAdd(long addSeq) {
@@ -693,7 +703,7 @@ public class CompanionTable {
             if (latest == CompanionStore.NO_STEP) {
                 return new TableEditor.Result(false, "Nothing to undo yet");
             }
-            boolean settled = settled(game);
+            boolean settled = settledAsSaved(game);
             int back = settled ? latest - 1 : latest;
             if (back < 0) {
                 return new TableEditor.Result(false, "Nothing to undo: this is the start of the game");
@@ -701,7 +711,7 @@ public class CompanionTable {
             if (addSeq > 0 && !AutoAdd.undoReaches(log(), addSeq, back)) {
                 String card = log().stream().filter(e -> e.seq() == addSeq).map(CompanionLogEntry::card)
                         .filter(c -> c != null).findFirst().orElse("the card");
-                return new TableEditor.Result(false, "Something else happened after " + card + " was added, so it"
+                return new TableEditor.Result(false, "Something else happened besides adding " + card + ", so it"
                         + " wasn't undone. Undo in the game menu takes back the latest action.");
             }
             List<String> state = store.loadStep(id, back).orElse(null);
@@ -733,24 +743,24 @@ public class CompanionTable {
             if (!parked.isEmpty()) {
                 List<String> affected = affectedBy(parked.get(0));
                 String first = nameOf(parked.get(0));
-                clearParked();
+                dropParked();
                 tell("Undone: " + first + " and anything after it wasn't added", affected);
             }
             return new TableEditor.Result(true, text);
         }
+    }
 
-        /** Whether the game is as the latest save left it: nothing on the stack, no combat, nothing changed. */
-        private boolean settled(Game game) {
-            if (!game.getStack().isEmpty() || game.getStack().hasSimultaneousStackEntries()
-                    || game.getPhaseHandler().inCombat() || lastSaved == null) {
-                return false;
-            }
-            try {
-                return CompanionGameState.capture(game).equals(lastSaved);
-            } catch (RuntimeException e) {
-                e.printStackTrace();
-                return false; // it can't be compared, so it isn't as saved
-            }
+    /** Whether the game is as the latest save left it: nothing on the stack, no combat, nothing changed. */
+    private boolean settledAsSaved(Game game) {
+        if (!game.getStack().isEmpty() || game.getStack().hasSimultaneousStackEntries()
+                || game.getPhaseHandler().inCombat() || lastSaved == null) {
+            return false;
+        }
+        try {
+            return CompanionGameState.capture(game).equals(lastSaved);
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            return false; // it can't be compared, so it isn't as saved
         }
     }
 
@@ -775,7 +785,7 @@ public class CompanionTable {
                 park(game, op, target);
                 continue;
             }
-            runOne(game, op);
+            runOne(game, op, false);
         }
         return any;
     }
@@ -844,7 +854,7 @@ public class CompanionTable {
         clearParked();
         if (turnEnded) {
             tell("The turn ended before " + mainName(waitedFor) + ": " + nameOf(ops.get(0)) + " is cast now");
-            ops.forEach(op -> runOne(game, op));
+            ops.forEach(op -> runOne(game, op, true));
             return;
         }
         for (int i = 0; i < ops.size(); i++) {
@@ -860,7 +870,7 @@ public class CompanionTable {
                 // past it, and no main phase left in this turn: the end step or cleanup
                 tell("The main phases of this turn are over: " + nameOf(op) + " is cast now");
             }
-            runOne(game, op);
+            runOne(game, op, true);
         }
     }
 
@@ -873,6 +883,13 @@ public class CompanionTable {
                 affectedBy(op));
     }
 
+    /** Drops the parked ops, which are then never run, so their callbacks are never told either. */
+    private void dropParked() {
+        parked.forEach(watched::remove);
+        clearParked();
+    }
+
+    /** Empties the parked list, for ops about to run or be dropped ({@link #dropParked}). */
     private void clearParked() {
         parked.clear();
         parkedFor = null;
@@ -899,7 +916,10 @@ public class CompanionTable {
         }
     }
 
-    private void runOne(Game game, Op op) {
+    /** Runs {@code op}, which {@code waited} says was parked first, and logs and reports what it did. */
+    private void runOne(Game game, Op op, boolean waited) {
+        // only an op that ran on a settled table can be undone alone (the undo prompt after an auto-add)
+        boolean undoable = !waited && watched.containsKey(op) && !ranSinceSave && settledAsSaved(game);
         TableEditor.Result result;
         tableActing = true;
         try {
@@ -936,7 +956,7 @@ public class CompanionTable {
         Consumer<Ran> onRan = watched.remove(op);
         if (onRan != null) {
             try {
-                onRan.accept(new Ran(result, written.seq()));
+                onRan.accept(new Ran(result, written.seq(), waited, undoable));
             } catch (RuntimeException e) {
                 e.printStackTrace(); // the op ran; a callback's failure mustn't stop the table
             }
