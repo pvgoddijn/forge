@@ -34,10 +34,20 @@ public final class CompanionMatch {
         }
         match.setStartGameHook(() -> table.startFromLatest(match.getGame()));
 
+        match.startMatch(rules(table.setup()), null, players, guis, null);
+    }
+
+    /**
+     * The match's rules: one game, played under {@link #addVariants}, with no coin toss for who starts, as the table
+     * decided that. The engine gives the first turn to the first player in game order, and the state the start hook
+     * loads then sets whose turn it is: the setup's first seat for a new game, the saved turn for a resumed one.
+     */
+    public static GameRules rules(CompanionSetup setup) {
         GameRules rules = new GameRules(GameType.Constructed);
         rules.setGamesPerMatch(1);
-        addVariants(table.setup(), rules);
-        match.startMatch(rules, null, players, guis, null);
+        rules.setFirstSeatStarts(true);
+        addVariants(setup, rules);
+        return rules;
     }
 
     /**

@@ -4085,4 +4085,137 @@ public class TableEditorTest extends AITest {
         assertFalse(CommanderLegality.canHaveSecondCommander(card(KRENKO)));
         assertFalse(CommanderLegality.canHaveSecondCommander(card("Marwyn, the Nurturer")));
     }
+
+    /** Stops a started game in its start hook, once the first turn is set up. */
+    private static final class StopGame extends RuntimeException {
+        StopGame() {
+            super("stopped in the start hook");
+        }
+    }
+
+    /**
+     * The table decides who starts, so a Companion game has no coin toss: the engine gives the first turn to the first
+     * player in game order, and the state the start hook loads then makes the setup's first seat the active player.
+     */
+    @Test
+    public void aCompanionGameHasNoCoinTossAndTheStateSetsWhoStarts() {
+        initAndCreateGame(); // loads the model
+        // Ann plays first, but the operator is Bo, so the game order is Bo, Cy, Ann
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", false), new CompanionSetup.Seat("Bo", true), new CompanionSetup.Seat("Cy", false)));
+        for (int run = 0; run < 5; run++) { // a random pick would miss one of these
+            List<forge.game.player.RegisteredPlayer> players = new ArrayList<>();
+            for (CompanionSetup.Seat seat : setup.gameOrder()) {
+                forge.game.player.RegisteredPlayer rp = new forge.game.player.RegisteredPlayer(new forge.deck.Deck())
+                        .setPlayer(new forge.ai.LobbyPlayerAi(seat.name(), null));
+                rp.setStartingHand(0);
+                players.add(rp);
+            }
+            forge.game.GameRules rules = CompanionMatch.rules(setup);
+            Game game = new Game(players, rules, new forge.game.Match(rules, players, "Test"));
+            List<forge.game.event.GameEventFlipCoin> flips = new ArrayList<>();
+            game.subscribeToEvents(new Object() {
+                @com.google.common.eventbus.Subscribe
+                public void onFlip(forge.game.event.GameEventFlipCoin ev) {
+                    flips.add(ev);
+                }
+            });
+            List<String> turns = new ArrayList<>();
+            try {
+                game.getAction().startGame(null, () -> {
+                    turns.add(game.getPhaseHandler().getPlayerTurn().getName());
+                    CompanionGameState.of(setup.initialState()).applyNow(game);
+                    turns.add(game.getPhaseHandler().getPlayerTurn().getName());
+                    throw new StopGame();
+                });
+            } catch (StopGame expected) {
+                // the first turn is set up
+            }
+            assertTrue(flips.isEmpty(), "no coin toss");
+            assertEquals(turns, List.of("Bo", "Ann"), "the engine's pick, then the state's first seat");
+        }
+    }
+
+    /** Builds a seat's event handler on its own screen that counts its coin flips, as the match screen would show them. */
+    private static forge.gui.control.FControlGameEventHandler handlerCountingCoins(
+            forge.player.PlayerControllerHuman seat, List<String> coins) {
+        return handlerOn(seat, screenCountingCoins(coins));
+    }
+
+    /** Builds a seat's event handler on the given screen. */
+    private static forge.gui.control.FControlGameEventHandler handlerOn(
+            forge.player.PlayerControllerHuman seat, forge.gui.interfaces.IGuiGame screen) {
+        seat.getInputQueue().deleteObservers();
+        seat.setGui(screen);
+        return new forge.gui.control.FControlGameEventHandler(seat);
+    }
+
+    /** A screen that counts its coin flips, as the match screen would show them. */
+    private static forge.gui.interfaces.IGuiGame screenCountingCoins(List<String> coins) {
+        return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
+                TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("showCoinFlip")) {
+                        coins.add(args[1] + (Boolean.TRUE.equals(args[0]) ? " (heads)" : " (tails)"));
+                    }
+                    Class<?> type = method.getReturnType();
+                    if (type == boolean.class) {
+                        return false;
+                    }
+                    if (type == int.class) {
+                        return 0;
+                    }
+                    if (type.isPrimitive() && type != void.class) {
+                        throw new UnsupportedOperationException(method.getName());
+                    }
+                    return null;
+                });
+    }
+
+    /**
+     * Every seat's event handler is on the operator's one screen and gets the same event object from the game's
+     * event bus, so a coin flip shows once, naming the flipper: not once per seat, as it was.
+     */
+    @Test
+    public void aCoinFlipShowsOnceForTheWholeTable() {
+        forge.model.FModel.getPreferences().setPref(
+                forge.localinstance.properties.ForgePreferences.FPref.UI_COIN_DICE_ANIMATION, true);
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> coins = new ArrayList<>();
+        forge.gui.interfaces.IGuiGame screen = screenCountingCoins(coins);
+        List<forge.gui.control.FControlGameEventHandler> handlers = new ArrayList<>();
+        for (Player p : game.getPlayers()) {
+            handlers.add(handlerOn(
+                    new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table), screen));
+        }
+        Player bo = game.getPlayers().get(1);
+        forge.game.event.GameEventFlipCoin flip = new forge.game.event.GameEventFlipCoin(bo.getView(), true, false);
+        for (forge.gui.control.FControlGameEventHandler handler : handlers) {
+            handler.visit(flip);
+        }
+        assertEquals(coins, List.of(bo.getName() + " flipped heads (heads)"));
+    }
+
+    /** With a seat per player, as in hotseat, each seat's handler still shows the flip, from its own side. */
+    @Test
+    public void aCoinFlipStillShowsForEachSeatOutsideCompanion() {
+        forge.model.FModel.getPreferences().setPref(
+                forge.localinstance.properties.ForgePreferences.FPref.UI_COIN_DICE_ANIMATION, true);
+        Game game = startTable();
+        List<String> coins = new ArrayList<>();
+        List<forge.gui.control.FControlGameEventHandler> handlers = new ArrayList<>();
+        for (Player p : game.getPlayers()) {
+            handlers.add(handlerCountingCoins(
+                    new forge.player.PlayerControllerHuman(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null)), coins));
+        }
+        Player bo = game.getPlayers().get(1);
+        for (forge.gui.control.FControlGameEventHandler handler : handlers) {
+            handler.visit(new forge.game.event.GameEventFlipCoin(bo.getView(), true, true));
+        }
+        assertEquals(coins.size(), 3, String.valueOf(coins));
+        assertEquals(coins.stream().filter(c -> c.endsWith("(heads)")).count(), 1L, "one seat won");
+    }
 }
