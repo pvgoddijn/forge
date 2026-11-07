@@ -491,6 +491,31 @@ public class CompanionStoreShould {
                 .isTrue();
     }
 
+    /**
+     * Chunk 12: a pasted decklist, with its Commander section filling the seat's commanders, is saved with the game
+     * and comes back from the file as it was pasted, so the game doesn't depend on a saved deck that may change.
+     */
+    @Test
+    public void keepAnImportedDeckAndItsCommandersInTheSavedGame() {
+        String pasted = "Commander\r\n1 Tymna the Weaver (C16) 48\r\n1 Thrasios, Triton Hero\r\n\r\nDeck\r\n"
+                + "1 Sol Ring\r\n\"quoted\" // and \\ odd\t\u00e9 characters\n";
+        CompanionSetup.Seat bo = new CompanionSetup.Seat("Bo", false).withDeckList(pasted)
+                .withCommanders(DeckListNames.commanderNames(pasted));
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true), bo));
+        store.end(id);
+
+        String created = store.create(setup);
+        CompanionStore.Saved saved = new CompanionStore(dir).loadActive().orElseThrow();
+
+        assertThat(saved.id()).isEqualTo(created);
+        assertThat(saved.setup()).isEqualTo(setup);
+        assertThat(saved.setup().seats().get(1).deckList()).isEqualTo(pasted);
+        assertThat(saved.setup().seats().get(1).commanders())
+                .containsExactly("Tymna the Weaver", "Thrasios, Triton Hero");
+        assertThat(saved.setup().seats().get(0).deckList()).isEmpty();
+        assertThat(saved.setup().seats().get(0).commanders()).isEmpty();
+    }
+
     /** A game saved before version 3 started without commanders, so it reads with none and Commander mode off. */
     @Test
     public void readAVersion2SetupWithNoCommandersAndCommanderModeOff() {
