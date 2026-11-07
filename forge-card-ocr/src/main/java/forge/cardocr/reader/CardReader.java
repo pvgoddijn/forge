@@ -94,7 +94,12 @@ public final class CardReader {
         TitleStrength strength = strength(pass);
         boolean runWhole = budget.whole() == ReadBudget.Whole.ALWAYS
                 || budget.whole() == ReadBudget.Whole.IF_WEAK && strength.weak();
-        WholeRun whole = runWhole ? readWholeImage(image, budget, pass.best, true, Integer.MAX_VALUE) : WholeRun.NONE;
+        WholeRun whole = WholeRun.NONE;
+        if (runWhole) {
+            // the text on the flattened card first: in a cluttered frame its title box is found where the whole frame's isn't
+            WholeRun flat = first == null ? WholeRun.NONE : readFlatCard(image, first, budget, pass.best, FROM_WHOLE_BASE);
+            whole = flat.and(readWholeImage(image, budget, pass.best, true, Integer.MAX_VALUE, FROM_WHOLE_BASE + flat.texts().size()));
+        }
 
         List<ReadResult.Match> matches = toMatches(pass.best);
         String text = "";
@@ -147,7 +152,7 @@ public final class CardReader {
         TitleStrength strength = strength(pass);
         boolean runWhole = card != null && (budget.whole() == ReadBudget.Whole.ALWAYS
                 || budget.whole() == ReadBudget.Whole.IF_WEAK && strength.weak());
-        WholeRun whole = runWhole ? readFlatCard(image, card, budget, pass.best) : WholeRun.NONE;
+        WholeRun whole = runWhole ? readFlatCard(image, card, budget, pass.best, FROM_WHOLE_BASE) : WholeRun.NONE;
         List<BestMatches.Entry> entries = pass.best.top();
         String text = "";
         if (!entries.isEmpty()) {
@@ -197,7 +202,7 @@ public final class CardReader {
         return new Corner(x, y);
     }
 
-    private WholeRun readFlatCard(ArgbImage image, CardQuad card, ReadBudget budget, BestMatches best) {
+    private WholeRun readFlatCard(ArgbImage image, CardQuad card, ReadBudget budget, BestMatches best, int originBase) {
         long start = System.nanoTime();
         CardQuad grown = grown(card);
         double longSide = Math.max(grown.c0().distanceTo(grown.c3()), grown.c1().distanceTo(grown.c2()));
@@ -206,7 +211,7 @@ public final class CardReader {
         int width = Math.max(1, (int) Math.round(height * 63.0 / 88.0));
         ArgbImage flat = new ArgbImage(CardFinder.warp(image.pixels(), image.width(), image.height(), grown, width, height), width, height);
         double warped = ms(System.nanoTime() - start);
-        WholeRun run = readWholeImage(flat, budget, best, false, MAX_CROP_BOXES);
+        WholeRun run = readWholeImage(flat, budget, best, false, MAX_CROP_BOXES, originBase);
         return new WholeRun(run.detect(), warped + run.rectify(), run.recognise(), run.match(), run.found(), run.read(), run.texts());
     }
 
@@ -308,14 +313,24 @@ public final class CardReader {
     private record WholeRun(double detect, double rectify, double recognise, double match, int found, int read,
             List<String> texts) {
         static final WholeRun NONE = new WholeRun(0, 0, 0, 0, 0, 0, List.of());
+
+        /** Both runs, the other's texts after these. */
+        WholeRun and(WholeRun other) {
+            List<String> both = new ArrayList<>(texts);
+            both.addAll(other.texts);
+            return new WholeRun(detect + other.detect, rectify + other.rectify, recognise + other.recognise, match + other.match,
+                    found + other.found, read + other.read, both);
+        }
     }
 
     /**
      * @param penaliseOffCentre whether text far from the middle counts for less, which suits a whole
      *     frame. On a flattened card the title is at the edge
      * @param maxBoxes how many text boxes to read, nearest the top or bottom edge first
+     * @param originBase the origin of the first reading's scores; the rest follow it
      */
-    private WholeRun readWholeImage(ArgbImage image, ReadBudget budget, BestMatches best, boolean penaliseOffCentre, int maxBoxes) {
+    private WholeRun readWholeImage(ArgbImage image, ReadBudget budget, BestMatches best, boolean penaliseOffCentre, int maxBoxes,
+            int originBase) {
         long start = System.nanoTime();
         List<TextBox> detected = detectBoxes(image, budget);
         List<TextBox> boxes = detected;
@@ -344,7 +359,7 @@ public final class CardReader {
             TextBox box = boxes.get(i / 2);
             float offCentre = penaliseOffCentre ? (float) (OFF_CENTRE_PENALTY * Math.hypot(box.centreX() - midX, box.centreY() - midY) / diagonal) : 0;
             texts.add(classes.greedy(raws.get(i)));
-            scorer.score(classes.reduce(raws.get(i)), WHOLE_BETA, offCentre + WHOLE_PENALTY, FROM_WHOLE_BASE + i, best);
+            scorer.score(classes.reduce(raws.get(i)), WHOLE_BETA, offCentre + WHOLE_PENALTY, originBase + i, best);
         }
         long end = System.nanoTime();
         return new WholeRun(ms(afterDetect - start), ms(afterRectify - afterDetect), ms(afterRecognise - afterRectify),
