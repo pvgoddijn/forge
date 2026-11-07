@@ -134,12 +134,13 @@ public class CardNameMatcher {
     }
 
     /**
-     * After a photo is read (AC-12): the reader's names and the matches for the text it read, in one list without
-     * repeats. An exact match for the text read comes first; then the {@code preferred} names, the reader's before the
-     * matcher's; then the others, the reader's before the matcher's. So a deck card the reader ranked low, or missed,
-     * still comes up near the top, and nothing either of them found is dropped.
+     * After a confident photo read (AC-12): the reader's names and the matches for the text it read, in one list
+     * without repeats. An exact match for the text read comes first, then the reader's own first name, which the
+     * dialog chooses; then the {@code preferred} names, the reader's before the matcher's; then the others, the
+     * reader's before the matcher's. So a deck card the reader ranked low, or missed, still comes up near the top, but
+     * a fuzzy deck match never takes the confident name's place, and nothing either of them found is dropped.
      *
-     * @param readerNames the reader's names, best first
+     * @param readerNames the reader's names from a confident read, best first
      * @param matches     {@link #match} for the text read
      * @param preferred   the names to rank first, such as the target player's deck; empty for none
      */
@@ -156,6 +157,9 @@ public class CardNameMatcher {
             }
         }
         Set<String> merged = new LinkedHashSet<>(exact);
+        if (!readerNames.isEmpty()) {
+            merged.add(readerNames.get(0));
+        }
         for (boolean deckPass : new boolean[] {true, false}) {
             for (List<String> source : List.of(readerNames, matched)) {
                 for (String name : source) {

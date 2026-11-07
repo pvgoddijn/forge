@@ -131,15 +131,25 @@ public class CardNameMatcherShould {
     }
 
     @Test
-    public void mergeAReadingWithDeckCardsFirst() {
+    public void mergeAReadingWithDeckCardsFirstAfterTheReadersConfidentName() {
         List<String> reader = List.of("Lightning Bolt", "Lightning Helix", "Lightning Strike", "Lightning Greaves");
         List<CardNameMatcher.Suggestion> matches = List.of(new CardNameMatcher.Suggestion("Lightning Bolt", 0.95),
                 new CardNameMatcher.Suggestion("Lightning Axe", 0.94),
                 new CardNameMatcher.Suggestion("Lightning Dragon", 0.93));
 
         assertThat(CardNameMatcher.mergeReading(reader, matches, Set.of("Lightning Greaves", "Lightning Axe")))
-                .containsExactly("Lightning Greaves", "Lightning Axe", "Lightning Bolt", "Lightning Helix",
+                .containsExactly("Lightning Bolt", "Lightning Greaves", "Lightning Axe", "Lightning Helix",
                         "Lightning Strike", "Lightning Dragon");
+    }
+
+    /** A fuzzy match in the deck doesn't outrank, and so isn't chosen over, the name the reader is sure of. */
+    @Test
+    public void keepTheReadersConfidentNameAboveAFuzzyDeckMatch() {
+        List<CardNameMatcher.Suggestion> matches = List.of(new CardNameMatcher.Suggestion("Shivan Dragon", 0.9),
+                new CardNameMatcher.Suggestion("Shivan Wurm", 0.7));
+
+        assertThat(CardNameMatcher.mergeReading(List.of("Shivan Dragon", "Shiv's Embrace"), matches,
+                Set.of("Shivan Wurm"))).containsExactly("Shivan Dragon", "Shivan Wurm", "Shiv's Embrace");
     }
 
     @Test
