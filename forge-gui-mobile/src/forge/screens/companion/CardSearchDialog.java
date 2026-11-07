@@ -3,7 +3,12 @@ package forge.screens.companion;
 import forge.StaticData;
 import forge.game.GameView;
 import forge.game.player.PlayerView;
+import forge.gamemodes.companion.AutoAdd;
+import forge.gamemodes.companion.AutoAddPolicy;
+import forge.gamemodes.companion.CardNameReader;
 import forge.gamemodes.companion.CommanderLegality;
+import forge.gamemodes.companion.CompanionPreferences;
+import forge.gamemodes.companion.CompanionPreferences.CPref;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.DeckListNames;
@@ -32,6 +37,11 @@ import java.util.Set;
  * the active player it offers to move the turn ahead to the first player it fits (AC-45), otherwise it's refused
  * (AC-46), each with Retake (Edit for a typed card) and Cancel ({@link CommanderLegality#checkAdd}). Such cards show
  * greyed in the list, but stay in it.
+ * <p>
+ * In auto mode (slice 7, AC-9), a photo {@link AutoAdd#plan} is sure of is added at once with the defaults, the
+ * active player, From hand and Cast it, without the dialog, and {@link CompanionMatchExtension#afterAutoAdd} then
+ * offers to undo it. With Commander mode on, a card refused for the active player gets the same choice as tapping
+ * Add would give, never an add.
  * <p>
  * The target player's deck, when one was loaded, ranks first, typed or photographed (AC-12); matches from the whole
  * card database still follow. Choosing another player ranks the list again for that player's deck.
@@ -171,15 +181,53 @@ public class CardSearchDialog extends CardPicker {
         return player != null && !SHOW_ALL.equals(player);
     }
 
+    /**
+     * Auto mode: with the preference on, a photo {@link AutoAdd#plan} is sure of goes to the active player, From hand,
+     * Cast it, as tapping Add with the defaults would, through the same Commander check. The seats are offered as
+     * the dialog would offer them, so an instant the active player couldn't have cast shows the dialog with the seat
+     * it chooses instead. Anything else shows the dialog as in confirm mode.
+     */
+    @Override
+    protected boolean handledWithoutDialog(CardNameReader.Reading reading) {
+        boolean on = CompanionPreferences.get().getPrefBoolean(CPref.AUTO_ADD);
+        AutoAdd.Plan plan = AutoAdd.plan(on, reading, AutoAddPolicy.THRESHOLD, activePlayer,
+                card -> table.offerSeats(card, true, activePlayer, activePlayer),
+                card -> check(card, true, activePlayer).verdict());
+        switch (plan.action()) {
+            case ADD:
+                hide();
+                table.submit(new CompanionTable.AddCard(activePlayer, plan.card(), true, TableEditor.Mode.CAST),
+                        ran -> CompanionMatchExtension.afterAutoAdd(table, ran));
+                return true;
+            case COMMANDER_CHOICE:
+                hide();
+                addChecked(activePlayer, plan.card(), true, TableEditor.Mode.CAST);
+                return true;
+            default:
+                return false;
+        }
+    }
+
     @Override
     protected void picked(String name) {
         String player = cbPlayer.getSelectedItem();
         boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
         TableEditor.Mode mode = PUT.equals(cbMode.getSelectedItem()) ? TableEditor.Mode.PUT_ONTO_BATTLEFIELD : TableEditor.Mode.CAST;
+        addChecked(player, name, fromHand, mode);
+    }
+
+    /**
+     * Slice 6's Commander check for {@code name} and {@code player}: the setup read now, as Commander mode can be
+     * switched in the game menu; the turn from the view, on this thread.
+     */
+    private CommanderLegality.AddCheck check(String name, boolean fromHand, String player) {
         PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
-        // the setup read now, as Commander mode can be switched in the game menu; the turn from the view, on this thread
-        CommanderLegality.AddCheck check = CommanderLegality.checkAdd(card, name, fromHand, table.setup(), player,
-                activeSeat(), liveSeats());
+        return CommanderLegality.checkAdd(card, name, fromHand, table.setup(), player, activeSeat(), liveSeats());
+    }
+
+    /** Adds {@code name} for {@code player} if the Commander check allows it; otherwise offers its choice. */
+    private void addChecked(String player, String name, boolean fromHand, TableEditor.Mode mode) {
+        CommanderLegality.AddCheck check = check(name, fromHand, player);
         switch (check.verdict()) {
             case SKIP:
                 FOptionPane.showOptionDialog(check.message(), "Commander mode", null,

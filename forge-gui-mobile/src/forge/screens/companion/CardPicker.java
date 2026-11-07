@@ -198,6 +198,15 @@ public class CardPicker extends FDialog {
         return Set.of();
     }
 
+    /**
+     * Called with a photo's reading, as the reader gave it, before the dialog shows it: returns true when the
+     * subclass dealt with it instead, having hidden the dialog (slice 7's auto mode). Retake still works from there.
+     * False by default: the dialog shows the reading.
+     */
+    protected boolean handledWithoutDialog(CardNameReader.Reading reading) {
+        return false;
+    }
+
     /** Whether {@code card} shows greyed in the list: still there to pick, but not expected. None by default. */
     protected boolean isGreyed(String card) {
         return false;
@@ -289,6 +298,9 @@ public class CardPicker extends FDialog {
         }
         fromPhoto = true;
         lastReading = reading;
+        if (handledWithoutDialog(reading)) {
+            return;
+        }
         boolean readerFound = reading.cards().stream().anyMatch(card -> CardNameMatcher.passes(card, filter));
         if (reading.confident() && readerFound) {
             List<CardNameMatcher.Suggestion> suggestions = mergeReading(reading);
