@@ -47,6 +47,10 @@ public class CompanionSetupScreen extends LaunchScreen {
     private final FTextField[] names = new FTextField[CompanionSetup.MAX_PLAYERS];
     private final FCheckBox[] mes = new FCheckBox[CompanionSetup.MAX_PLAYERS];
     private final FButton[] ups = new FButton[CompanionSetup.MAX_PLAYERS];
+    /** Each seat's "Deck..." button, which shows the deck once one is loaded (AC-3). */
+    private final FButton[] deckButtons = new FButton[CompanionSetup.MAX_PLAYERS];
+    private final FButton[] clears = new FButton[CompanionSetup.MAX_PLAYERS];
+    private final CompanionDeckDialog.Loaded[] decks = new CompanionDeckDialog.Loaded[CompanionSetup.MAX_PLAYERS];
     /** The form scrolls: with six players its rows don't fit above the buttons on a small screen. */
     private final FScrollPane form = add(new FScrollPane() {
         @Override
@@ -73,6 +77,10 @@ public class CompanionSetupScreen extends LaunchScreen {
             mes[i].setCommand(e -> setMe(row));
             ups[i] = form.add(new FButton("^"));
             ups[i].setCommand(e -> swapWithRowAbove(row));
+            deckButtons[i] = form.add(new FButton("Deck..."));
+            deckButtons[i].setCommand(e -> new CompanionDeckDialog(playerName(row), deck -> setDeck(row, deck)).show());
+            clears[i] = form.add(new FButton("X"));
+            clears[i].setCommand(e -> setDeck(row, null));
         }
         txtLife.setIsNumeric(true);
         txtLife.setLiveChangeEvents(true);
@@ -116,6 +124,22 @@ public class CompanionSetupScreen extends LaunchScreen {
         boolean me = mes[row].isSelected();
         mes[row].setSelected(mes[row - 1].isSelected());
         mes[row - 1].setSelected(me);
+        CompanionDeckDialog.Loaded deck = decks[row];
+        setDeck(row, decks[row - 1]);
+        setDeck(row - 1, deck);
+    }
+
+    private String playerName(int row) {
+        String name = names[row].getText().trim();
+        return name.isEmpty() ? "Player " + (row + 1) : name;
+    }
+
+    /** Attaches {@code deck} to the seat in {@code row}, or clears it for null. */
+    private void setDeck(int row, CompanionDeckDialog.Loaded deck) {
+        decks[row] = deck;
+        deckButtons[row].setText(deck == null ? "Deck..." : deck.summary());
+        clears[row].setVisible(deck != null && row < playerCount);
+        form.revalidate();
     }
 
     private void setPlayerCount(int count) {
@@ -135,6 +159,8 @@ public class CompanionSetupScreen extends LaunchScreen {
             names[i].setVisible(visible);
             mes[i].setVisible(visible);
             ups[i].setVisible(visible && i > 0);
+            deckButtons[i].setVisible(visible);
+            clears[i].setVisible(visible && decks[i] != null);
         }
         btnFewer.setEnabled(playerCount > CompanionSetup.MIN_PLAYERS);
         btnMore.setEnabled(playerCount < CompanionSetup.MAX_PLAYERS);
@@ -159,8 +185,13 @@ public class CompanionSetupScreen extends LaunchScreen {
             names[i].setBounds(PADDING, y, width - meWidth - buttonWidth - 4 * PADDING, rowHeight);
             mes[i].setBounds(names[i].getRight() + PADDING, y, meWidth, rowHeight);
             ups[i].setBounds(mes[i].getRight() + PADDING, y, buttonWidth, rowHeight);
+            float deckY = y + rowHeight + PADDING;
+            // the deck goes on a line of its own under the name, as a phone's row has no room for it
+            float deckWidth = width - 2 * PADDING - (decks[i] == null ? 0 : buttonWidth + PADDING);
+            deckButtons[i].setBounds(PADDING, deckY, deckWidth, rowHeight);
+            clears[i].setBounds(deckButtons[i].getRight() + PADDING, deckY, buttonWidth, rowHeight);
             if (i < playerCount) {
-                y += rowHeight + PADDING;
+                y = deckY + rowHeight + PADDING;
             }
         }
         btnFewer.setBounds(PADDING, y, buttonWidth, rowHeight);
@@ -189,7 +220,9 @@ public class CompanionSetupScreen extends LaunchScreen {
                     return;
                 }
             }
-            seats.add(new CompanionSetup.Seat(name, mes[i].isSelected()));
+            CompanionDeckDialog.Loaded deck = decks[i];
+            seats.add(deck == null ? new CompanionSetup.Seat(name, mes[i].isSelected())
+                    : new CompanionSetup.Seat(name, mes[i].isSelected(), deck.commanders(), deck.deckList()));
         }
         String lifeText = txtLife.getText().trim();
         // the field keeps to four digits, so this can't overflow; empty counts as 0
@@ -211,7 +244,8 @@ public class CompanionSetupScreen extends LaunchScreen {
     /**
      * The commander step (AC-44): for each seat from {@code index} on, in seat order, a commander by photo, typing,
      * or "No commander", and a second one when the first can have a partner or a background. Then {@code done}, with
-     * the seats and their commanders. Cancel at any point ends the step on this screen, with nothing started or saved;
+     * the seats and their commanders. A seat whose deck named its commanders is only asked to confirm them, without
+     * the camera, or change them. Cancel at any point ends the step on this screen, with nothing started or saved;
      * Photo in the picker is the retake. UI thread only, and no game exists yet.
      */
     private void chooseCommanders(List<CompanionSetup.Seat> seats, int index, Consumer<List<CompanionSetup.Seat>> done) {
@@ -224,6 +258,30 @@ public class CompanionSetupScreen extends LaunchScreen {
             seats.set(index, seat.withCommanders(commanders));
             chooseCommanders(seats, index + 1, done);
         };
+        if (!seat.commanders().isEmpty()) {
+            // from the seat's deck (AC-3): only confirmed, without the camera; Change is the usual step
+            String named = String.join(" and ", seat.commanders());
+            FOptionPane.showOptionDialog(seat.name() + "'s deck has " + named + " as its commander"
+                    + (seat.commanders().size() > 1 ? "s." : "."), seat.name() + "'s commander", null,
+                    List.of("Confirm", "Change", "No commander"), 0, choice -> {
+                if (choice == null) {
+                    return; // dismissed: the step ends here, as Cancel in the picker does
+                }
+                if (choice == 0) {
+                    next.accept(seat.commanders());
+                } else if (choice == 2) {
+                    next.accept(List.of());
+                } else {
+                    pickCommanders(seat, next);
+                }
+            });
+            return;
+        }
+        pickCommanders(seat, next);
+    }
+
+    /** The commander step's picker for {@code seat}: photo first, a partner when allowed, or "No commander". */
+    private void pickCommanders(CompanionSetup.Seat seat, Consumer<List<String>> next) {
         new CardPicker(seat.name() + "'s commander", CommanderLegality::canBeCommander, name -> {
             PaperCard first = StaticData.instance().getCommonCards().getUniqueByName(name);
             if (first == null || !CommanderLegality.canHaveSecondCommander(first)) {
