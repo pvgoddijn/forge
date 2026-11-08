@@ -90,3 +90,46 @@ Chunk A (`forge-gui`: the forwarder, the binding hook, the measurement logging).
 4. **Tests:**
    - `GameEventForwarderThreadTest` (new, 3 tests): a flush asked for on another thread sends nothing there and is due, and the next priority on the game thread sends it there even after only a redraw hint; a due flush goes out at the end of the turn; `flushNow()` sends at once from any thread.
    - `CompanionShareEndToEndTest` now also checks the binding through a recording adapter: bound once before connect, still bound while joined, unbound once on `close()` (a second `close()` makes no call). The wrong-token client is unbound after the refusal without calling `close()`.
+
+Chunk B (`forge-gui-android`, the harness, the APK).
+
+5. **`Main.java`'s `bindToLocalNetwork`.** `true` looks up the Wi-Fi `Network` at once (`getAllNetworks`, the first whose capabilities have `TRANSPORT_WIFI`), so the connect that follows straight away already goes over Wi-Fi, and calls `bindProcessToNetwork(wifi)`. It also registers a `NetworkCallback` for `TRANSPORT_WIFI` **without** `NET_CAPABILITY_INTERNET` (a bare router has none): if Wi-Fi comes later the process is bound then, and if the bound Wi-Fi is lost the process is unbound (a binding to a gone network would fail every new socket) until Wi-Fi is back. `false` unregisters the callback and calls `bindProcessToNetwork(null)`. All under one lock; a repeat call returns at once. A failure (a `SecurityException`, the callback limit) is logged and the join goes on unbound.
+   - **`registerNetworkCallback`, not `requestNetwork`:** `requestNetwork` needs `CHANGE_NETWORK_STATE`, which isn't declared, and the bundle says no manifest change. A registered callback only watches; it doesn't ask Android to keep the Wi-Fi up. If a phone drops a no-internet Wi-Fi by itself, answer Android's "Wi-Fi has no internet access. Stay connected?" with yes (or turn off "Switch to mobile data" in the Wi-Fi settings). If this shows up in the checks, `requestNetwork` plus the permission is the fix.
+   - **The phone is the hotspot:** its access point isn't a `Network` to `ConnectivityManager`, so no Wi-Fi is found, nothing is bound (logged as `No Wi-Fi network: not binding (this phone may be the hotspot)`), and the default routing applies. A host never binds anyway (only `CompanionClient` calls it). A phone joining **another** phone's hotspot is a Wi-Fi client, so it binds as on a router.
+   - APIs: `NetworkRequest.Builder`, `registerNetworkCallback`, `unregisterNetworkCallback`, `getAllNetworks`, `getNetworkCapabilities` (API 21), `bindProcessToNetwork` (API 23). All within minSdk 26; no `androidx`.
+   - Log lines (logcat, tag `NETWORK`): `[Companion] Bound the process to Wi-Fi network …`, `Unbound the process from Wi-Fi`, `Wi-Fi network … lost: unbound`.
+6. **`ViewerLoad`** (`forge-gui-desktop/src/test/java/forge/gamemodes/companion/share/ViewerLoad.java`): a `main`, not a test (no `@Test`, and the name matches none of surefire's patterns, so `mvn test` never runs it). Each viewer is a real `CompanionClient` with a `HeadlessNetworkGuiGame`, so it writes the `"FCMP"` + token preamble, says hello and follows the view like a phone. A counter at the head of each connection's pipeline counts the bytes off the socket (before LZ4), which compare with the host's `[CompanionMeasure]` bytes per peer. Every 10 s, and at the end, it prints each viewer's bytes, `joined` / `connecting` / `NOT ACTIVE`, and its epoch.
+   - **Local smoke run** (a throwaway host on 127.0.0.1, not committed): 3 viewers joined (host peer count 3), each received ~17.8 kB by the first report and ~20.2 kB after 70 s with one card added; all three left on exit (peer count 0).
+   - **How to run it** (in WSL, from the repo; the first two commands once per build):
+     ```
+     cd /mnt/wsl/git/forge--companion-multi
+     mvn -o test-compile -pl forge-gui-desktop -am > target/tc.log 2>&1; tail -3 target/tc.log
+     mvn -o dependency:build-classpath -pl forge-gui-desktop -am -Dmdep.outputFile=target/viewerload.cp > target/cp.log 2>&1; tail -3 target/cp.log
+     R=$PWD; cd forge-gui-desktop
+     java --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.util=ALL-UNNAMED \
+       -cp "$R/forge-gui-desktop/target/test-classes:$R/forge-gui-desktop/target/classes:$R/forge-gui/target/classes:$R/forge-ai/target/classes:$R/forge-game/target/classes:$R/forge-core/target/classes:$(cat $R/forge-gui-desktop/target/viewerload.cp)" \
+       forge.gamemodes.companion.share.ViewerLoad ABCD-EFGH-IJKL-MNOP 7 600 > /tmp/viewerload.log 2>&1 &
+     grep -E "^ViewerLoad|^  Viewer" /tmp/viewerload.log | tail -9
+     ```
+     Arguments: the join code shown on phone A, the number of viewers (7 for step 7, 11 for step 8), the seconds to stay joined. The module `target/classes` go first because `viewerload.cp` points the Forge modules at `~/.m2` jars, which may be another branch's. It loads the card database first (about half a minute). The machine running it must reach phone A's address: WSL's outgoing connections do (NAT), but for step 6's **desktop host** a phone can't reach a dev instance inside WSL unless WSL uses mirrored networking; run the dev jar on Windows for that step.
+7. **The APK**, built from this branch (`forge-gui-android`, profile `android-debug`, package renamed to `forge.app.companion` so it installs beside the real Forge, as in earlier Companion slices; the authority patch to the manifest is put back after the build, never committed). android-maven-plugin's own signing fails on Java 21 (`PKCS7.encodeSignedData` NoSuchMethodError), so the APK is re-signed with the debug key (`zipalign` + `apksigner` from build-tools 35.0.0, verified).
+   - `forge-gui-android/target/forge-companion-debug.apk`, 76,730,729 bytes (73.2 MiB); minSdk 26, **targetSdk 35** (Check first 5: no local network permission needed).
+   - **Windows path:** `\\wsl.localhost\claude-dev\mnt\wsl\git\forge--companion-multi\forge-gui-android\target\forge-companion-debug.apk`. Install: copy it to the phone and open it (allow installs from that app), or `adb install -r <that path>` from Windows. Uninstall an older `forge.app.companion` first if Android says the signature differs.
+8. **Turning the measurement on, on phone A.** The Forge user folder of `forge.app.companion` is `/storage/emulated/0/Android/obb/forge.app.companion/Forge/data/` on Android 11 and later (`/storage/emulated/0/Forge/data/` on Android 8–10, shared with the real Forge). Start the app once so the folder exists, then:
+   ```
+   adb shell "echo COMPANION_SHARE_MEASURE=true >> /storage/emulated/0/Android/obb/forge.app.companion/Forge/data/preferences/server.preferences"
+   adb shell am force-stop forge.app.companion
+   ```
+   Start the app again. The lines: `adb logcat | findstr CompanionMeasure` (Windows) or `| grep CompanionMeasure`. The binding's lines: `findstr "Wi-Fi"`. A later line overrides an earlier one for the same key, so appending works even if the file already has the key, and the app's next save of the file keeps one line. To turn it off, append `COMPANION_SHARE_MEASURE=false` the same way and restart the app.
+
+**[Phone] steps for the owner, in order** (the Oracle's [Phone] checks, with what to record):
+1. Install the APK on phones A and B (7). On the newest phone, note the Android version (Check first 9).
+2. Phone A: turn the measurement on (8). Set its screen timeout to 10 minutes.
+3. Check first 1: Phone A on the no-internet router, Companion, "Share game…"; from a laptop on the same Wi-Fi, `nc -vz <phone A ip> 36744` (or `Test-NetConnection <ip> -Port 36744` in PowerShell). Repeat with phone A as the hotspot and the laptop on it.
+4. Check first 2: phone B, mobile data on, on the no-internet Wi-Fi. Join by code. Record whether logcat shows `Bound the process to Wi-Fi network` and whether it connects. (Without the binding there's no switch in the app; the comparison is the old APK, or the slice-00 build, on the same Wi-Fi.)
+5. Oracle [Phone] 1–5 (router, then phone A's hotspot). Record the tap-to-change time on phone B (stopwatch or slow-motion video): Check first 4.
+6. Oracle [Phone] 6: dev jar on Windows hosts, phone B joins; phone A hosts, the dev jar joins. Note any decode error and its class: Check first 3.
+7. Oracle [Phone] 7: 6-player Commander on phone A, phone B joins, ViewerLoad with 7 viewers (6). Add a card, cast a trigger spell, undo. Record from phone A's logcat: the `flush #n` lines (ms on the game thread, bytes per peer), the `full state to` lines and the undo's flush; and from ViewerLoad, the bytes per viewer.
+8. Oracle [Phone] 8: the same with ViewerLoad at 11 viewers. Write down the safe number.
+9. Oracle [Phone] 9 (newest phone, host then joiner; also on its own hotspot) and 10 (rendering on phone B).
+10. Send the logcat captures and numbers back; they go into this section, with the fallback decision.
