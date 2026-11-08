@@ -123,7 +123,7 @@ public class ProtocolGuiGame extends NetworkGuiGame implements IHasForgeLog {
 
     public void shutdownForwarder() {
         if (forwarder != null) {
-            forwarder.flush();
+            forwarder.flushNow(); // the forwarder goes: nothing may wait for a flush point after this
             forwarder = null;
         }
     }

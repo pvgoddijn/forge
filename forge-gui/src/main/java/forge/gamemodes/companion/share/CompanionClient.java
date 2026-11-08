@@ -7,6 +7,7 @@ import forge.gamemodes.net.client.ClientGameLobby;
 import forge.gamemodes.net.client.FGameClient;
 import forge.gamemodes.net.event.GuiGameEvent;
 import forge.gui.interfaces.IGuiGame;
+import forge.interfaces.IDeviceAdapter;
 import forge.interfaces.ILobbyListener;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -15,6 +16,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * A joined phone's connection to a shared Companion game (plan 2.2): net play's client, with Companion's admission and
@@ -27,6 +29,11 @@ import java.util.concurrent.TimeUnit;
  * <p>The heartbeat is every 5 s, as the host counts a phone silent for 15 s as gone (plan 3.1), and the phone counts
  * the host gone after 15 s too. Reconnect is net play's, which says hello again on each new connection (slice 04 makes
  * it unbounded).
+ *
+ * <p>With a device adapter, the process is bound to the local network ({@link IDeviceAdapter#bindToLocalNetwork}) before
+ * each connect, so a phone with mobile data on still reaches a host on a Wi-Fi without internet, and unbound on every
+ * way out: {@link #close}, a first connect that fails, a connection closed with no reconnect to follow (refused,
+ * dropped before the game, the game never arrived), and net play's reconnect giving up or losing the seat.
  */
 public class CompanionClient extends FGameClient {
     static final int HEARTBEAT_SECONDS = 5;
@@ -46,10 +53,19 @@ public class CompanionClient extends FGameClient {
     private volatile boolean attachTimedOut;
     /** The listeners added from outside, for a close net play's handler didn't count (see the data handler). */
     private final List<ILobbyListener> listeners = new CopyOnWriteArrayList<>();
+    /** Binds the process to the local network while joined; null: nothing to bind (desktop, tests). */
+    private final IDeviceAdapter network;
+    private final AtomicBoolean bound = new AtomicBoolean();
 
     public CompanionClient(String username, IGuiGame gui, JoinCode code) {
+        this(username, gui, code, null);
+    }
+
+    /** {@code network} binds the process to the local network while joined (Android); null for none. */
+    public CompanionClient(String username, IGuiGame gui, JoinCode code, IDeviceAdapter network) {
         super(username, gui, code.address().getHostAddress(), code.port());
         this.token = code.token();
+        this.network = network;
         super.addLobbyListener(new ILobbyListener() {
             @Override
             public void message(String source, String message, ChatMessage.MessageType type) { }
@@ -91,6 +107,40 @@ public class CompanionClient extends FGameClient {
     public void close() {
         left = true;
         super.close();
+        bindToLocalNetwork(false);
+    }
+
+    /** Net play's connect, on the local network. A reconnect attempt comes through here too, and binds again. */
+    @Override
+    public void connect() {
+        bindToLocalNetwork(true);
+        try {
+            super.connect();
+        } catch (RuntimeException e) {
+            if (getReconnectState() != ReconnectState.RECONNECTING) {
+                bindToLocalNetwork(false); // the first connect failed: no join, no retry
+            }
+            throw e;
+        }
+    }
+
+    @Override
+    protected void onReconnectStateChanged(ReconnectState state) {
+        if (state == ReconnectState.FAILED || state == ReconnectState.SEAT_LOST) {
+            bindToLocalNetwork(false); // a manual rejoin connects, and so binds, again
+        }
+    }
+
+    /** Whether the process is bound to the local network for this client now. */
+    public boolean isBoundToLocalNetwork() {
+        return bound.get();
+    }
+
+    private void bindToLocalNetwork(boolean bind) {
+        if (network != null && bound.compareAndSet(!bind, bind)) {
+            netLog.info("[Companion] {} the local network", bind ? "Binding to" : "Unbinding from");
+            network.bindToLocalNetwork(bind);
+        }
     }
 
     /** The shared game's id once the host welcomed this phone, else null. */
@@ -152,6 +202,10 @@ public class CompanionClient extends FGameClient {
                 for (ILobbyListener listener : listeners) {
                     listener.close();
                 }
+            }
+            // net play's handler before this one has decided: no reconnect follows, so this join is over
+            if (getReconnectState() != ReconnectState.RECONNECTING) {
+                bindToLocalNetwork(false);
             }
             super.channelInactive(ctx);
         }

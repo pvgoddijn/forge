@@ -5,6 +5,7 @@ import forge.gamemodes.net.CompatibleObjectDecoder;
 import forge.gamemodes.net.CompatibleObjectEncoder;
 import forge.gamemodes.net.GameProtocolHandler;
 import forge.gamemodes.net.IRemote;
+import forge.gamemodes.net.NetworkByteTracker;
 import forge.gamemodes.net.ProtocolMethod;
 import forge.gamemodes.net.ReplyPool;
 import forge.gamemodes.net.event.GuiGameEvent;
@@ -69,6 +70,8 @@ public final class CompanionShareHost implements IHasForgeLog {
     private final int token;
     private final Set<CompanionPeer> peers = ConcurrentHashMap.newKeySet();
     private final AtomicInteger refusedAtGate = new AtomicInteger();
+    /** The measurement's logging (slice 01); null, and nothing measured, when it's off. */
+    private final ShareMeter meter = ShareMeter.enabled() ? new ShareMeter() : null;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
@@ -105,11 +108,12 @@ public final class CompanionShareHost implements IHasForgeLog {
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     public void initChannel(SocketChannel ch) {
-                        Admission admission = new Admission();
+                        NetworkByteTracker bytes = meter != null ? new NetworkByteTracker() : null;
+                        Admission admission = new Admission(bytes);
                         ch.pipeline().addLast(
                                 // first, so nothing is deserialized before the token is right
                                 new TokenGate(t -> t == token, refusedAtGate::incrementAndGet, ADMISSION_SECONDS),
-                                new CompatibleObjectEncoder(null),
+                                new CompatibleObjectEncoder(bytes),
                                 new CompatibleObjectDecoder(MAX_FRAME_BYTES, ClassResolvers.cacheDisabled(null)),
                                 new IdleStateHandler(READER_IDLE_SECONDS, 0, 0, TimeUnit.SECONDS),
                                 admission,
@@ -136,6 +140,9 @@ public final class CompanionShareHost implements IHasForgeLog {
             peer.close();
         }
         peers.clear();
+        if (meter != null) {
+            meter.write();
+        }
         if (serverChannel != null) {
             serverChannel.close();
             serverChannel = null;
@@ -191,9 +198,15 @@ public final class CompanionShareHost implements IHasForgeLog {
      * phone's calls on to {@link PeerHandler} once it's admitted. Netty's thread; touches no game state.
      */
     private final class Admission extends ChannelInboundHandlerAdapter {
+        /** What this connection's encoder wrote, for the measurement; null when it's off. */
+        private final NetworkByteTracker bytes;
         private RemoteClient client;
         private boolean loggedIn;
         private volatile CompanionPeer peer;
+
+        Admission(NetworkByteTracker bytes) {
+            this.bytes = bytes;
+        }
 
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
@@ -240,7 +253,7 @@ public final class CompanionShareHost implements IHasForgeLog {
                 ctx.close();
                 return;
             }
-            CompanionPeer joined = new CompanionPeer(table, client, ctx::close);
+            CompanionPeer joined = new CompanionPeer(table, client, ctx::close, meter, bytes);
             peer = joined;
             peers.add(joined);
             client.send(new ShareMessages.Welcome(table.id()));

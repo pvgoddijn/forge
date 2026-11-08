@@ -468,12 +468,17 @@ public class FGameClient implements IToServer, IHasForgeLog {
         reconnectScheduler.execute(() -> attemptReconnect(0));
     }
 
+    /** Called on each reconnect state change, on the thread that made it, before the GUI hears of it. None by default. */
+    protected void onReconnectStateChanged(final ReconnectState state) {
+    }
+
     /**
      * State-change hook for UI. Dispatches to {@link forge.gamemodes.net.NetworkGuiGame}
      * when the GUI supports it; always logs.
      */
     private void notifyReconnectState(final ReconnectState state, final int attemptIndex, final int nextDelaySeconds) {
         netLog.info("[Reconnect] state={} attempt={} nextDelay={}s", state, attemptIndex, nextDelaySeconds);
+        onReconnectStateChanged(state);
         if (clientGui instanceof forge.gamemodes.net.NetworkGuiGame networkGui) {
             networkGui.onReconnectStateChanged(state, attemptIndex, nextDelaySeconds);
         }

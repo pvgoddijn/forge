@@ -37,6 +37,14 @@ public interface IDeviceAdapter {
     default void setMouseConfined(boolean confined) {
     }
 
+    /**
+     * {@code true}: send this process's new connections over the local network (Wi-Fi), even when it has no internet
+     * and mobile data is on, so a Companion join reaches the host; {@code false}: undo it. Called again with the same
+     * value, it does nothing more. Any thread. Default no-op (Android binds the process to the Wi-Fi network).
+     */
+    default void bindToLocalNetwork(boolean bind) {
+    }
+
     Set<String> LWJGL_SUPPORTED_AUDIO_TYPES = Set.of(".wav", ".mp3", ".ogg");
     default boolean isSupportedAudioFormat(File file) {
         String path = file.getPath().toLowerCase();

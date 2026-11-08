@@ -8,6 +8,7 @@ import forge.game.player.PlayerView;
 import forge.gamemodes.companion.CompanionPlayerController;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.match.input.InputQueue;
+import forge.gamemodes.net.NetworkByteTracker;
 import forge.gamemodes.net.server.RemoteClient;
 import forge.gamemodes.net.server.RemoteClientGuiGame;
 import forge.gui.control.GameEventForwarder;
@@ -41,10 +42,33 @@ public final class CompanionPeer implements IHasForgeLog {
         @Override
         public void sendFullState() {
             boolean sends = getGameView() != null && !isPaused();
+            long bytes0 = bytesSent();
+            long t0 = System.nanoTime();
             super.sendFullState();
+            if (meter != null && sends) {
+                meter.fullState(getClient().getUsername(), System.nanoTime() - t0, bytesSent() - bytes0);
+            }
             if (sends && !attaching) {
                 sendEpoch();
             }
+        }
+
+        /** A flush: timed and sized for the measurement when it's on. Game thread. */
+        @Override
+        public void handleGameEvents(List<GameEvent> events) {
+            if (meter == null || events.isEmpty() || isPaused()) {
+                super.handleGameEvents(events);
+                return;
+            }
+            long bytes0 = bytesSent();
+            long t0 = System.nanoTime();
+            super.handleGameEvents(events);
+            meter.flushed(events.get(events.size() - 1), getClient().getUsername(), System.nanoTime() - t0,
+                    bytesSent() - bytes0);
+        }
+
+        private long bytesSent() {
+            return bytes == null ? 0 : bytes.getTotalBytesSent();
         }
     }
 
@@ -63,6 +87,9 @@ public final class CompanionPeer implements IHasForgeLog {
 
     private final CompanionTable table;
     private final RemoteClient client;
+    /** The measurement (slice 01), and what this phone's encoder wrote; both null when it's off. */
+    private final ShareMeter meter;
+    private final NetworkByteTracker bytes;
     private final Runnable disconnect;
     private final PeerGuiGame gui;
     private final PeerGate gate = new PeerGate();
@@ -76,10 +103,16 @@ public final class CompanionPeer implements IHasForgeLog {
     private int epoch;
     private volatile boolean closed;
 
-    /** {@code disconnect} closes the phone's connection, which then detaches it and takes it off the share's count. */
-    CompanionPeer(CompanionTable table, RemoteClient client, Runnable disconnect) {
+    /**
+     * {@code disconnect} closes the phone's connection, which then detaches it and takes it off the share's count.
+     * {@code meter} and the byte tracker of this phone's encoder are for the measurement; both null when it's off.
+     */
+    CompanionPeer(CompanionTable table, RemoteClient client, Runnable disconnect, ShareMeter meter,
+                  NetworkByteTracker bytes) {
         this.table = table;
         this.client = client;
+        this.meter = meter;
+        this.bytes = bytes;
         this.disconnect = disconnect;
         this.gui = new PeerGuiGame(client);
     }

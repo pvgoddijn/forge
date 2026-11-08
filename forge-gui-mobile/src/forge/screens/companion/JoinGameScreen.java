@@ -99,7 +99,7 @@ public class JoinGameScreen extends FScreen {
             this.code = code;
             IGuiGame gui = GuiBase.getInterface().getNewGuiGame();
             MatchController.setExtension(extension);
-            client = new CompanionClient(playerName(), gui, code);
+            client = new CompanionClient(playerName(), gui, code, Forge.getDeviceAdapter()); // joins over Wi-Fi with mobile data on
             extension.setClient(client);
             // before the host seats this device, a closed connection isn't retried: the client tells its listeners
             client.addLobbyListener(new ILobbyListener() {

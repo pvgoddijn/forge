@@ -28,6 +28,7 @@ public class ForgeNetPreferences extends AbstractPreferences<ForgeNetPreferences
         NET_PORT("36743"),
         UPnP("ASK"),
         NET_BANDWIDTH_LOGGING("false"),
+        COMPANION_SHARE_MEASURE("false"),
         NET_LOG_CLEANUP_ENABLED("true"),
         NET_AFK_TIMEOUT("5"),
         NET_LAST_COPIED_URL("");

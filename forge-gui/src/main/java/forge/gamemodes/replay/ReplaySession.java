@@ -99,7 +99,7 @@ public final class ReplaySession implements IHasForgeLog {
     public void finish() {
         try {
             // the end-of-game screen comes from the recorded GameFinished event, as on a netplay client
-            forwarder.flush();
+            forwarder.flushNow();
         } catch (final RuntimeException e) {
             netLog.error(e, "Could not finish the replay cleanly");
         } finally {

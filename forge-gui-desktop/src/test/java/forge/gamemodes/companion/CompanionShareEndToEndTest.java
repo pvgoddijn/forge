@@ -13,6 +13,7 @@ import forge.gamemodes.companion.share.JoinCode;
 import forge.gamemodes.match.GameLobby;
 import forge.gamemodes.net.ChatMessage;
 import forge.gamemodes.net.client.ClientGameLobby;
+import forge.interfaces.IDeviceAdapter;
 import forge.interfaces.IGameController;
 import forge.interfaces.ILobbyListener;
 import forge.net.HeadlessNetworkGuiGame;
@@ -24,12 +25,14 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
@@ -58,6 +61,17 @@ public class CompanionShareEndToEndTest extends AITest {
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** A device whose local-network binding calls land in {@code binds}. */
+    private static IDeviceAdapter recordingDevice(List<Boolean> binds) {
+        return (IDeviceAdapter) Proxy.newProxyInstance(IDeviceAdapter.class.getClassLoader(),
+                new Class<?>[] { IDeviceAdapter.class }, (proxy, method, args) -> {
+                    if ("bindToLocalNetwork".equals(method.getName())) {
+                        binds.add((Boolean) args[0]);
+                    }
+                    return null;
+                });
     }
 
     /** Runs {@code op} and then the save the next prompt would make, as the game loop does. */
@@ -125,7 +139,8 @@ public class CompanionShareEndToEndTest extends AITest {
         assertEquals(host.refusedAtGate(), 0, "the right preamble went first, before the login");
         JoinCode wrong = new JoinCode(code.address(), code.port(), code.token() + 1);
         HeadlessNetworkGuiGame wrongView = new HeadlessNetworkGuiGame();
-        CompanionClient intruder = new CompanionClient("Intruder", wrongView, wrong);
+        List<Boolean> binds = new CopyOnWriteArrayList<>();
+        CompanionClient intruder = new CompanionClient("Intruder", wrongView, wrong, recordingDevice(binds));
         AtomicBoolean closed = new AtomicBoolean();
         intruder.addLobbyListener(new ILobbyListener() {
             @Override
@@ -151,6 +166,9 @@ public class CompanionShareEndToEndTest extends AITest {
             assertNull(intruder.welcomedTo(), "a wrong token is never welcomed");
             assertEquals(intruder.epoch(), 0);
             assertFalse(wrongView.isOpenViewCalled(), "no view for a wrong token");
+            // refused before it was seated, so no reconnect follows: the join is over without a close()
+            await(() -> !intruder.isBoundToLocalNetwork(), () -> { }, "the refused client unbinding");
+            assertEquals(binds, List.of(true, false), "bound to connect, unbound once refused");
         } finally {
             intruder.close();
         }
@@ -179,8 +197,10 @@ public class CompanionShareEndToEndTest extends AITest {
 
             // the game has started: a client joins by the code, and is attached at the loop's next prompt
             HeadlessNetworkGuiGame view = new HeadlessNetworkGuiGame();
-            client = new CompanionClient("Joiner", view, typed);
+            List<Boolean> binds = new CopyOnWriteArrayList<>();
+            client = new CompanionClient("Joiner", view, typed, recordingDevice(binds));
             client.connect();
+            assertEquals(binds, List.of(true), "bound to the local network before connecting");
             CompanionClient joined = client;
             await(() -> joined.epoch() >= 1 && view.isOpenViewCalled(), table::runSystemOps, "the attach");
             assertEquals(joined.welcomedTo(), "t", "welcomed to the shared game");
@@ -246,6 +266,12 @@ public class CompanionShareEndToEndTest extends AITest {
             }
             assertEquals(board(game.getView()), beforeCalls, "the host's board is as it was");
             assertEquals(joined.epoch(), 2, "nothing was resent");
+
+            // leaving unbinds, once
+            assertEquals(binds, List.of(true), "still bound while joined");
+            client.close();
+            client.close();
+            assertEquals(binds, List.of(true, false), "unbound on leaving");
         } finally {
             if (client != null) {
                 client.close();
