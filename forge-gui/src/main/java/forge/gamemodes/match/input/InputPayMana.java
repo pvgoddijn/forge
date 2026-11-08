@@ -409,9 +409,10 @@ public abstract class InputPayMana extends InputSyncronizedBase {
      * Ends the prompt with the mana cost paid without tapping anything. Forge's own games never call this; it's for a
      * mode that records a game played elsewhere, where the mana was paid at the table. Mana floating in the pool is
      * used first, as a payment by hand would use it; the rest is paid with mana that comes from nowhere, recorded as
-     * spent as any mana is: for each shard, one of its colours (a hybrid, {2/W}, Phyrexian or coloured X shard pays
-     * with its first colour) and colourless only for a shard with no colour. So sunburst, converge, "if {R} was spent"
-     * and a coloured X's paid colours see the cost's colours. That mana's source is a blank card of no type, not
+     * spent as any mana is: for each shard, the first of its colours in WUBRG order that can pay it, and colourless
+     * if none can. A hybrid shard counts as its first colour (Soul Burn's {B/R} X as black), a {2/W} or
+     * {W/P} as white, and a coloured X takes a different colour for each mana. So sunburst, converge, "if {R} was
+     * spent" and a coloured X's paid colours see colours of the cost. That mana's source is a blank card of no type, not
      * snow, so "mana from a creature/artifact/snow source" checks don't see it; a snow shard, which it can't pay, is
      * waived with none. Mana already spent on it stays spent, Phyrexian life already chosen is paid, and the
      * ability's other costs are paid as usual. If a later cost is cancelled, that mana is refunded to the pool like
@@ -441,36 +442,47 @@ public abstract class InputPayMana extends InputSyncronizedBase {
     private void spendManaFromNowhere() {
         final Card source = new Card(game.nextCardId(), game); // no types, not snow, in no zone
         source.setOwner(player);
-        // paying a {2/W} with colourless would add a generic shard, so the shards are read again after each payment
-        for (int i = 0; i < 100 && !manaCost.isPaid(); i++) {
+        // paying a {2/W} with colourless would add a generic shard, so the shards are read again after each payment;
+        // each payment pays one shard and adds at most one, so this bound is never reached by a cost that can be paid
+        final int bound = 2 * manaCost.getUnpaidShards().size() + 1;
+        for (int i = 0; i < bound && !manaCost.isPaid(); i++) {
             final List<ManaCostShard> unpaid = manaCost.getUnpaidShards();
             unpaid.removeIf(shard -> shard == ManaCostShard.X);
-            if (unpaid.isEmpty()) {
-                return;
-            }
             Collections.sort(unpaid); // the hardest shards first, as the pool pays them
-            boolean paidOne = false;
-            for (final ManaCostShard shard : unpaid) {
-                final Mana mana = new Mana(colorToPay(shard), source, null, player);
-                if (manaCost.isNeeded(mana, player.getManaPool()) && manaCost.payMana(mana, player.getManaPool())) {
-                    saPaidFor.getPayingMana().add(mana);
-                    paidOne = true;
-                    break;
-                }
-            }
-            if (!paidOne) {
+            if (!payOneShard(unpaid, source)) {
                 return; // only shards this mana can't pay are left, such as snow: they're waived with none
             }
         }
     }
 
-    private static byte colorToPay(final ManaCostShard shard) {
-        for (final byte color : MagicColor.WUBRG) {
-            if (shard.isColor(color)) {
-                return color;
+    /** Pays the first of {@code unpaid} that a mana of one of its colours, or else colourless, can pay. */
+    private boolean payOneShard(final List<ManaCostShard> unpaid, final Card source) {
+        for (final ManaCostShard shard : unpaid) {
+            for (final byte color : colorsToTry(shard)) {
+                final Mana mana = new Mana(color, source, null, player);
+                if (manaCost.isNeeded(mana, player.getManaPool()) && manaCost.payMana(mana, player.getManaPool())) {
+                    saPaidFor.getPayingMana().add(mana);
+                    return true;
+                }
             }
         }
-        return (byte) ManaAtom.COLORLESS;
+        return false;
+    }
+
+    /**
+     * The colours to pay {@code shard} with, in WUBRG order, then colourless. A coloured X takes each colour once, so
+     * the colours it already has are left out: the next mana goes to the X, not to a generic shard.
+     */
+    private List<Byte> colorsToTry(final ManaCostShard shard) {
+        final List<Byte> colors = new ArrayList<>();
+        for (final byte color : MagicColor.WUBRG) {
+            if (shard.isColor(color) && (shard != ManaCostShard.COLORED_X || ManaCostBeingPaid
+                    .canColoredXShardBePaidByColor(MagicColor.toShortString(color), manaCost.getXManaCostPaidByColor()))) {
+                colors.add(color);
+            }
+        }
+        colors.add((byte) ManaAtom.COLORLESS);
+        return colors;
     }
 
     protected void updateButtons() {
