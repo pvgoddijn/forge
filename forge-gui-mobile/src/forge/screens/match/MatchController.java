@@ -305,6 +305,11 @@ public class MatchController extends NetworkGuiGame {
         btn2.setText(label2);
         btn1.setEnabled(enable1);
         btn2.setEnabled(enable2);
+        final MatchExtension ext = getExtension();
+        final String actionLabel = ext == null ? null : ext.promptActionLabel();
+        if (actionLabel != null) { //the mode's main action can depend on the prompt, so it's relabelled with the buttons
+            prompt.setAction(actionLabel, ext::runPromptAction);
+        }
     }
 
     public static void setIntroShowing(final boolean showing) {

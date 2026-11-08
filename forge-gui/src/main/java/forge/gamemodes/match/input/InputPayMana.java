@@ -403,6 +403,22 @@ public abstract class InputPayMana extends InputSyncronizedBase {
         }
     }
 
+    /**
+     * Ends the prompt as if the rest of the mana cost had been paid, without tapping or spending anything. Only the
+     * mana is waived: the ability's other costs are paid as usual, and mana already spent on it stays spent. Forge's
+     * own games never call this; it's for a mode that records a game played elsewhere, where the mana was paid at the
+     * table. Any thread; ignored while Auto is paying.
+     */
+    public void acceptManaAsPaid() {
+        game.getAction().invoke(() -> {
+            if (locked || isFinished() || bPaid) {
+                return;
+            }
+            bPaid = true;
+            onStateChanged();
+        });
+    }
+
     protected void updateButtons() {
         if (supportAutoPay()) {
             getController().getGui().updateButtons(getOwner(), Localizer.getInstance().getMessage("lblAuto"), Localizer.getInstance().getMessage("lblCancel"), false, !mandatory, false);

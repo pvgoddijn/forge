@@ -30,7 +30,8 @@ import java.util.List;
 
 /**
  * What a tracked game adds to the match screen: the table's actions in the game menu, "Move…" on a card's menu, a
- * tap on a life total to set it, the prompt bar's Add card button, and leaving the match screen when the operator ends the game.
+ * tap on a life total to set it, the prompt bar's Add card button (Paid while a mana cost is asked for), and leaving
+ * the match screen when the operator ends the game.
  */
 class CompanionMatchExtension implements MatchExtension {
     private final CompanionTable table;
@@ -254,13 +255,21 @@ class CompanionMatchExtension implements MatchExtension {
         return false; // one operator answers for every seat, so one prompt the right way up
     }
 
+    /**
+     * The main thing done at the table, so it sits where the thumb is: adding a card, or while a mana cost is asked
+     * for, beside Auto, taking it as paid at the table without tapping anything.
+     */
     @Override
     public String promptActionLabel() {
-        return "Add card"; // the main thing done at the table, so it sits where the thumb is
+        return table.atPaymentPrompt() ? Forge.getLocalizer().getMessage("lblCompanionManaPaid") : "Add card";
     }
 
     @Override
     public void runPromptAction() {
+        if (table.atPaymentPrompt()) {
+            table.acceptManaAsPaid();
+            return;
+        }
         CardSearchDialog.addByPhoto(table, MatchController.instance.getGameView());
     }
 }

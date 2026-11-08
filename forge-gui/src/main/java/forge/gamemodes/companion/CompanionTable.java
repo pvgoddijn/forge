@@ -17,6 +17,7 @@ import forge.game.zone.ZoneView;
 import forge.game.zone.ZoneType;
 import forge.gamemodes.match.input.Input;
 import forge.gamemodes.match.input.InputPassPriority;
+import forge.gamemodes.match.input.InputPayMana;
 import forge.gui.interfaces.IGuiGame;
 import forge.item.PaperCard;
 
@@ -626,6 +627,33 @@ public class CompanionTable {
      */
     public boolean atPriorityPrompt() {
         return seats.stream().anyMatch(seat -> priorityPrompt(seat) != null);
+    }
+
+    /** The mana payment prompt a seat is waiting at, or null when none is. */
+    private InputPayMana paymentPrompt() {
+        for (CompanionPlayerController seat : seats) {
+            if (seat.getInputQueue().getInput() instanceof InputPayMana payment) {
+                return payment;
+            }
+        }
+        return null;
+    }
+
+    /** Whether a seat is waiting at a prompt to pay mana, as for an activated ability's cost. Any thread. */
+    public boolean atPaymentPrompt() {
+        return paymentPrompt() != null;
+    }
+
+    /**
+     * Takes the open mana payment as paid without tapping anything: the players paid at the table, so the tracker only
+     * records it. The ability's other costs ({T}, a sacrifice, life) are still paid as usual, and its activation goes
+     * on the stack as it would. Any thread; does nothing if no payment prompt is open.
+     */
+    public void acceptManaAsPaid() {
+        InputPayMana payment = paymentPrompt();
+        if (payment != null) {
+            payment.acceptManaAsPaid();
+        }
     }
 
     /**

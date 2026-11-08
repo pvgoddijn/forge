@@ -4314,4 +4314,70 @@ public class TableEditorTest extends AITest {
         game.getAction().notifyOfValue(null, bo, "Bo chose red", null);
         assertEquals(shown.size(), 3, String.valueOf(shown));
     }
+
+    /**
+     * Paid, beside Auto: an activated ability's mana was paid at the table, so its cost is taken as paid without
+     * tapping a land. Its {T} is still paid, and it resolves as usual.
+     */
+    @Test
+    public void paidTakesAnAbilitysManaAsPaidWithoutTappingLands() throws InterruptedException {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        seatEveryoneOn(game, screenAwaitingInput(), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player ann = game.getPlayers().get(0);
+        List<Card> islands = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            islands.add(addCardToZone("Island", ann, ZoneType.Battlefield));
+        }
+        Card tome = addCardToZone("Jayemdae Tome", ann, ZoneType.Battlefield);
+        forge.game.spellability.SpellAbility draw = tome.getSpellAbilities().stream()
+                .filter(sa -> sa.isActivatedAbility() && !sa.isManaAbility()).findFirst().orElseThrow();
+        draw.setActivatingPlayer(ann);
+        int hand = ann.getCardsIn(ZoneType.Hand).size();
+
+        boolean[] played = new boolean[1];
+        Thread loop = new Thread(() -> played[0] = new forge.game.player.PlaySpellAbility(ann.getController(), draw)
+                .playAbility(true, false, false), "Game loop (test)");
+        loop.start();
+        for (int i = 0; i < 200 && !table.atPaymentPrompt(); i++) {
+            Thread.sleep(25);
+        }
+        assertTrue(table.atPaymentPrompt(), "the {4} is asked for");
+        table.acceptManaAsPaid();
+        loop.join(5000);
+        assertFalse(loop.isAlive(), "the payment prompt closed");
+
+        assertTrue(played[0], "the ability was activated");
+        assertFalse(table.atPaymentPrompt());
+        assertTrue(islands.stream().noneMatch(Card::isTapped), "no land was tapped");
+        assertTrue(tome.isTapped(), "the rest of the cost is paid as usual");
+        resolveAll(game);
+        assertEquals(ann.getCardsIn(ZoneType.Hand).size(), hand + 1, "it resolved: Ann drew");
+    }
+
+    /** A screen that shows nothing, but waits for each prompt to be answered as the match screen does. */
+    private static forge.gui.interfaces.IGuiGame screenAwaitingInput() {
+        return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
+                TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("awaitInput")) {
+                        ((java.util.concurrent.CountDownLatch) args[0]).await();
+                        return null;
+                    }
+                    Class<?> type = method.getReturnType();
+                    if (type == boolean.class) {
+                        return false;
+                    }
+                    if (type == int.class) {
+                        return 0;
+                    }
+                    if (type.isPrimitive() && type != void.class) {
+                        throw new UnsupportedOperationException(method.getName());
+                    }
+                    return null;
+                });
+    }
 }
