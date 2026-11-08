@@ -11,5 +11,9 @@ _Last updated 2026-11-08._
 ## Before asking the maintainers
 - [ ] Beta-test the finished feature at a real table first (owner's call, 2026-11-08). Only then contact Card-Forge maintainers, with the changes to network play listed (FGameClient hooks, `ProtocolGuiGame.attachMidGame`, flush timing, `RemoteClient.getReplyPool`, the `MatchController.getExtension` change) and the two `forge-game` null checks from the Paid button.
 
+## Strings to update when their slice lands
+- [ ] `lblCompanionJoinHow` ("only the host changes it") is wrong once M2 lands: update it in M2-1.
+- [ ] `lblCompanionShareHow` says only "type the code": add scanning in slice 08.
+
 ## Manual checks not yet done
 - [ ] Slice 00 UI: share and join between two mobile-dev instances (recipe and steps in `slices/00-walking-skeleton.md`, Results). Not run: this machine can't drive the UI.

@@ -38,6 +38,8 @@ Plan 2.1 (`MatchExtension`, `MatchController`), 2.2 (`CompanionDevice`, `Compani
 - **`ShareDialog`:** a "Phones" section: device name, seat or "watching", connected, Remove (with a confirmation).
 - **`CompanionSetupScreen`:** "Join game" with an unfinished own game asks to end it first (`CompanionStore.loadActive`, `CompanionStore.java:352-376`; Q29). A followed copy (`share.json` role `joined`) counts as that game too.
 
+- **Spectator warning:** the share dialog shows a warning when more devices are connected than the safe number measured in slice 01 (Results, [Phone] step 8). It is not a hard cap: more devices can still join (spec AC-104).
+
 ### Protocol involved
 `hello`(device) → `welcome`(roster) → `claim` → catch-up → attach; live `roster`; `removed`.
 

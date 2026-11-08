@@ -92,7 +92,7 @@ Design constraint across all milestones: from M1 on, every joined phone keeps th
 7. Automatic duplicate detection.
 8. Automatic takeover safeguards: checking other phones for newer actions before a takeover, and settling two takeovers at once (was AC-126). M3 is a manual takeover; see `plan.md` N11.
 
-Nice-to-have, if cheap: desktop Forge as a joined phone ("table display"), and automatic discovery of games on the local network.
+Nice-to-have, if cheap: automatic discovery of games on the local network. A big-screen table display needs nothing extra: the Forge mobile build on a laptop (`forge-gui-mobile-dev`) already joins as a spectator.
 
 ## 7. Constraints
 
