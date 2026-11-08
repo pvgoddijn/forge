@@ -45,7 +45,7 @@ public abstract class InputPayMana extends InputSyncronizedBase {
     private final boolean wasFloatingMana;
     private final Queue<Card> delaySelectCards = new LinkedList<>();
 
-    private boolean bPaid = false;
+    private volatile boolean bPaid = false; // volatile: Paid's guard reads it on the UI thread
     /** null = not yet evaluated, or not payable; otherwise cards Auto would tap */
     private CardCollection autoPayManaSources = null;
     private boolean autoPayManaSourcesKnown = false;
@@ -408,12 +408,14 @@ public abstract class InputPayMana extends InputSyncronizedBase {
     /**
      * Ends the prompt with the mana cost paid without tapping anything. Forge's own games never call this; it's for a
      * mode that records a game played elsewhere, where the mana was paid at the table. Mana floating in the pool is
-     * used first, as a payment by hand would use it; the rest is paid with mana that comes from nowhere, one of the
-     * cost's own colours for each coloured shard and colourless for generic, recorded as spent as any mana is, so
-     * sunburst, converge, "if {R} was spent" and X by colour see the cost's colours. Mana already spent on it stays
-     * spent, Phyrexian life already chosen is paid, and the ability's other costs are paid as usual. A snow shard,
-     * which that mana can't pay, is waived without any. If a later cost is cancelled, that mana is refunded to the
-     * pool like any other and empties from it at the end of the step.
+     * used first, as a payment by hand would use it; the rest is paid with mana that comes from nowhere, recorded as
+     * spent as any mana is: for each shard, one of its colours (a hybrid, {2/W}, Phyrexian or coloured X shard pays
+     * with its first colour) and colourless only for a shard with no colour. So sunburst, converge, "if {R} was spent"
+     * and a coloured X's paid colours see the cost's colours. That mana's source is a blank card of no type, not
+     * snow, so "mana from a creature/artifact/snow source" checks don't see it; a snow shard, which it can't pay, is
+     * waived with none. Mana already spent on it stays spent, Phyrexian life already chosen is paid, and the
+     * ability's other costs are paid as usual. If a later cost is cancelled, that mana is refunded to the pool like
+     * any other and empties from it at the end of the step.
      * <p>
      * Called on the UI thread, as Auto is; ignored while Auto or an earlier call is paying, or once the prompt is done.
      */
@@ -423,33 +425,49 @@ public abstract class InputPayMana extends InputSyncronizedBase {
         }
         locked = true; // as Auto does, so a second tap, or Auto after this, pays nothing twice
         game.getAction().invoke(() -> {
-            player.getManaPool().payManaCostFromPool(manaCost, saPaidFor, false, saPaidFor.getPayingMana());
-            spendManaFromNowhere();
-            bPaid = true;
-            onStateChanged();
+            if (bPaid || isFinished()) {
+                return; // an earlier tap's payment, queued before this one; updateMessage may have unlocked meanwhile
+            }
+            try {
+                player.getManaPool().payManaCostFromPool(manaCost, saPaidFor, false, saPaidFor.getPayingMana());
+                spendManaFromNowhere();
+                bPaid = true;
+            } finally {
+                showMessage(); // ends the prompt once paid; if the payment threw, unlocks it and shows it again
+            }
         });
     }
 
     private void spendManaFromNowhere() {
-        final List<ManaCostShard> unpaid = manaCost.getUnpaidShards();
-        Collections.sort(unpaid); // the hardest shards first, as the pool pays them
-        for (final ManaCostShard shard : unpaid) {
-            if (shard == ManaCostShard.X || manaCost.isPaid()) {
-                continue;
+        final Card source = new Card(game.nextCardId(), game); // no types, not snow, in no zone
+        source.setOwner(player);
+        // paying a {2/W} with colourless would add a generic shard, so the shards are read again after each payment
+        for (int i = 0; i < 100 && !manaCost.isPaid(); i++) {
+            final List<ManaCostShard> unpaid = manaCost.getUnpaidShards();
+            unpaid.removeIf(shard -> shard == ManaCostShard.X);
+            if (unpaid.isEmpty()) {
+                return;
             }
-            final Mana mana = new Mana(colorToPay(shard), saPaidFor.getHostCard(), null, player);
-            if (manaCost.isNeeded(mana, player.getManaPool()) && manaCost.payMana(mana, player.getManaPool())) {
-                saPaidFor.getPayingMana().add(mana);
+            Collections.sort(unpaid); // the hardest shards first, as the pool pays them
+            boolean paidOne = false;
+            for (final ManaCostShard shard : unpaid) {
+                final Mana mana = new Mana(colorToPay(shard), source, null, player);
+                if (manaCost.isNeeded(mana, player.getManaPool()) && manaCost.payMana(mana, player.getManaPool())) {
+                    saPaidFor.getPayingMana().add(mana);
+                    paidOne = true;
+                    break;
+                }
+            }
+            if (!paidOne) {
+                return; // only shards this mana can't pay are left, such as snow: they're waived with none
             }
         }
     }
 
     private static byte colorToPay(final ManaCostShard shard) {
-        if (!shard.isGeneric() && !shard.isColorless()) {
-            for (final byte color : MagicColor.WUBRG) {
-                if (shard.isColor(color)) {
-                    return color;
-                }
+        for (final byte color : MagicColor.WUBRG) {
+            if (shard.isColor(color)) {
+                return color;
             }
         }
         return (byte) ManaAtom.COLORLESS;

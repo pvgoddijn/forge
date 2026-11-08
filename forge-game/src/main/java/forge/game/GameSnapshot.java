@@ -220,7 +220,9 @@ public class GameSnapshot {
             return m;
         }
         Mana newMana = new Mana(m.getColor(), toCard, m.getManaAbility(), toPlayer);
-        newMana.getManaAbility().setSourceCard(toCard);
+        if (newMana.getManaAbility() != null) { // mana from no ability, as Companion's Paid spends
+            newMana.getManaAbility().setSourceCard(toCard);
+        }
         return newMana;
     }
 

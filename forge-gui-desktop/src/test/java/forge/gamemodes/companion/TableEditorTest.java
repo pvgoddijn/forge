@@ -4319,31 +4319,25 @@ public class TableEditorTest extends AITest {
         assertEquals(shown.size(), 3, String.valueOf(shown));
     }
 
-    /**
-     * Paid, beside Auto: an activated ability's mana was paid at the table, so the cost is taken as paid without
-     * tapping a land. Floating mana is used first; the rest is recorded as spent in the cost's own colours. Its {T} is
-     * still paid, and it resolves as usual.
-     */
-    @Test
-    public void paidTakesAnAbilitysManaAsPaidWithoutTappingLands() throws InterruptedException {
-        Game game = startTable();
+    /** A table whose seats are Companion's own, on a screen that waits for each prompt as the match screen does. */
+    private CompanionTable seatTheTable(Game game) {
         CompanionSetup setup = CompanionSetup.withDefaults(List.of(
                 new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
         CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
         seatEveryoneOn(game, screenRecordingReveals(new ArrayList<>()), p ->
                 new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
-        Player ann = game.getPlayers().get(0);
-        Card plains = addCardToZone("Plains", ann, ZoneType.Battlefield);
-        Card mountain = addCardToZone("Mountain", ann, ZoneType.Battlefield);
-        Card obelisk = addCardToZone("Obelisk of Alara", ann, ZoneType.Battlefield);
-        forge.game.spellability.SpellAbility gain = obelisk.getSpellAbilities().stream()
-                .filter(sa -> sa.isActivatedAbility() && sa.getApi() == forge.game.ability.ApiType.GainLife)
-                .findFirst().orElseThrow(); // {1}{W}, {T}: You gain 5 life.
-        gain.setActivatingPlayer(ann);
-        ann.getManaPool().addMana(new forge.game.mana.Mana(forge.card.MagicColor.RED, mountain, null, ann));
+        return table;
+    }
 
+    /**
+     * Plays {@code sa} for {@code player} on a game loop of its own, and taps Paid {@code taps} times at its mana
+     * prompt. Returns whether it was played, and the colours recorded as spent on it, sorted.
+     */
+    private static List<Byte> playWithPaid(Game game, CompanionTable table, Player player,
+            forge.game.spellability.SpellAbility sa, int taps) throws InterruptedException {
+        sa.setActivatingPlayer(player);
         boolean[] played = new boolean[1];
-        Thread loop = new Thread(() -> played[0] = new forge.game.player.PlaySpellAbility(ann.getController(), gain)
+        Thread loop = new Thread(() -> played[0] = new forge.game.player.PlaySpellAbility(player.getController(), sa)
                 .playAbility(true, false, false), "Game loop (test)");
         loop.setDaemon(true);
         try {
@@ -4351,31 +4345,75 @@ public class TableEditorTest extends AITest {
             forge.gamemodes.match.input.InputPayMana payment = null;
             for (int i = 0; i < 200 && payment == null; i++) {
                 Thread.sleep(25);
-                payment = table.paymentPrompt(ann.getView());
+                payment = table.paymentPrompt(player.getView());
             }
-            assertTrue(payment != null, "the {1}{W} is asked for");
-            table.acceptManaAsPaid(payment);
-            table.acceptManaAsPaid(payment); // a second tap pays nothing twice
+            assertTrue(payment != null, "the mana is asked for");
+            for (int i = 0; i < taps; i++) {
+                table.acceptManaAsPaid(payment);
+            }
             loop.join(5000);
             assertFalse(loop.isAlive(), "the payment prompt closed");
         } finally {
             loop.interrupt();
         }
-
-        assertTrue(played[0], "the ability was activated");
+        assertTrue(played[0], sa + " was played");
         assertFalse(table.atPaymentPrompt());
-        assertFalse(plains.isTapped() || mountain.isTapped(), "no land was tapped");
-        assertTrue(obelisk.isTapped(), "the rest of the cost is paid as usual");
-        assertTrue(ann.getManaPool().isEmpty(), "the floating red was spent on it");
         List<Byte> spent = new ArrayList<>();
         for (forge.game.mana.Mana m : game.getStack().peekAbility().getPayingMana()) {
             spent.add(m.getColor());
+            assertFalse(m.isSnow(), "the mana comes from no snow source");
         }
         spent.sort(null);
+        return spent;
+    }
+
+    /**
+     * Paid, beside Auto: an activated ability's mana was paid at the table, so the cost is taken as paid without
+     * tapping a land. Floating mana is used first; the rest is recorded as spent in the cost's own colours. Its {T} is
+     * still paid, a second tap pays nothing twice, and it resolves as usual.
+     */
+    @Test
+    public void paidTakesAnAbilitysManaAsPaidWithoutTappingLands() throws InterruptedException {
+        Game game = startTable();
+        CompanionTable table = seatTheTable(game);
+        Player ann = game.getPlayers().get(0);
+        Card plains = addCardToZone("Plains", ann, ZoneType.Battlefield);
+        Card mountain = addCardToZone("Mountain", ann, ZoneType.Battlefield);
+        Card obelisk = addCardToZone("Obelisk of Alara", ann, ZoneType.Battlefield);
+        forge.game.spellability.SpellAbility gain = obelisk.getSpellAbilities().stream()
+                .filter(sa -> sa.isActivatedAbility() && sa.getApi() == forge.game.ability.ApiType.GainLife)
+                .findFirst().orElseThrow(); // {1}{W}, {T}: You gain 5 life.
+        ann.getManaPool().addMana(new forge.game.mana.Mana(forge.card.MagicColor.RED, mountain, null, ann));
+
+        List<Byte> spent = playWithPaid(game, table, ann, gain, 2);
+
+        assertFalse(plains.isTapped() || mountain.isTapped(), "no land was tapped");
+        assertTrue(obelisk.isTapped(), "the rest of the cost is paid as usual");
+        assertTrue(ann.getManaPool().isEmpty(), "the floating red was spent on it");
         assertEquals(spent, List.of(forge.card.MagicColor.WHITE, forge.card.MagicColor.RED),
                 "spent as the cost's colours, so 'if {W} was spent' sees it");
         int life = ann.getLife();
         resolveAll(game);
         assertEquals(ann.getLife(), life + 5, "it resolved");
+    }
+
+    /** Paid pays a {2/W} with white, not colourless and a generic left over, and a Phyrexian {W/P} once, with white. */
+    @Test
+    public void paidPaysTwoBridAndPhyrexianShardsWithTheirColour() throws InterruptedException {
+        Game game = startTable();
+        CompanionTable table = seatTheTable(game);
+        Player ann = game.getPlayers().get(0);
+        byte w = forge.card.MagicColor.WHITE;
+        byte c = (byte) forge.card.mana.ManaAtom.COLORLESS;
+
+        Card procession = addCardToZone("Spectral Procession", ann, ZoneType.Hand); // {2/W}{2/W}{2/W}
+        assertEquals(playWithPaid(game, table, ann, procession.getFirstSpellAbility(), 1), List.of(w, w, w));
+        resolveAll(game);
+
+        int life = ann.getLife();
+        Card legionnaire = addCardToZone("Porcelain Legionnaire", ann, ZoneType.Hand); // {2}{W/P}
+        assertEquals(playWithPaid(game, table, ann, legionnaire.getFirstSpellAbility(), 2), List.of(w, c, c),
+                "a double tap pays it once");
+        assertEquals(ann.getLife(), life, "the Phyrexian shard was paid with mana, not life");
     }
 }

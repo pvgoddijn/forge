@@ -620,7 +620,9 @@ public class MagicStack /* extends MyObservable */ implements Iterable<SpellAbil
         } else {
             clearUndoStack(sa);
             for (Mana pay : sa.getPayingMana()) {
-                clearUndoStack(pay.getManaAbility().getSourceSA());
+                if (pay.getManaAbility() != null) { // mana from no ability, as Companion's Paid spends
+                    clearUndoStack(pay.getManaAbility().getSourceSA());
+                }
             }
         }
         return true;
