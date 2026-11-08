@@ -280,6 +280,11 @@ public class CompanionTable {
         return setup;
     }
 
+    /** The store the table writes its game to: a share journals it ({@code ShareJournal}). */
+    public CompanionStore store() {
+        return store;
+    }
+
     /** The seats of the running game, one per player, or none before a game runs. A view attaches to their inputs. */
     public List<CompanionPlayerController> seats() {
         return Collections.unmodifiableList(seats);

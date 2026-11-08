@@ -144,6 +144,11 @@ public class CompanionStore {
         return dir;
     }
 
+    /** The folder of the game {@code id}, for the files a shared game keeps beside its own ({@code share.json}). */
+    public File gameDir(String id) {
+        return new File(dir, id);
+    }
+
     /** Tells {@code journal} of every write from now on, or nothing when it's null. */
     public void setJournal(Journal journal) {
         this.journal = journal;

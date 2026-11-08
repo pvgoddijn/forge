@@ -10,6 +10,7 @@ import forge.game.zone.ZoneType;
 import forge.gamemodes.companion.share.CompanionClient;
 import forge.gamemodes.companion.share.CompanionShareHost;
 import forge.gamemodes.companion.share.JoinCode;
+import forge.gamemodes.companion.share.ShareState;
 import forge.gamemodes.match.GameLobby;
 import forge.gamemodes.net.ChatMessage;
 import forge.gamemodes.net.client.ClientGameLobby;
@@ -27,6 +28,7 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -54,13 +56,58 @@ public class CompanionShareEndToEndTest extends AITest {
     private static CompanionTable newTable() {
         try {
             File dir = Files.createTempDirectory("companion-share").toFile();
-            assertTrue(new File(dir, "t").mkdir());
             CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
                     new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
-            return new CompanionTable("t", setup, new CompanionStore(dir));
+            CompanionStore store = new CompanionStore(dir);
+            store.createWithId("t", setup); // as the setup screen's create does, under a fixed id
+            return new CompanionTable("t", setup, store);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** A phone's own Companion store, empty. */
+    private static CompanionStore tempStore() {
+        try {
+            return new CompanionStore(Files.createTempDirectory("companion-phone").toFile());
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static byte[] logBytes(CompanionStore store, String game) {
+        File log = new File(store.gameDir(game), "log.txt");
+        try {
+            return log.exists() ? Files.readAllBytes(log.toPath()) : new byte[0];
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    private static boolean sameLog(CompanionStore host, CompanionStore phone, String game) {
+        return Arrays.equals(logBytes(host, game), logBytes(phone, game));
+    }
+
+    /** A table with a running three-player game, its start saved, at its first prompt. */
+    private CompanionTable startedTable(Game game) {
+        CompanionTable table = newTable();
+        for (Player p : game.getPlayers()) {
+            new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table);
+        }
+        table.startFromLatest(game);
+        table.atPrompt(game);
+        return table;
+    }
+
+    private static void addCard(CompanionTable table, Game game, String card) {
+        act(table, game, new CompanionTable.AddCard(game.getPhaseHandler().getPlayerTurn().getName(), card, false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+    }
+
+    private static void undo(CompanionTable table, Game game) {
+        table.undo();
+        assertTrue(table.runPending(game));
+        flushViews(table);
     }
 
     /** A device whose {@code holdLocalNetwork} calls land in {@code binds}. */
@@ -140,7 +187,8 @@ public class CompanionShareEndToEndTest extends AITest {
         JoinCode wrong = new JoinCode(code.address(), code.port(), code.token() + 1);
         HeadlessNetworkGuiGame wrongView = new HeadlessNetworkGuiGame();
         List<Boolean> binds = new CopyOnWriteArrayList<>();
-        CompanionClient intruder = new CompanionClient("Intruder", wrongView, wrong, recordingDevice(binds));
+        CompanionClient intruder = new CompanionClient("Intruder", wrongView, wrong, recordingDevice(binds),
+                tempStore());
         AtomicBoolean closed = new AtomicBoolean();
         intruder.addLobbyListener(new ILobbyListener() {
             @Override
@@ -198,7 +246,7 @@ public class CompanionShareEndToEndTest extends AITest {
             // the game has started: a client joins by the code, and is attached at the loop's next prompt
             HeadlessNetworkGuiGame view = new HeadlessNetworkGuiGame();
             List<Boolean> binds = new CopyOnWriteArrayList<>();
-            client = new CompanionClient("Joiner", view, typed, recordingDevice(binds));
+            client = new CompanionClient("Joiner", view, typed, recordingDevice(binds), tempStore());
             client.connect();
             assertEquals(binds, List.of(true), "held the local network before connecting");
             CompanionClient joined = client;
@@ -275,6 +323,133 @@ public class CompanionShareEndToEndTest extends AITest {
         } finally {
             if (client != null) {
                 client.close();
+            }
+            host.stop();
+        }
+    }
+
+    /** AC-105, the log: a phone joining after undos gets the host's log byte for byte, each entry live, the end. */
+    @Test(timeOut = 120_000)
+    public void aPhoneJoiningAfterUndosGetsAnIdenticalLog() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        CompanionStore hostStore = table.store();
+        addCard(table, game, "Grizzly Bears");
+        addCard(table, game, "Llanowar Elves");
+        undo(table, game);
+        addCard(table, game, "Forest");
+        addCard(table, game, "Mountain");
+        assertTrue(hostStore.loadLog("t").stream().anyMatch(e -> e.kind() == CompanionLogEntry.Kind.UNDO),
+                "the host's log has an undo in it");
+
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionStore phone = tempStore();
+        List<String> ended = new CopyOnWriteArrayList<>();
+        CompanionClient client = null;
+        try {
+            host.start();
+            JoinCode code = host.codeAt((Inet4Address) InetAddress.getByName("127.0.0.1"));
+            HeadlessNetworkGuiGame view = new HeadlessNetworkGuiGame();
+            client = new CompanionClient("Joiner", view, code, phone);
+            client.addCopyListener(new CompanionClient.CopyListener() {
+                @Override
+                public void ended(String game) {
+                    ended.add(game);
+                }
+            });
+            client.connect();
+            CompanionClient joined = client;
+            await(() -> joined.epoch() >= 1 && view.isOpenViewCalled(), table::runSystemOps, "the attach");
+            await(() -> sameLog(hostStore, phone, "t"), () -> { }, "the phone's log is the host's");
+            assertTrue(logBytes(phone, "t").length > 0, "the phone has the history");
+            assertEquals(phone.gameDir("t").getParentFile().list(), new String[] { "t" },
+                    "the phone's only folder has the host's game id");
+            ShareState state = ShareState.read(phone, "t").orElseThrow();
+            assertEquals(state.role(), ShareState.Role.JOINED);
+            assertEquals(state.code(), code, "the host's address, port and token, to join again");
+            assertEquals(phone.loadSetup("t"), table.setup(), "the host's setup");
+
+            // an entry after the join comes live
+            addCard(table, game, "Island");
+            flushViews(table);
+            long latest = hostStore.loadLogLines("t").size();
+            await(() -> joined.heldSeq() == latest, () -> { }, "the entry after the join");
+            assertTrue(sameLog(hostStore, phone, "t"), "the logs are the same after a live entry");
+
+            // the host ends the game: the phone's copy is ended too
+            hostStore.end("t");
+            await(() -> phone.isEnded("t"), () -> { }, "the end on the phone");
+            assertEquals(ended, List.of("t"), "the listener heard of the end once it was written");
+            assertTrue(sameLog(hostStore, phone, "t"), "the logs are the same at the end");
+            assertFalse(phone.loadActive().isPresent(), "an ended copy isn't the phone's active game");
+        } finally {
+            if (client != null) {
+                client.close();
+            }
+            host.stop();
+        }
+    }
+
+    /** A phone joining again with part of the log gets only the entries it lacks (AC-105). */
+    @Test(timeOut = 120_000)
+    public void aPhoneJoiningAgainGetsOnlyTheMissingEntries() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        CompanionStore hostStore = table.store();
+        addCard(table, game, "Grizzly Bears");
+        undo(table, game);
+        addCard(table, game, "Forest");
+
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionStore phone = tempStore();
+        CompanionClient first = null;
+        CompanionClient again = null;
+        try {
+            host.start();
+            JoinCode code = host.codeAt((Inet4Address) InetAddress.getByName("127.0.0.1"));
+            HeadlessNetworkGuiGame view = new HeadlessNetworkGuiGame();
+            first = new CompanionClient("Joiner", view, code, phone);
+            first.connect();
+            CompanionClient joined = first;
+            await(() -> joined.epoch() >= 1, table::runSystemOps, "the first attach");
+            await(() -> sameLog(hostStore, phone, "t"), () -> { }, "the first copy");
+            long had = joined.heldSeq();
+            assertTrue(had > 0);
+            first.close();
+            await(() -> host.peerCount() == 0, table::runSystemOps, "the host seeing the phone go");
+
+            // the host goes on without the phone
+            addCard(table, game, "Island");
+            addCard(table, game, "Mountain");
+            long latest = hostStore.loadLogLines("t").size();
+            assertTrue(latest > had + 1);
+
+            // "Join again": the hello says what the copy holds, and only the rest comes
+            List<long[]> sent = new CopyOnWriteArrayList<>();
+            HeadlessNetworkGuiGame view2 = new HeadlessNetworkGuiGame();
+            again = new CompanionClient("Joiner", view2, code, phone);
+            again.addCopyListener(new CompanionClient.CopyListener() {
+                @Override
+                public void written(String game, long fromSeq, long toSeq) {
+                    sent.add(new long[] { fromSeq, toSeq });
+                }
+            });
+            again.followAgain("t");
+            assertEquals(again.heldSeq(), had, "the copy's last seq, read from the store");
+            again.connect();
+            CompanionClient rejoined = again;
+            await(() -> rejoined.epoch() >= 1, table::runSystemOps, "the second attach");
+            await(() -> rejoined.heldSeq() == latest, () -> { }, "the missing entries");
+            assertEquals(sent.size(), 1, "one catch-up message");
+            assertEquals(sent.get(0)[0], had + 1, "starting after what the copy held");
+            assertEquals(sent.get(0)[1], latest);
+            assertTrue(sameLog(hostStore, phone, "t"), "the logs are the same after joining again");
+        } finally {
+            if (first != null) {
+                first.close();
+            }
+            if (again != null) {
+                again.close();
             }
             host.stop();
         }

@@ -11,6 +11,7 @@ import forge.gamemodes.net.ReplyPool;
 import forge.gamemodes.net.event.GuiGameEvent;
 import forge.gamemodes.net.event.HeartbeatEvent;
 import forge.gamemodes.net.event.LoginEvent;
+import forge.gamemodes.net.event.NetEvent;
 import forge.gamemodes.net.event.ReplyEvent;
 import forge.gamemodes.net.server.RemoteClient;
 import forge.interfaces.IGameController;
@@ -38,6 +39,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -52,6 +54,12 @@ import java.util.concurrent.atomic.AtomicInteger;
  * {@link ShareMessages.Welcome}, then the phone is attached as a {@link CompanionPeer}. A wrong token, or anything else
  * first, closes the connection. Every phone is a read-only spectator in M1 (AC-108). Netty's threads never touch the
  * game or the UI: the attach and detach go to the game loop through {@link CompanionTable#runSystem}.
+ *
+ * <p>The data stream (plan 3.3): while shared, the table's store feeds a {@link ShareJournal}. A phone admitted
+ * {@link ShareJournal#subscribe subscribes} with the {@code have} of its hello and gets, in this order, the welcome
+ * (setup and latest seq), its catch-up, then the attach, and then each item the store writes, live, in write order.
+ * Each phone's data is sent from its connection's event loop: the store's wakeup only schedules a drain there, so the
+ * game thread never waits for a phone.
  */
 public final class CompanionShareHost implements IHasForgeLog {
     /** The Companion port, one above net play's 36743; the next free one up to {@link #LAST_PORT} if it's taken. */
@@ -76,6 +84,8 @@ public final class CompanionShareHost implements IHasForgeLog {
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
     private int port;
+    /** The table's journal while shared, else null. */
+    private volatile ShareJournal journal;
 
     /** Shares {@code table} with a fresh random token (kept across restarts from slice 04). */
     public CompanionShareHost(CompanionTable table) {
@@ -99,6 +109,8 @@ public final class CompanionShareHost implements IHasForgeLog {
         if (serverChannel != null) {
             return port;
         }
+        // before listening, so every phone finds it; with no phone it only fills memory (AC-114)
+        journal = ShareJournal.install(table.store(), table.id());
         bossGroup = new NioEventLoopGroup(1);
         workerGroup = new NioEventLoopGroup();
         ServerBootstrap bootstrap = new ServerBootstrap()
@@ -136,6 +148,10 @@ public final class CompanionShareHost implements IHasForgeLog {
 
     /** Stops listening and lets every phone go. Stopping a stopped share does nothing. Any thread. */
     public synchronized void stop() {
+        if (journal != null) {
+            table.store().setJournal(null); // the store writes as unshared again
+            journal = null;
+        }
         for (CompanionPeer peer : peers) {
             peer.close();
         }
@@ -203,6 +219,8 @@ public final class CompanionShareHost implements IHasForgeLog {
         private RemoteClient client;
         private boolean loggedIn;
         private volatile CompanionPeer peer;
+        /** This phone's place in the journal, once admitted; closed when the connection closes. */
+        private volatile ShareJournal.Subscription data;
 
         Admission(NetworkByteTracker bytes) {
             this.bytes = bytes;
@@ -253,14 +271,46 @@ public final class CompanionShareHost implements IHasForgeLog {
                 ctx.close();
                 return;
             }
+            ShareJournal shared = journal;
+            if (shared == null) {
+                netLog.warn("[Companion] Closing {}: the share has stopped", ctx.channel().remoteAddress());
+                ctx.close();
+                return;
+            }
             CompanionPeer joined = new CompanionPeer(table, client, ctx::close, meter, bytes);
             peer = joined;
             peers.add(joined);
-            // no journal yet, so no seq to give: the data stream joins this in slice 02's wiring
-            client.send(new ShareMessages.Welcome(table.id(), table.setup(), 0));
+            // what the phone holds counts only for this game: a phone that followed another starts from nothing
+            long have = table.id().equals(hello.game()) ? hello.have() : ShareMessages.Hello.NOTHING;
+            // the wakeup runs on the writing thread under the store's lock: it only schedules a drain on this
+            // connection's event loop, which sends everything for this phone, so in order
+            ShareJournal.Subscription subscription = shared.subscribe(have, () -> scheduleDrain(ctx));
+            data = subscription;
+            client.send(new ShareMessages.Welcome(table.id(), subscription.setup(), subscription.latestSeq()));
+            drain(); // the catch-up, before the view: on this event loop, so ahead of any live item's drain
             joined.attach();
             netLog.info("[Companion] {} joined {} from {}", client.getUsername(), table.id(),
                     ctx.channel().remoteAddress());
+        }
+
+        private void scheduleDrain(ChannelHandlerContext ctx) {
+            try {
+                ctx.executor().execute(this::drain);
+            } catch (RejectedExecutionException e) {
+                // the share is stopping: the phone goes with it, and the store's write mustn't fail for that
+                netLog.info("[Companion] Not sending to {}: the share is stopping", client.getUsername());
+            }
+        }
+
+        /** Sends this phone what its subscription has queued, oldest first. The connection's event loop. */
+        private void drain() {
+            ShareJournal.Subscription subscription = data;
+            if (subscription == null) {
+                return;
+            }
+            for (NetEvent message : subscription.drain()) {
+                client.send(message);
+            }
         }
 
         @Override
@@ -276,6 +326,11 @@ public final class CompanionShareHost implements IHasForgeLog {
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            ShareJournal.Subscription subscription = data;
+            if (subscription != null) {
+                subscription.close();
+                data = null;
+            }
             CompanionPeer left = peer;
             if (left != null) {
                 left.close();

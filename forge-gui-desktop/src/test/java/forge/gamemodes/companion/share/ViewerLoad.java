@@ -80,7 +80,7 @@ public final class ViewerLoad {
         final AtomicLong bytes = new AtomicLong();
 
         CountingClient(String name, JoinCode code) {
-            super(name, new HeadlessNetworkGuiGame(), code);
+            super(name, new HeadlessNetworkGuiGame(), code, phoneStore());
         }
 
         /**
@@ -105,6 +105,16 @@ public final class ViewerLoad {
                     ctx.pipeline().replace(this, null, data);
                 }
             };
+        }
+    }
+
+    /** A phone's own Companion store, in a fresh temp folder. */
+    private static forge.gamemodes.companion.CompanionStore phoneStore() {
+        try {
+            return new forge.gamemodes.companion.CompanionStore(
+                    java.nio.file.Files.createTempDirectory("companion-phone").toFile());
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
         }
     }
 }

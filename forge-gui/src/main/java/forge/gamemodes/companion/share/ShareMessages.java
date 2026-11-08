@@ -29,7 +29,7 @@ public final class ShareMessages {
         public static final long NOTHING = 0;
 
         private final int token;
-        /** The game this phone followed before, or null on a first join. Unused until slice 04. */
+        /** The game this phone holds a copy of, or null on a first join: {@link #have} counts only for it. */
         private final String game;
         private final long have;
 

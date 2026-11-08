@@ -95,7 +95,7 @@ public class CompanionSetupScreen extends LaunchScreen {
         btnFewer.setCommand(e -> setPlayerCount(playerCount - 1));
         btnMore.setCommand(e -> setPlayerCount(playerCount + 1));
         btnPastGames.setCommand(e -> Forge.openScreen(new CompanionPastGamesScreen(store)));
-        btnJoinGame.setCommand(e -> Forge.openScreen(new JoinGameScreen()));
+        btnJoinGame.setCommand(e -> Forge.openScreen(new JoinGameScreen(store)));
         updateRows();
     }
 

@@ -52,7 +52,7 @@ public class CompanionClientLocalNetworkTest {
     /** Lets a test say what net play's reconnect would. */
     private static final class Client extends CompanionClient {
         Client(JoinCode code, IDeviceAdapter device) {
-            super("Joiner", new HeadlessNetworkGuiGame(), code, device);
+            super("Joiner", new HeadlessNetworkGuiGame(), code, device, phoneStore());
         }
 
         void reconnect(ReconnectState state) {
@@ -125,6 +125,16 @@ public class CompanionClientLocalNetworkTest {
                 }
                 assertEquals(device.holds, List.of(true, false), "close() after that makes no second call");
             }
+        }
+    }
+
+    /** A phone's own Companion store, in a fresh temp folder. */
+    private static forge.gamemodes.companion.CompanionStore phoneStore() {
+        try {
+            return new forge.gamemodes.companion.CompanionStore(
+                    java.nio.file.Files.createTempDirectory("companion-phone").toFile());
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
         }
     }
 }

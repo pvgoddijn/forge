@@ -3,6 +3,7 @@ package forge.screens.companion;
 import com.badlogic.gdx.utils.Align;
 import forge.Forge;
 import forge.assets.FSkinFont;
+import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.share.CompanionClient;
 import forge.gamemodes.companion.share.JoinCode;
 import forge.gamemodes.match.GameLobby.GameLobbyData;
@@ -42,9 +43,12 @@ public class JoinGameScreen extends FScreen {
     private final FTextArea lblStatus = add(new FTextArea(false));
     /** The join under way or on screen, or null. UI thread. */
     private Attempt attempt;
+    /** Where the copy of the followed game is kept: Companion's own store. */
+    private final CompanionStore store;
 
-    public JoinGameScreen() {
+    public JoinGameScreen(CompanionStore store) {
         super(Forge.getLocalizer().getMessage("lblCompanionJoinGame"));
+        this.store = store;
         txtCode.setFont(CODE_FONT);
         txtCode.setAlignment(Align.center);
         txtCode.setGhostText("XXXX-XXXX-XXXX-XXXX");
@@ -99,7 +103,8 @@ public class JoinGameScreen extends FScreen {
             this.code = code;
             IGuiGame gui = GuiBase.getInterface().getNewGuiGame();
             MatchController.setExtension(extension);
-            client = new CompanionClient(playerName(), gui, code, Forge.getDeviceAdapter()); // joins over Wi-Fi with mobile data on
+            // joins over Wi-Fi with mobile data on
+            client = new CompanionClient(playerName(), gui, code, Forge.getDeviceAdapter(), store);
             extension.setClient(client);
             // before the host seats this device, a closed connection isn't retried: the client tells its listeners
             client.addLobbyListener(new ILobbyListener() {
