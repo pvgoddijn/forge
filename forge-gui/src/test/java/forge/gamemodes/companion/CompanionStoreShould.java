@@ -758,6 +758,102 @@ public class CompanionStoreShould {
         assertThat(phone.appendLog(id, notice("mine")).entry().seq()).isEqualTo(3);
     }
 
+    /** M3: an append after copied entries on the same store, whose last seq was already known, numbers after them. */
+    @Test
+    public void numberAnAppendAfterCopiedEntriesOnTheSameStore() throws IOException {
+        CompanionStore phone = follower();
+        assertThat(phone.appendLog(id, notice("mine")).entry().seq()).isEqualTo(1);
+        phone.appendVerbatim(id, List.of(Verbatim.entry(2, notice("theirs").withSeq(2).toLine()), Verbatim.gap(3)));
+
+        assertThat(phone.appendLog(id, notice("mine again")).entry().seq()).isEqualTo(4);
+    }
+
+    /**
+     * A phone killed while writing leaves its last line cut short. That entry's seq isn't held, so the host sends it
+     * again, and the copy must come out the host's byte for byte: the cut line is dropped, not kept above the new one.
+     */
+    @Test
+    public void dropALastLineCutShortByACrashSoTheCopyIsTheHostsAgain() throws IOException {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+        store.appendLog(id, notice("a"));
+        store.appendLog(id, notice("b"));
+        CompanionStore phone = follower();
+        phone.appendVerbatim(id, journal.sent.subList(0, 1));
+        File phoneLog = new File(phone.gameDir(id), "log.txt");
+        String b = journal.sent.get(1).line();
+        Files.write(phoneLog.toPath(), b.substring(0, b.length() / 2).getBytes(StandardCharsets.UTF_8),
+                java.nio.file.StandardOpenOption.APPEND);
+
+        CompanionStore restarted = new CompanionStore(phone.dir());
+        assertThat(restarted.appendVerbatim(id, journal.sent)).isEqualTo(1);
+
+        assertThat(Files.readAllBytes(phoneLog.toPath())).isEqualTo(Files.readAllBytes(log().toPath()));
+    }
+
+    /** A last line written whole but for its newline is held (it reads), so it's ended, not dropped. */
+    @Test
+    public void endALastLineThatOnlyLacksItsNewline() throws IOException {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+        store.appendLog(id, notice("a"));
+        store.appendLog(id, notice("b"));
+        store.appendLog(id, notice("c"));
+        CompanionStore phone = follower();
+        File phoneLog = new File(phone.gameDir(id), "log.txt");
+        Files.write(phoneLog.toPath(), (journal.sent.get(0).line() + "\n" + journal.sent.get(1).line())
+                .getBytes(StandardCharsets.UTF_8));
+
+        CompanionStore restarted = new CompanionStore(phone.dir());
+        assertThat(restarted.appendVerbatim(id, journal.sent)).isEqualTo(1);
+
+        assertThat(Files.readAllBytes(phoneLog.toPath())).isEqualTo(Files.readAllBytes(log().toPath()));
+    }
+
+    /**
+     * A write that fails may have put part of its lines on disk: the next call reads the log again rather than trust
+     * the last seq it knew. The lines that landed are put there by hand here, as a write cut short would.
+     */
+    @Test
+    public void readTheLogAgainAfterAWriteThatFailed() throws IOException {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+        store.appendLog(id, notice("a"));
+        store.appendLog(id, notice("b"));
+        store.appendLog(id, notice("c"));
+        CompanionStore phone = follower();
+        phone.appendVerbatim(id, journal.sent.subList(0, 1));
+        File phoneLog = new File(phone.gameDir(id), "log.txt");
+        Files.write(phoneLog.toPath(), (journal.sent.get(1).line() + "\n").getBytes(StandardCharsets.UTF_8),
+                java.nio.file.StandardOpenOption.APPEND);
+        assertThat(phoneLog.setWritable(false)).isTrue();
+        if (phoneLog.canWrite()) {
+            throw new org.testng.SkipException("Can't make a file unwritable here (running as root?)");
+        }
+        try {
+            assertThatThrownBy(() -> phone.appendVerbatim(id, journal.sent.subList(1, 3)))
+                    .isInstanceOf(UncheckedIOException.class);
+        } finally {
+            assertThat(phoneLog.setWritable(true)).isTrue();
+        }
+
+        assertThat(phone.appendVerbatim(id, journal.sent)).isEqualTo(1);
+
+        assertThat(Files.readAllBytes(phoneLog.toPath())).isEqualTo(Files.readAllBytes(log().toPath()));
+    }
+
+    @Test
+    public void tellAGameIdFromAnythingElse() {
+        assertThat(CompanionStore.isGameId("t")).isTrue();
+        assertThat(CompanionStore.isGameId(java.util.UUID.randomUUID().toString())).isTrue();
+        assertThat(CompanionStore.isGameId("a".repeat(64))).isTrue();
+        assertThat(CompanionStore.isGameId(null)).isFalse();
+        assertThat(CompanionStore.isGameId("")).isFalse();
+        assertThat(CompanionStore.isGameId("../escape")).isFalse();
+        assertThat(CompanionStore.isGameId("has space")).isFalse();
+        assertThat(CompanionStore.isGameId("a".repeat(65))).isFalse();
+    }
+
     @Test
     public void createAFollowedGameUnderTheHostsId() throws IOException {
         CompanionStore phone = follower();

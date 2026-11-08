@@ -54,13 +54,20 @@ public class CompanionShareEndToEndTest extends AITest {
     private static final long WAIT_MS = 15_000;
 
     private static CompanionTable newTable() {
+        return newTable("t");
+    }
+
+    /** A table under the id {@code id}, which may be one the store's rule refuses (a host sending a bad id). */
+    private static CompanionTable newTable(String id) {
         try {
             File dir = Files.createTempDirectory("companion-share").toFile();
             CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
                     new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
             CompanionStore store = new CompanionStore(dir);
-            store.createWithId("t", setup); // as the setup screen's create does, under a fixed id
-            return new CompanionTable("t", setup, store);
+            // as the setup screen's create does, under a fixed id; by hand, so the id isn't checked
+            assertTrue(store.gameDir(id).mkdirs());
+            store.saveSetup(id, setup);
+            return new CompanionTable(id, setup, store);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -90,7 +97,11 @@ public class CompanionShareEndToEndTest extends AITest {
 
     /** A table with a running three-player game, its start saved, at its first prompt. */
     private CompanionTable startedTable(Game game) {
-        CompanionTable table = newTable();
+        return startedTable(game, "t");
+    }
+
+    private CompanionTable startedTable(Game game, String id) {
+        CompanionTable table = newTable(id);
         for (Player p : game.getPlayers()) {
             new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table);
         }
@@ -499,6 +510,90 @@ public class CompanionShareEndToEndTest extends AITest {
             }
             if (again != null) {
                 again.close();
+            }
+            host.stop();
+        }
+    }
+
+    /**
+     * The host's hello check (M5): what a phone holds counts only for the host's game. A phone whose copy follows
+     * another game, with entries, gets the host's whole log from seq 1.
+     */
+    @Test(timeOut = 120_000)
+    public void aPhoneHoldingAnotherGameGetsTheWholeLog() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        CompanionStore hostStore = table.store();
+        addCard(table, game, "Grizzly Bears");
+        addCard(table, game, "Forest");
+        addCard(table, game, "Island");
+        long latest = hostStore.loadLogLines("t").size();
+
+        CompanionStore phone = tempStore();
+        phone.createWithId("other", table.setup());
+        for (int i = 0; i < latest - 1; i++) {
+            phone.appendLog("other", CompanionLogEntry.of(CompanionLogEntry.Kind.NOTICE, 0, 1, null, null, "x" + i));
+        }
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionClient client = null;
+        try {
+            host.start();
+            JoinCode code = host.codeAt((Inet4Address) InetAddress.getByName("127.0.0.1"));
+            client = new CompanionClient("Joiner", new HeadlessNetworkGuiGame(), code, phone);
+            List<long[]> sent = new CopyOnWriteArrayList<>();
+            client.addCopyListener(new CompanionClient.CopyListener() {
+                @Override
+                public void written(String game, long fromSeq, long toSeq) {
+                    sent.add(new long[] { fromSeq, toSeq });
+                }
+            });
+            client.followAgain("other");
+            assertEquals(client.heldSeq(), latest - 1, "the hello says the phone holds entries");
+            client.connect();
+            CompanionClient joined = client;
+            await(() -> joined.heldSeq() == latest, table::runSystemOps, "the host's log");
+            assertEquals(sent.get(0)[0], 1L, "the host's log from its first entry");
+            assertTrue(sameLog(hostStore, phone, "t"), "the phone's copy is the host's whole log");
+        } finally {
+            if (client != null) {
+                client.close();
+            }
+            host.stop();
+        }
+    }
+
+    /**
+     * A game id from the network is checked before it's used: a host sending one that isn't a plain folder name gets
+     * nothing written on the phone, nothing remembered as followed, and the copy listeners hear it failed.
+     */
+    @Test(timeOut = 120_000)
+    public void aPhoneRefusesAGameIdThatIsntOne() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game, "has space");
+        addCard(table, game, "Grizzly Bears");
+
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionStore phone = tempStore();
+        List<RuntimeException> failed = new CopyOnWriteArrayList<>();
+        CompanionClient client = null;
+        try {
+            host.start();
+            JoinCode code = host.codeAt((Inet4Address) InetAddress.getByName("127.0.0.1"));
+            client = new CompanionClient("Joiner", new HeadlessNetworkGuiGame(), code, phone);
+            client.addCopyListener(new CompanionClient.CopyListener() {
+                @Override
+                public void failed(String game, RuntimeException e) {
+                    failed.add(e);
+                }
+            });
+            client.connect();
+            await(() -> !failed.isEmpty(), table::runSystemOps, "the copy failing");
+            assertTrue(failed.get(0) instanceof IllegalArgumentException, String.valueOf(failed.get(0)));
+            assertNull(client.welcomedTo(), "a bad id isn't the game followed");
+            assertEquals(phone.gameDir("x").getParentFile().list(), new String[0], "nothing written on the phone");
+        } finally {
+            if (client != null) {
+                client.close();
             }
             host.stop();
         }

@@ -12,8 +12,10 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -182,14 +184,34 @@ public class CompanionStore {
      *                                  network might not be
      */
     public void createWithId(String id, CompanionSetup setup) {
-        if (id == null || !id.matches("[A-Za-z0-9-]{1,64}")) {
+        createDir(id);
+        saveSetup(id, setup);
+    }
+
+    /**
+     * Makes the folder of the game {@code id}, with nothing in it yet, or keeps the one that's there; a followed game
+     * writes its {@code share.json} here before its setup ({@link #createWithId}).
+     *
+     * @return the folder
+     * @throws IllegalArgumentException for an id that isn't {@link #isGameId a game id}
+     */
+    public File createDir(String id) {
+        if (!isGameId(id)) {
             throw new IllegalArgumentException("Not a game id: " + id);
         }
         File gameDir = new File(dir, id);
         if (!gameDir.mkdirs() && !gameDir.isDirectory()) {
             throw new UncheckedIOException(new IOException("Can't create " + gameDir));
         }
-        saveSetup(id, setup);
+        return gameDir;
+    }
+
+    /**
+     * Whether {@code id} can be a game's id here: a plain folder name (letters, digits, '-'), at most 64 long. An id
+     * from the network is checked with this before it's used.
+     */
+    public static boolean isGameId(String id) {
+        return id != null && id.matches("[A-Za-z0-9-]{1,64}");
     }
 
     /** Replaces the game's setup, for the options the operator can change during the game. */
@@ -461,7 +483,9 @@ public class CompanionStore {
      * <li>An item whose seq is already held is skipped if the line held is the same, byte for byte (a tombstone for
      * a tombstone), and refused if it isn't.</li>
      * <li>The last seq is updated, so a later {@link #appendLog} (this phone taking over as host) numbers after
-     * it.</li>
+     * it. A write that fails forgets it, so the next call reads the log again.</li>
+     * <li>A last line a crash cut short, which doesn't read, is dropped before the new lines are written: its entry
+     * isn't held, so it comes again (unlike {@link #appendLog}, which keeps it and starts a new line).</li>
      * </ul>
      * The whole call is checked before anything is written, so a refused call writes nothing. Everything new is written
      * at once and synced to disk once.
@@ -509,13 +533,17 @@ public class CompanionStore {
         }
         try {
             if (endsCutShort(log)) {
-                text.insert(0, '\n');
+                if (!endCutTail(log)) {
+                    text.insert(0, '\n');
+                }
             }
             try (FileOutputStream out = new FileOutputStream(log, true)) {
                 out.write(text.toString().getBytes(StandardCharsets.UTF_8));
                 out.getFD().sync();
             }
         } catch (IOException e) {
+            // part of it may be on disk: the next call reads the log again
+            lastSeq.remove(id);
             throw new UncheckedIOException(e);
         }
         lastSeq.put(id, next - 1);
@@ -592,6 +620,34 @@ public class CompanionStore {
     private long lastSeq(String id) {
         List<CompanionLogEntry> log = loadLog(id);
         return log.stream().mapToLong(CompanionLogEntry::seq).max().orElse(0);
+    }
+
+    /**
+     * For a following store's log whose last line has no newline (a phone killed while writing it): drops that line
+     * if it doesn't read, and returns true. Such a line isn't held ({@link #loadLogLines} skips it, so a hello's
+     * {@code have} leaves it out), and the host sends its entry again, so dropping it keeps the copy the host's byte for
+     * byte. A last line that reads was written whole but for its newline: it's kept, and false returned.
+     */
+    private static boolean endCutTail(File log) throws IOException {
+        byte[] bytes = Files.readAllBytes(log.toPath());
+        int start = bytes.length;
+        while (start > 0 && bytes[start - 1] != '\n') {
+            start--;
+        }
+        String tail = new String(bytes, start, bytes.length - start, StandardCharsets.UTF_8);
+        if (!tail.isBlank()) { // as loadLogLines: a blank line holds nothing
+            try {
+                CompanionLogEntry.fromLine(tail, 0);
+                return false;
+            } catch (RuntimeException e) {
+                // cut short: dropped below
+            }
+        }
+        try (FileChannel channel = FileChannel.open(log.toPath(), StandardOpenOption.WRITE)) {
+            channel.truncate(start);
+            channel.force(true);
+        }
+        return true;
     }
 
     private static boolean endsCutShort(File log) throws IOException {

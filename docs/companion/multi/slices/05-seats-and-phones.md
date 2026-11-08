@@ -53,6 +53,7 @@ Plan 2.1 (`MatchExtension`, `MatchController`), 2.2 (`CompanionDevice`, `Compani
 1. **Two claims for one seat** at once (two joiners tapping together): exactly one gets it, the other sees the list again.
 2. **Rotation keeps turn order** with 6 seats and Me in each position (`MatchController.java:226-247`), on the host (unchanged, no extension hook) and on a joined instance.
 3. **Seat on reconnect:** after 04's reconnect, the phone is back in its seat without being asked.
+4. **Open (from 02's Gate B): following into an ended game.** `createWithId` keeps an existing `ended` marker, so after Stop following a fresh join to the same host writes into a past game. Decide: clear `ended` when following again, or refuse.
 
 ## Tests (CI)
 None new: the plan lists dev checks for AC-103/104/109 (plan 6), and these are UI and wiring.

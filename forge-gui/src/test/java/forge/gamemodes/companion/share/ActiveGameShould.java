@@ -21,6 +21,7 @@ import java.util.TreeMap;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** The resume guard: a followed game is never resumed as the phone's own (slice 02), with a real store on disk. */
 public class ActiveGameShould {
@@ -111,5 +112,45 @@ public class ActiveGameShould {
         assertThat(phone.loadFinalLog(id)).isEqualTo(log);
         assertThat(phone.loadFinalState(id)).isEmpty();
         assertThat(files()).isEqualTo(ended);
+    }
+
+    /**
+     * Following a game writes its share state before its setup, so following cut short (a kill, a failed write) never
+     * leaves a folder that looks like the phone's own game. Here the share state's write fails.
+     */
+    @Test
+    public void neverResumeAFollowedGameWhoseShareStateWasntWritten() {
+        File game = phone.gameDir("hostgame");
+        assertThat(new File(game, ShareState.FILE + ".tmp").mkdirs()).isTrue(); // the share state can't be written
+
+        assertThatThrownBy(() -> CompanionClient.startCopy(phone, "hostgame", setup, code))
+                .isInstanceOf(UncheckedIOException.class);
+
+        assertThat(ActiveGame.find(phone)).isEmpty();
+    }
+
+    /** What a kill between the share state and the setup leaves: not resumed, and finding it writes nothing. */
+    @Test
+    public void neverResumeOrWriteToAFollowedGameWithNoSetupYet() {
+        File game = phone.gameDir("hostgame");
+        assertThat(game.mkdirs()).isTrue();
+        ShareState.joined(code).write(phone, "hostgame");
+        Map<String, String> before = files();
+
+        assertThat(ActiveGame.find(phone)).isEmpty();
+        assertThat(phone.loadActive()).isEmpty();
+
+        assertThat(files()).isEqualTo(before);
+        assertThat(game).isDirectory();
+    }
+
+    @Test
+    public void followAGameWithItsShareStateAndSetup() {
+        CompanionClient.startCopy(phone, "hostgame", setup, code);
+
+        ActiveGame active = ActiveGame.find(phone).orElseThrow();
+        assertThat(active.followed()).isTrue();
+        assertThat(active.code()).contains(code);
+        assertThat(phone.loadSetup("hostgame")).isEqualTo(setup);
     }
 }

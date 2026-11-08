@@ -12,6 +12,7 @@ import forge.gamemodes.net.event.GuiGameEvent;
 import forge.gui.interfaces.IGuiGame;
 import forge.interfaces.IDeviceAdapter;
 import forge.interfaces.ILobbyListener;
+import forge.util.LogSafe;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFactory;
 import io.netty.channel.ChannelHandler;
@@ -245,7 +246,10 @@ public class CompanionClient extends FGameClient {
         }
     }
 
-    /** The shared game's id once the host welcomed this phone, else null. */
+    /**
+     * The shared game's id once the host welcomed this phone and its copy was made, else null: a checked
+     * {@link CompanionStore#isGameId game id}, set on the copy's thread.
+     */
     public String welcomedTo() {
         return welcomedTo;
     }
@@ -326,9 +330,8 @@ public class CompanionClient extends FGameClient {
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
             if (msg instanceof ShareMessages.Welcome welcome) {
-                welcomedTo = welcome.game();
                 netLog.info("[Companion] {}", welcome);
-                copy(() -> follow(welcome));
+                copy(() -> follow(welcome)); // sets welcomedTo once the id is checked and the copy made
                 if (!viewArrived) {
                     ctx.executor().schedule(() -> {
                         if (!viewArrived && ctx.channel().isActive()) {
@@ -378,14 +381,33 @@ public class CompanionClient extends FGameClient {
         }
     }
 
-    /** The welcome: the folder of the host's game, its setup and its share state. The copy's thread. */
+    /**
+     * The welcome: the folder of the host's game, its share state and its setup; then {@link #welcomedTo}. An id that
+     * isn't a {@link CompanionStore#isGameId game id} (it came from the network) is refused before anything is written
+     * or remembered, and the copy listeners hear it {@code failed}. The copy's thread.
+     */
     private void follow(ShareMessages.Welcome welcome) {
         String game = welcome.game();
-        store.createWithId(game, welcome.setup()); // refuses an id that isn't a plain folder name
-        ShareState.joined(code).write(store, game);
+        if (!CompanionStore.isGameId(game)) {
+            throw new IllegalArgumentException("The host sent a game id that isn't one: " + LogSafe.forDisplay(
+                    String.valueOf(game), 80));
+        }
+        startCopy(store, game, welcome.setup(), code);
         if (!game.equals(followed)) {
             followAgain(game); // a folder from an earlier join keeps its log: count what it holds
         }
+        welcomedTo = game;
+    }
+
+    /**
+     * Makes the folder of the followed game {@code game} in {@code store}: its share state first, then its setup. A
+     * folder with a setup and no share state is resumed as the phone's own, which writes to it; cut short in between
+     * (a kill, a failed write), this leaves either a folder with no setup, which isn't resumed, or a followed game.
+     */
+    static void startCopy(CompanionStore store, String game, CompanionSetup setup, JoinCode code) {
+        store.createDir(game); // refuses an id that isn't a plain folder name
+        ShareState.joined(code).write(store, game);
+        store.createWithId(game, setup);
     }
 
     /** The copy's thread. */

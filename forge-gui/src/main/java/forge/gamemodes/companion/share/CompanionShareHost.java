@@ -155,7 +155,9 @@ public final class CompanionShareHost implements IHasForgeLog {
     /**
      * Stops listening and lets every phone go. What the journal still holds for a phone, such as the end of the game
      * just written, is sent first, and its connection closed once that's out, waiting at most
-     * {@link #STOP_FLUSH_MILLIS} for all of them. Stopping a stopped share does nothing. Any thread.
+     * {@link #STOP_FLUSH_MILLIS} for all of them. Stopping a stopped share does nothing. Any thread but the share's
+     * own event loops; it blocks the caller for up to {@link #STOP_FLUSH_MILLIS}, and that includes the UI thread when
+     * it's called from there (the stop dialog, or {@code matchLeft} when the match is left).
      */
     public synchronized void stop() {
         if (journal != null) {
