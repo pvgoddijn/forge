@@ -1,0 +1,69 @@
+# Slice 03: Steps follow
+
+**Branch:** `feature/companion-multi-03-steps`, stacked on `feature/companion-multi-02-log`. **Plan item:** section 9, M1-1b, first part (steps; the restarts are 04).
+**Depends on:** 02 (journal hook, `ShareJournal`, `appendVerbatim`, `gap`, `ShareState` minimal, the resume guard), 00 (`epoch`).
+**Proves:** every joined phone holds the host's step files byte for byte, cut back on an undo exactly as the host's, so the copy is complete (spec 4: "M3 needs no change to what M1 stores").
+
+## Result
+A joined phone's copy of the game now includes every saved board. When the host ends the game, the joined phone's past game shows the real final board (life, hands, zones), not the starting one. A phone that joins a long game gets every step; a phone that rejoins only fetches steps it lacks. After a long run of undos the joined phone stays responsive.
+
+## Acceptance criteria
+Delivered in part:
+- **AC-105** WHEN a phone joins or reconnects THE SYSTEM SHALL give it the full current game and the full history, undone entries included. _Here: the steps (with 02's history and 00's view, the join is now complete). Reconnect: 04._
+- **AC-112** THE SYSTEM SHALL save the complete shared game on every joined phone as it changes, so that a joined phone that is closed, killed or restarted resumes the game where it left off and rejoins automatically. _Here: the steps are saved as they change, so the saved copy is complete. Resume and rejoin: 04._
+
+## Design for this slice
+Plan 2.1 (`CompanionStore`, `GameClientHandler`), 3.2 (epoch), 3.3 (catch-up rule, journal), decision 4.
+
+### `forge-gui`
+- **`CompanionStore`:**
+  - `writeStep(id, n, text)` through `writeWhole` (`CompanionStore.java:398-410`, fsync then rename), writing the host's text verbatim.
+  - `stepHashes(id)`: `{n: sha256}` of the steps on disk (`states/<n>.txt`, `:29-35`).
+  - The journal hook is now also told of each **step saved** and each **steps discarded** (`saveState` `:84-106`, `discardAfter` `:108-117`).
+- **`GameClientHandler.resetTracker()`**, protected: drops the client tracker's card views. The tracker keeps every `CardView` it has seen (`GameClientHandler.java:97-148`), and after an undo or resume renumbers the board those are stale.
+
+### `forge-gui`, `forge.gamemodes.companion.share`
+- **`ShareJournal`:** a step when saved; on discard the following `UNDO` entry carries it.
+- **Messages:** `welcome` gains latest `step` and the step index `{n: sha256}`; new `want` (J→H: step numbers missing or with a different hash) and `step` {n, sha256, text}.
+- **`CompanionShareHost`:** after `welcome`, wait for `want`; send the wanted steps **first**, then the entries after `have.seq` (02), then live. Steps first means a phone cut off halfway never holds entries that point at a step it doesn't have.
+- **`CompanionClient`:**
+  - **Catch-up rule** (plan 3.3): after `welcome`, `discardAfter(hostLatest)` for steps past the host's latest; compare the step index with `stepHashes`, and send `want` for steps it lacks **and steps whose hash differs**. (Cutting back the log with `truncateLogAfter` only happens after a takeover: M3.)
+  - Each `step` → `writeStep`, checked against its sha256. An `UNDO` entry applied in order runs `discardAfter(entry.step)`, as on the host.
+  - On `epoch` (after every full view send): `resetTracker()`.
+- Still: the following store never calls `loadState` (02).
+
+### Protocol involved
+`hello`(have.seq) → `welcome`(setup, latest seq, latest step, step index) → `want` → `step`… → `entries`/`gap`… → live `entries` / `step` / `gap` / `setup` / `epoch` → `end`.
+
+## Not in this slice
+- Restarts, rejoin, N6 text summary, unbounded reconnect, host re-sharing on the same port and token, re-attach on a new host `Game`: **04**. (The test "a following store restarted with entries past its latest step writes nothing" is in 04, where the restart path is built.)
+- `truncateLogAfter`, `terms`, divergence: **M3**.
+- Seats and roster: **05**.
+
+## Check first
+1. **Undo on the joined copy:** after a host undo, the joined phone's `states/` has exactly the host's files (the `UNDO` entry's `discardAfter` plus the next `step`).
+2. **Steps on a game saved before steps existed:** a v1 game with only `state.txt` (`CompanionStore.java:29-35`, migrated at the next save, `:206-219`) shared mid-game sends a consistent step 0.
+3. **Big join** (plan Risks, measured here because steps first travel here): a game with a few hundred steps (script it, or play a long test game); time a fresh join on a phone and note the bytes. A rejoin sends only new steps.
+4. **`resetTracker` timing:** it runs only after the full state that the `epoch` follows has been applied, so the board never shows with an empty tracker.
+
+## Tests (CI)
+Named in plan 6; no others.
+- `forge-gui-desktop`, next to `TableEditorTest`, real localhost sockets: extend 02's **joining after undos** test: the joined store's log **and steps** are identical to the host's, and the view is full (AC-105).
+
+## Oracle
+**Two instances** (as in slice 00):
+```
+REPO=/path/to/forge; JAR=$(ls "$REPO"/forge-gui-mobile-dev/target/forge-gui-mobile-dev-*-jar-with-dependencies.jar)
+for n in host join; do mkdir -p /tmp/companion-$n && ln -sfn "$REPO/forge-gui/res" /tmp/companion-$n/res
+  echo "userDir=/tmp/companion-$n/user/" > /tmp/companion-$n/forge.profile.properties; done
+(cd /tmp/companion-host && java -jar "$JAR" width=450 height=900) & (cd /tmp/companion-join && java -jar "$JAR" width=450 height=900) &
+```
+With `H=/tmp/companion-host/user/companion/<id>` and `J=/tmp/companion-join/user/companion/<id>`:
+1. Host: 3 players, add four cards (a step each), undo twice, add one. Share; joiner joins. OK: `diff -r $H/states $J/states` and `cmp $H/log.txt $J/log.txt` show no difference.
+2. Host: add a card, then undo. OK: after each, the same `diff -r` and `cmp` show no difference.
+3. Joiner: Leave, then "Join again". OK: the joiner's log line for `want` names no step (nothing missing), and the copies still compare equal.
+4. Tamper: stop the joiner, edit one line in `$J/states/1.txt`, rejoin. OK: `want` names step 1, and after the join `diff -r` is clean again.
+5. Host: end the game. Joiner: past games → open it. OK: the boards text shows the final life and zones (compare with the host's past game), not the starting state.
+6. Host, a new unshared game: v1 behaviour (AC-114).
+
+**[Phone]** 1. Two phones (as slice 01): play 10+ actions with undos, then end. OK: the joined phone's past game shows the same final boards as the host's.
