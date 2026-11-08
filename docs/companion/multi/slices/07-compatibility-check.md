@@ -25,6 +25,7 @@ Plan N1, 2.2 (`Compat`), 3.3 (`hello.fingerprint`, `refuse`), Risks ("Builds dif
   - The build string (`BuildInfo.getVersionString`) is sent **for the refusal message only**: every dev build reports `GIT` (`BuildInfo.java:45-51`).
 - **Messages:** `hello` gains `fingerprint` (the per-part hashes) and the build string; new `refuse` {reason, the host's build string, which parts differ}.
 - **`CompanionShareHost`:** compares on `hello`, before `welcome`. Not equal: send `refuse`, close, show the host a notice ("A phone was refused: its card database differs").
+- **`CompanionShareHost`, also (slice 00's Gate B review, MINOR 7):** a cap on open connections and a rate limit on connection attempts per address, beside slice 00's `TokenGate` (raw "FCMP" + token, checked before any deserialization) and its 15 s admission timeout.
 - **`CompanionClient`:** on `refuse`, stop (no reconnect), and pass the reason to the screen.
 
 ### `forge-gui-mobile`

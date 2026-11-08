@@ -42,9 +42,14 @@ final class CompanionViewExtension implements MatchExtension {
         return true;
     }
 
+    /**
+     * Only while this device still follows the host: once it left, or the connection is gone for good, the extension
+     * no longer applies, so it can't leak into a later net play game ({@code MatchController.getExtension}).
+     */
     @Override
     public boolean followsRemoteGame() {
-        return !left;
+        CompanionClient c = client;
+        return !left && c != null && c.isActive();
     }
 
     /** Closes the connection (no reconnect after it) and takes this extension off the match screen. Idempotent. */
@@ -53,15 +58,12 @@ final class CompanionViewExtension implements MatchExtension {
         if (left) {
             return;
         }
-        boolean current = MatchController.getExtension() == this; // asked before left, which hides it
         left = true;
         CompanionClient c = client;
         if (c != null) {
             c.close();
         }
-        if (current) {
-            MatchController.setExtension(null);
-        }
+        MatchController.clearExtension(this);
         onLeft.run();
     }
 

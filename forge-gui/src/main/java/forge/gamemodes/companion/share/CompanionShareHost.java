@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Shares one Companion table with phones on the local network (plan decision 2): a small server of its own, built from
@@ -45,7 +46,8 @@ import java.util.concurrent.TimeUnit;
  * never touches {@code FServerManager} or {@code HostingServer}, so no other mode sees it, and nothing it does changes
  * the table when no phone is connected (AC-114).
  *
- * <p>Admission: net play's {@code LoginEvent}, then {@link ShareMessages.Hello} with this share's token, answered by
+ * <p>Admission: a raw preamble with this share's token, checked by {@link TokenGate} before anything is deserialized,
+ * then net play's {@code LoginEvent}, then {@link ShareMessages.Hello} with the token again, answered by
  * {@link ShareMessages.Welcome}, then the phone is attached as a {@link CompanionPeer}. A wrong token, or anything else
  * first, closes the connection. Every phone is a read-only spectator in M1 (AC-108). Netty's threads never touch the
  * game or the UI: the attach and detach go to the game loop through {@link CompanionTable#runSystem}.
@@ -66,6 +68,7 @@ public final class CompanionShareHost implements IHasForgeLog {
     private final CompanionTable table;
     private final int token;
     private final Set<CompanionPeer> peers = ConcurrentHashMap.newKeySet();
+    private final AtomicInteger refusedAtGate = new AtomicInteger();
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
     private Channel serverChannel;
@@ -104,6 +107,8 @@ public final class CompanionShareHost implements IHasForgeLog {
                     public void initChannel(SocketChannel ch) {
                         Admission admission = new Admission();
                         ch.pipeline().addLast(
+                                // first, so nothing is deserialized before the token is right
+                                new TokenGate(t -> t == token, refusedAtGate::incrementAndGet, ADMISSION_SECONDS),
                                 new CompatibleObjectEncoder(null),
                                 new CompatibleObjectDecoder(MAX_FRAME_BYTES, ClassResolvers.cacheDisabled(null)),
                                 new IdleStateHandler(READER_IDLE_SECONDS, 0, 0, TimeUnit.SECONDS),
@@ -172,6 +177,11 @@ public final class CompanionShareHost implements IHasForgeLog {
         return peers.size();
     }
 
+    /** The connections closed by the token gate, before anything they sent was deserialized. */
+    public int refusedAtGate() {
+        return refusedAtGate.get();
+    }
+
     int token() {
         return token;
     }
@@ -230,7 +240,7 @@ public final class CompanionShareHost implements IHasForgeLog {
                 ctx.close();
                 return;
             }
-            CompanionPeer joined = new CompanionPeer(table, client);
+            CompanionPeer joined = new CompanionPeer(table, client, ctx::close);
             peer = joined;
             peers.add(joined);
             client.send(new ShareMessages.Welcome(table.id()));

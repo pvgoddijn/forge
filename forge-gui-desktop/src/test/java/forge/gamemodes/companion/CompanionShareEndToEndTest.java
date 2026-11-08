@@ -10,7 +10,11 @@ import forge.game.zone.ZoneType;
 import forge.gamemodes.companion.share.CompanionClient;
 import forge.gamemodes.companion.share.CompanionShareHost;
 import forge.gamemodes.companion.share.JoinCode;
+import forge.gamemodes.match.GameLobby;
+import forge.gamemodes.net.ChatMessage;
+import forge.gamemodes.net.client.ClientGameLobby;
 import forge.interfaces.IGameController;
+import forge.interfaces.ILobbyListener;
 import forge.net.HeadlessNetworkGuiGame;
 
 import org.testng.annotations.Test;
@@ -26,6 +30,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 import static org.testng.Assert.assertEquals;
@@ -114,6 +119,43 @@ public class CompanionShareEndToEndTest extends AITest {
         return false;
     }
 
+    /** A second client, with {@code code}'s token + 1: refused, so its lobby listener closes and no view comes. */
+    private static void refusesAWrongToken(CompanionTable table, CompanionShareHost host, JoinCode code)
+            throws InterruptedException {
+        assertEquals(host.refusedAtGate(), 0, "the right preamble went first, before the login");
+        JoinCode wrong = new JoinCode(code.address(), code.port(), code.token() + 1);
+        HeadlessNetworkGuiGame wrongView = new HeadlessNetworkGuiGame();
+        CompanionClient intruder = new CompanionClient("Intruder", wrongView, wrong);
+        AtomicBoolean closed = new AtomicBoolean();
+        intruder.addLobbyListener(new ILobbyListener() {
+            @Override
+            public void message(String source, String message, ChatMessage.MessageType type) { }
+
+            @Override
+            public void update(GameLobby.GameLobbyData state, int slot) { }
+
+            @Override
+            public void close() {
+                closed.set(true);
+            }
+
+            @Override
+            public ClientGameLobby getLobby() {
+                return null;
+            }
+        });
+        try {
+            intruder.connect();
+            await(closed::get, table::runSystemOps, "the wrong token's connection closing");
+            table.runSystemOps(); // an attach, had one been queued, would run here
+            assertNull(intruder.welcomedTo(), "a wrong token is never welcomed");
+            assertEquals(intruder.epoch(), 0);
+            assertFalse(wrongView.isOpenViewCalled(), "no view for a wrong token");
+        } finally {
+            intruder.close();
+        }
+    }
+
     @Test(timeOut = 120_000)
     public void aClientJoinedMidGameFollowsTheHostAndChangesNothing() throws Exception {
         Game game = initAndCreateThreePlayerGame();
@@ -150,6 +192,11 @@ public class CompanionShareEndToEndTest extends AITest {
             for (PlayerView seat : view.getGameView().getPlayers()) {
                 assertNotNull(view.getGameController(seat), "every seat is the client's: " + seat.getName());
             }
+
+            // a client whose code has the wrong token is never welcomed, sees the connection close, and isn't counted
+            refusesAWrongToken(table, host, code);
+            assertEquals(host.peerCount(), 1, "the refused client was never counted");
+            assertEquals(host.refusedAtGate(), 1, "refused at the gate, before anything it sent was deserialized");
 
             // the host adds a card: it reaches the client as a delta
             act(table, game, new CompanionTable.AddCard(ann.getName(), "Llanowar Elves", false,

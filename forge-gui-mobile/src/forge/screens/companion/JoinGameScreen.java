@@ -22,11 +22,13 @@ import forge.toolbox.FTextField;
 import forge.util.Utils;
 
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /**
  * Joins a game another device shares (AC-102, typed code only): the code, Join, then the match screen once the host's
  * game arrives ({@code openView} opens it). Read-only on this device ({@link CompanionViewExtension}). Each failure
- * says what went wrong: not a code, nothing reachable there, the host refused the code, or the host left first.
+ * says what went wrong: not a code, nothing reachable there, the host refused the code, the host left first, or the
+ * game didn't arrive in time. Back from this screen ends a join under way.
  */
 public class JoinGameScreen extends FScreen {
     private static final float PADDING = Utils.scale(5);
@@ -112,9 +114,9 @@ public class JoinGameScreen extends FScreen {
                 @Override
                 public void close() {
                     // welcome is read before the close on the same connection, so it's settled by now
-                    boolean welcomed = client.welcomedTo() != null;
-                    FThreads.invokeInEdtLater(() -> fail(Forge.getLocalizer().getMessage(
-                            welcomed ? "lblCompanionHostLeft" : "lblCompanionJoinRefused")));
+                    String why = client.attachTimedOut() ? "lblCompanionGameDidntArrive"
+                            : client.welcomedTo() != null ? "lblCompanionHostLeft" : "lblCompanionJoinRefused";
+                    FThreads.invokeInEdtLater(() -> fail(Forge.getLocalizer().getMessage(why)));
                 }
 
                 @Override
@@ -175,6 +177,15 @@ public class JoinGameScreen extends FScreen {
                 btnJoin.setText(Forge.getLocalizer().getMessage("lblCompanionJoin"));
             }
         }
+    }
+
+    /** Back from this screen ends a join still under way, so no connection or extension outlives it. */
+    @Override
+    public void onClose(Consumer<Boolean> canCloseCallback) {
+        if (attempt != null) {
+            attempt.cancel();
+        }
+        super.onClose(canCloseCallback);
     }
 
     @Override

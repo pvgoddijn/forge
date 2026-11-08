@@ -921,6 +921,13 @@ public class MatchController extends NetworkGuiGame {
         extension = extension0;
     }
 
+    /** Takes {@code extension0} off, if it's still the one set (whether or not it applies to the game shown). */
+    public static void clearExtension(MatchExtension extension0) {
+        if (extension == extension0) {
+            extension = null;
+        }
+    }
+
     public static HostedMatch getHostedMatch() {
         return hostedMatch;
     }

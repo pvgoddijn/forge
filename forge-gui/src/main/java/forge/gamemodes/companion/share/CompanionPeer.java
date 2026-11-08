@@ -1,6 +1,8 @@
 package forge.gamemodes.companion.share;
 
+import com.google.common.eventbus.Subscribe;
 import forge.game.Game;
+import forge.game.event.GameEvent;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
 import forge.gamemodes.companion.CompanionPlayerController;
@@ -46,10 +48,26 @@ public final class CompanionPeer implements IHasForgeLog {
         }
     }
 
+    /** Passes the game's events on to the forwarder until {@link #close} lets go of it. Any thread may empty it. */
+    private static final class Relay {
+        volatile GameEventForwarder target;
+
+        @Subscribe
+        public void receiveGameEvent(GameEvent ev) {
+            GameEventForwarder f = target;
+            if (f != null) {
+                f.receiveGameEvent(ev);
+            }
+        }
+    }
+
     private final CompanionTable table;
     private final RemoteClient client;
+    private final Runnable disconnect;
     private final PeerGuiGame gui;
     private final PeerGate gate = new PeerGate();
+    /** What the game's event bus holds instead of the forwarder, which it would keep until the game ends. */
+    private final Relay relay = new Relay();
     /** The input queues the forwarder observes, for the detach. */
     private final List<InputQueue> observed = new CopyOnWriteArrayList<>();
     /** Set on the game loop thread, read by {@link #close} from any. */
@@ -58,9 +76,11 @@ public final class CompanionPeer implements IHasForgeLog {
     private int epoch;
     private volatile boolean closed;
 
-    CompanionPeer(CompanionTable table, RemoteClient client) {
+    /** {@code disconnect} closes the phone's connection, which then detaches it and takes it off the share's count. */
+    CompanionPeer(CompanionTable table, RemoteClient client, Runnable disconnect) {
         this.table = table;
         this.client = client;
+        this.disconnect = disconnect;
         this.gui = new PeerGuiGame(client);
     }
 
@@ -89,14 +109,22 @@ public final class CompanionPeer implements IHasForgeLog {
     /** Game loop thread: the phone gets the board once, its seats, then the epoch; deltas follow. */
     void attachNow() {
         List<CompanionPlayerController> seats = table.seats();
-        if (closed || seats.isEmpty()) {
+        if (closed) {
+            return;
+        }
+        if (seats.isEmpty()) {
+            // no game to show (the table has no seats yet, or no more): let the phone go rather than count it
+            netLog.warn("[Companion] {} can't attach to {}: no seats; closing", client.getUsername(), table.id());
+            close();
+            disconnect.run();
             return;
         }
         Game game = seats.get(0).getGame();
         forwarder = new GameEventForwarder(gui);
         gui.setForwarder(forwarder);
-        // Game has no unsubscribe: after a detach the paused proxy drops what this forwarder still passes it
-        game.subscribeToEvents(forwarder);
+        // Game has no unsubscribe: the bus keeps the relay, which close() empties, so the forwarder can go
+        relay.target = forwarder;
+        game.subscribeToEvents(relay);
         // so events reach the phone before the game thread blocks for input, as for a net play client
         for (CompanionPlayerController seat : seats) {
             InputQueue queue = seat.getInputQueue();
@@ -117,7 +145,8 @@ public final class CompanionPeer implements IHasForgeLog {
         sendEpoch();
         netLog.info("[Companion] {} attached to {}, {} seats", client.getUsername(), table.id(), all.size());
         if (closed) {
-            stopObserving(); // closed while attaching
+            relay.target = null; // closed while attaching
+            stopObserving();
         }
     }
 
@@ -135,6 +164,7 @@ public final class CompanionPeer implements IHasForgeLog {
             return;
         }
         closed = true;
+        relay.target = null;
         gui.pause();
         stopObserving();
         client.getReplyPool().cancelAll();
