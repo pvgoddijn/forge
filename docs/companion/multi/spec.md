@@ -2,7 +2,7 @@
 
 _ADLC phase 1 (Specify). This document is the **what**, not the how: no technology choices belong here. Those go in `plan.md`._
 
-Status: **approved** · 2026-11-07 (assumptions B1–B6 accepted as defaults)
+Status: **approved** · 2026-11-07 · **revised 2026-11-08** after Plan (one host engine; decisions N1–N11 in `plan.md`)
 
 Follow-up to [Companion Mode v1](../spec.md). It delivers v1 spec §6 item 8, "Sync between several devices". `AC-n` (n < 100) refers to the v1 criteria.
 
@@ -54,13 +54,13 @@ Design constraint across all milestones: from M1 on, every joined phone keeps th
 - **AC-104** THE SYSTEM SHALL allow up to 6 seated phones (the host included) and SHALL NOT set a fixed limit on spectators.
 - **AC-105** WHEN a phone joins or reconnects THE SYSTEM SHALL give it the full current game and the full history, undone entries included.
 - **AC-106** WHEN the host's game changes THE SYSTEM SHALL show the change on every connected phone within 1 s on the same local network.
-- **AC-107** WHEN viewing a shared game on a joined phone THE SYSTEM SHALL show the same overview as AC-23, highlight the phone's own seat if it has one, and offer the history with the player filter (AC-28).
+- **AC-107** WHEN viewing a shared game on a joined phone THE SYSTEM SHALL show the same overview as AC-23, live, with the phone's own seat at the bottom if it has one, and offer the history with the player filter (AC-28).
 - **AC-108** WHILE in M1 THE SYSTEM SHALL keep every joined phone read-only.
 - **AC-109** THE SYSTEM SHALL let the host see which phones are connected, and which seat each holds, and SHALL let the host remove a phone from the game.
-- **AC-110** WHEN a phone runs a different, incompatible version of the app THE SYSTEM SHALL refuse the join and tell both sides why.
+- **AC-110** WHEN a phone's app can't exchange games with the host's (a different network format or card database) THE SYSTEM SHALL refuse the join and tell both sides why.
 
 ### 5.2 M1: connection loss and persistence
-- **AC-111** WHILE a joined phone can't reach the host THE SYSTEM SHALL keep showing the last known state, clearly marked as disconnected, and SHALL reconnect automatically when the host can be reached again.
+- **AC-111** WHILE a joined phone can't reach the host THE SYSTEM SHALL keep showing the last known state, clearly marked as disconnected, and SHALL reconnect automatically when the host can be reached again. A joined phone restarted while the host is unreachable SHALL show a text summary of the last saved state plus the history, not the board.
 - **AC-112** THE SYSTEM SHALL save the complete shared game on every joined phone as it changes, so that a joined phone that is closed, killed or restarted resumes the game where it left off and rejoins automatically.
 - **AC-113** WHEN the host ends the game THE SYSTEM SHALL end it on every joined phone and keep it in their past games, read-only (AC-30).
 - **AC-114** WHILE no other phone is connected THE SYSTEM SHALL let the host keep logging exactly as in v1, without a network.
@@ -76,10 +76,9 @@ Design constraint across all milestones: from M1 on, every joined phone keeps th
 
 ### 5.4 M3: takeover
 - **AC-122** THE SYSTEM SHALL offer a "Take over as host" option on every seated phone, at any time.
-- **AC-123** WHEN a phone starts a takeover THE SYSTEM SHALL check which reachable phones have newer actions than it does, fetch any missing actions from them first, show what was caught up, and only then become host.
-- **AC-124** WHEN a takeover completes THE SYSTEM SHALL make every reachable phone, the old host included, follow the new host without needing anyone's approval.
+- **AC-123** WHEN a seated phone takes over THE SYSTEM SHALL continue the game from that phone's own copy at its latest saved state, and show a join code for the new host. Whatever the old host had not yet saved (a spell on the stack, a combat in progress) is lost.
+- **AC-124** WHEN a phone that followed the old host, or the old host itself, reaches the new host THE SYSTEM SHALL make it follow the new host without anyone's approval, bringing its copy in line. It SHALL find the new host by itself where it can, and otherwise join by the code.
 - **AC-125** WHEN a former host reconnects after a takeover with actions the new host doesn't have THE SYSTEM SHALL drop those actions from the game, follow the new host, and show its operator the list of dropped actions so they can be logged again.
-- **AC-126** WHEN two phones take over at about the same time THE SYSTEM SHALL let the later takeover win, and the other phone SHALL follow it, applying AC-125.
 - **AC-127** WHEN a phone that has become host has no peers THE SYSTEM SHALL behave as AC-114.
 
 ## 6. Out of scope (later)
@@ -91,6 +90,7 @@ Design constraint across all milestones: from M1 on, every joined phone keeps th
 5. Merging actions logged offline by joined phones (AC-117 disables them).
 6. Spectators taking over as host.
 7. Automatic duplicate detection.
+8. Automatic takeover safeguards: checking other phones for newer actions before a takeover, and settling two takeovers at once (was AC-126). M3 is a manual takeover; see `plan.md` N11.
 
 Nice-to-have, if cheap: desktop Forge as a joined phone ("table display"), and automatic discovery of games on the local network.
 
@@ -104,7 +104,7 @@ All v1 constraints still apply: upstream contribution, open-source GPLv3-compati
 ## 8. Assumptions to confirm
 
 - **B1** Anyone on the local network who has the join code can join. There are no accounts or passwords, and the host can remove a phone (AC-109).
-- **B2** "Incompatible version" (AC-110) means a different game-log format or card database version, not any difference in app version.
+- **B2** "Can't exchange games" (AC-110) is decided by a fingerprint of the network format and the card database, not by the app version string (dev builds all report the same one).
 - **B3** A removed phone may rejoin with the code. Blocking it permanently is out of scope.
 - **B4** The 1 s update target (AC-106) is for a normal local Wi-Fi or hotspot with up to 8 phones.
 - **B5** A seated phone that leaves frees its seat for another phone. The seat's player stays in the game.
@@ -135,6 +135,8 @@ All v1 constraints still apply: upstream contribution, open-source GPLv3-compati
 | M-Q19 | Takeover first fetches missing actions from fresher peers. |
 | M-Q20 | A returning old host's unshared actions are dropped and listed for its operator. The later takeover wins. |
 | M-Q21 | A host with no peers works exactly as in v1. |
+| M-Q22 | One engine only, on the host; joined phones are views of it, and prompts go to the acting phone (2026-11-08). |
+| M-Q23 | Plan decisions N1–N11 accepted as recommended, including a manual M3 takeover (N11). |
 
 ## 10. Notes for Plan (not part of the spec)
 
@@ -144,6 +146,6 @@ The existing Forge network play was surveyed on 2026-11-05. It is **not** reusab
 - Its wire format is Java serialization of Forge classes.
 - It blocks on remote prompts.
 
-What is reusable is its libraries: Netty, which has HTTP and WebSocket codecs, and Gson are already dependencies.
+**Revised 2026-11-08:** with one engine on the host, the view side of net play *is* reused (`ProtocolGuiGame`, `DeltaSyncManager`, `RemoteClientGuiGame`, the wire codec), behind a separate small Companion server. See `plan.md`.
 
 **Correction, 2026-11-07:** this note first called the v1 action log a natural wire format. Since the v1 engine revision (v1 plan §0, 2026-11-03), v1 saves a game-state snapshot per step, plus a log that only describes what happened. That log can't be replayed. See `plan.md` §0.
