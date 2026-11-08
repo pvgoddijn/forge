@@ -390,6 +390,55 @@ public class CompanionShareEndToEndTest extends AITest {
         }
     }
 
+    /**
+     * AC-113: the host ends the game and stops sharing at once, as leaving the match does. What the journal still had
+     * for the phone (the last entries and the end) is sent before the connection closes.
+     */
+    @Test(timeOut = 120_000)
+    public void aPhoneSeesTheEndWhenTheHostStopsSharingRightAfter() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        CompanionStore hostStore = table.store();
+        addCard(table, game, "Grizzly Bears");
+
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionStore phone = tempStore();
+        List<String> ended = new CopyOnWriteArrayList<>();
+        CompanionClient client = null;
+        try {
+            host.start();
+            JoinCode code = host.codeAt((Inet4Address) InetAddress.getByName("127.0.0.1"));
+            HeadlessNetworkGuiGame view = new HeadlessNetworkGuiGame();
+            client = new CompanionClient("Joiner", view, code, phone);
+            client.addCopyListener(new CompanionClient.CopyListener() {
+                @Override
+                public void ended(String game) {
+                    ended.add(game);
+                }
+            });
+            client.connect();
+            CompanionClient joined = client;
+            await(() -> joined.epoch() >= 1 && view.isOpenViewCalled(), table::runSystemOps, "the attach");
+            await(() -> sameLog(hostStore, phone, "t"), () -> { }, "the catch-up");
+
+            // entries the phone hasn't had yet, the end, and the share stopped, without waiting in between
+            addCard(table, game, "Forest");
+            addCard(table, game, "Island");
+            addCard(table, game, "Mountain");
+            hostStore.end("t");
+            host.stop();
+
+            await(() -> phone.isEnded("t"), () -> { }, "the end on the phone, after the share stopped");
+            assertEquals(ended, List.of("t"));
+            assertTrue(sameLog(hostStore, phone, "t"), "the last entries came before the end");
+        } finally {
+            if (client != null) {
+                client.close();
+            }
+            host.stop();
+        }
+    }
+
     /** A phone joining again with part of the log gets only the entries it lacks (AC-105). */
     @Test(timeOut = 120_000)
     public void aPhoneJoiningAgainGetsOnlyTheMissingEntries() throws Exception {

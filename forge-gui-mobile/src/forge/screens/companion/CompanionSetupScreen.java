@@ -8,6 +8,7 @@ import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
+import forge.gamemodes.companion.share.ActiveGame;
 import forge.gamemodes.match.HostedMatch;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
@@ -102,14 +103,46 @@ public class CompanionSetupScreen extends LaunchScreen {
     @Override
     public void onActivate() {
         super.onActivate();
-        Optional<CompanionStore.Saved> active = store.loadActive();
+        Optional<ActiveGame> active = ActiveGame.find(store);
         List<File> unreadable = store.unreadableFiles();
         // later, because this runs while the screen change that got us here is still happening
         FThreads.invokeInEdtLater(() -> {
-            active.ifPresent(saved -> openGame(saved.id(), saved.setup()));
+            active.ifPresent(game -> {
+                if (game.followed()) {
+                    offerFollowed(game); // never openGame: loading its state would write to the host's copy
+                } else {
+                    openGame(game.saved().id(), game.saved().setup());
+                }
+            });
             // after opening the game, as a dialog belongs to the screen that was current when it was shown
             for (File file : unreadable) {
                 FOptionPane.showErrorDialog("A saved game couldn't be read, so it wasn't resumed. Its file is kept at:\n" + file);
+            }
+        });
+    }
+
+    /**
+     * A game followed from another phone, left without ending (closed, killed, or Leave): "Stop following" makes it a
+     * past game; "Join again" joins its host with the code it was joined with, asking only for what the copy lacks.
+     * Dismissed, it stays as it is and is offered again next time.
+     */
+    private void offerFollowed(ActiveGame game) {
+        FOptionPane.showOptionDialog(Forge.getLocalizer().getMessage("lblCompanionFollowedGame"),
+                Forge.getLocalizer().getMessage("lblCompanionJoinGame"), null,
+                List.of(Forge.getLocalizer().getMessage("lblCompanionStopFollowing"),
+                        Forge.getLocalizer().getMessage("lblCompanionJoinAgain")), 1, choice -> {
+            if (choice == null) {
+                return;
+            }
+            if (choice == 0) {
+                try {
+                    game.stopFollowing(store);
+                } catch (UncheckedIOException e) {
+                    FOptionPane.showErrorDialog(Forge.getLocalizer().getMessage("lblCompanionStopFollowingFailed",
+                            e.getMessage()));
+                }
+            } else {
+                Forge.openScreen(new JoinGameScreen(store, game.saved().id(), game.code().orElse(null)));
             }
         });
     }

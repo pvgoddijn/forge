@@ -18,8 +18,10 @@ import forge.interfaces.IGameController;
 import forge.util.IHasForgeLog;
 import forge.util.LogSafe;
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
@@ -70,6 +72,8 @@ public final class CompanionShareHost implements IHasForgeLog {
     /** A connection that hasn't been admitted by then is closed. */
     static final int ADMISSION_SECONDS = 15;
     private static final int MAX_FRAME_BYTES = 9766 * 1024; // as net play's
+    /** How long {@link #stop} waits for what the phones are still owed (such as the end) to be sent. */
+    static final int STOP_FLUSH_MILLIS = 1000;
 
     /** A code to show, with the interface its address is on. */
     public record Code(String interfaceName, JoinCode code) { }
@@ -77,6 +81,8 @@ public final class CompanionShareHost implements IHasForgeLog {
     private final CompanionTable table;
     private final int token;
     private final Set<CompanionPeer> peers = ConcurrentHashMap.newKeySet();
+    /** The admitted connections, each with its place in the journal; until their connection closes. */
+    private final Set<Admission> admitted = ConcurrentHashMap.newKeySet();
     private final AtomicInteger refusedAtGate = new AtomicInteger();
     /** The measurement's logging (slice 01); null, and nothing measured, when it's off. */
     private final ShareMeter meter = ShareMeter.enabled() ? new ShareMeter() : null;
@@ -146,11 +152,28 @@ public final class CompanionShareHost implements IHasForgeLog {
         throw new IllegalStateException("No free port from " + first + " to " + last + " to share the game on");
     }
 
-    /** Stops listening and lets every phone go. Stopping a stopped share does nothing. Any thread. */
+    /**
+     * Stops listening and lets every phone go. What the journal still holds for a phone, such as the end of the game
+     * just written, is sent first, and its connection closed once that's out, waiting at most
+     * {@link #STOP_FLUSH_MILLIS} for all of them. Stopping a stopped share does nothing. Any thread.
+     */
     public synchronized void stop() {
         if (journal != null) {
             table.store().setJournal(null); // the store writes as unshared again
             journal = null;
+        }
+        List<ChannelFuture> closing = new ArrayList<>();
+        for (Admission connection : admitted) {
+            closing.add(connection.finish());
+        }
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(STOP_FLUSH_MILLIS);
+        for (ChannelFuture closed : closing) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0 || !closed.awaitUninterruptibly(left, TimeUnit.NANOSECONDS)) {
+                netLog.warn("[Companion] A phone's last data wasn't sent within {} ms: closing anyway",
+                        STOP_FLUSH_MILLIS);
+                break;
+            }
         }
         for (CompanionPeer peer : peers) {
             peer.close();
@@ -221,6 +244,7 @@ public final class CompanionShareHost implements IHasForgeLog {
         private volatile CompanionPeer peer;
         /** This phone's place in the journal, once admitted; closed when the connection closes. */
         private volatile ShareJournal.Subscription data;
+        private volatile ChannelHandlerContext context;
 
         Admission(NetworkByteTracker bytes) {
             this.bytes = bytes;
@@ -286,6 +310,8 @@ public final class CompanionShareHost implements IHasForgeLog {
             // connection's event loop, which sends everything for this phone, so in order
             ShareJournal.Subscription subscription = shared.subscribe(have, () -> scheduleDrain(ctx));
             data = subscription;
+            context = ctx;
+            admitted.add(this);
             client.send(new ShareMessages.Welcome(table.id(), subscription.setup(), subscription.latestSeq()));
             drain(); // the catch-up, before the view: on this event loop, so ahead of any live item's drain
             joined.attach();
@@ -300,6 +326,24 @@ public final class CompanionShareHost implements IHasForgeLog {
                 // the share is stopping: the phone goes with it, and the store's write mustn't fail for that
                 netLog.info("[Companion] Not sending to {}: the share is stopping", client.getUsername());
             }
+        }
+
+        /**
+         * On the share's stop: sends what the subscription still has queued, then closes the connection once it's
+         * written. Returns the connection's close. Any thread.
+         */
+        ChannelFuture finish() {
+            ChannelHandlerContext ctx = context;
+            try {
+                ctx.executor().execute(() -> {
+                    drain();
+                    // the close waits for the writes before it, so nothing queued is cut off
+                    ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
+                });
+            } catch (RejectedExecutionException e) {
+                ctx.close();
+            }
+            return ctx.channel().closeFuture();
         }
 
         /** Sends this phone what its subscription has queued, oldest first. The connection's event loop. */
@@ -326,6 +370,7 @@ public final class CompanionShareHost implements IHasForgeLog {
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            admitted.remove(this);
             ShareJournal.Subscription subscription = data;
             if (subscription != null) {
                 subscription.close();

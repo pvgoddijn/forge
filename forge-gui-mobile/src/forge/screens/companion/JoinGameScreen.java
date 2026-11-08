@@ -30,6 +30,10 @@ import java.util.function.Consumer;
  * game arrives ({@code openView} opens it). Read-only on this device ({@link CompanionViewExtension}). Each failure
  * says what went wrong: not a code, nothing reachable there, the host refused the code, the host left first, or the
  * game didn't arrive in time. Back from this screen ends a join under way.
+ *
+ * <p>"Join again" opens it for a game this device already follows: the code is filled in from the game's
+ * {@code share.json} (when it reads), and the join asks the host only for what the copy lacks
+ * ({@link CompanionClient#followAgain}).
  */
 public class JoinGameScreen extends FScreen {
     private static final float PADDING = Utils.scale(5);
@@ -45,10 +49,24 @@ public class JoinGameScreen extends FScreen {
     private Attempt attempt;
     /** Where the copy of the followed game is kept: Companion's own store. */
     private final CompanionStore store;
+    /** The game in {@link #store} this device follows again, or null for a new join. */
+    private final String followAgain;
 
     public JoinGameScreen(CompanionStore store) {
+        this(store, null, null);
+    }
+
+    /**
+     * "Join again": follows again the game {@code game} this device holds a copy of, at {@code code}; null when its
+     * {@code share.json} doesn't read, and the code is then typed.
+     */
+    public JoinGameScreen(CompanionStore store, String game, JoinCode code) {
         super(Forge.getLocalizer().getMessage("lblCompanionJoinGame"));
         this.store = store;
+        this.followAgain = game;
+        if (code != null) {
+            txtCode.setText(code.text());
+        }
         txtCode.setFont(CODE_FONT);
         txtCode.setAlignment(Align.center);
         txtCode.setGhostText("XXXX-XXXX-XXXX-XXXX");
@@ -68,7 +86,12 @@ public class JoinGameScreen extends FScreen {
             showStatus(Forge.getLocalizer().getMessage("lblCompanionNotACode"));
             return;
         }
-        attempt = new Attempt(code.get());
+        try {
+            attempt = new Attempt(code.get());
+        } catch (RuntimeException e) {
+            showStatus(Forge.getLocalizer().getMessage("lblCompanionCopyUnreadable", String.valueOf(e.getMessage())));
+            return;
+        }
         btnJoin.setText(Forge.getLocalizer().getMessage("lblCancel"));
         showStatus(Forge.getLocalizer().getMessage("lblCompanionConnecting", where(code.get())));
         attempt.start();
@@ -94,7 +117,7 @@ public class JoinGameScreen extends FScreen {
      */
     private final class Attempt {
         private final JoinCode code;
-        private final CompanionViewExtension extension = new CompanionViewExtension(this::ended);
+        private final CompanionViewExtension extension = new CompanionViewExtension(store, this::ended);
         private final CompanionClient client;
         /** Set once this try is over on this screen (cancelled, failed or left), so late callbacks do nothing. */
         private boolean over;
@@ -102,9 +125,12 @@ public class JoinGameScreen extends FScreen {
         Attempt(JoinCode code) {
             this.code = code;
             IGuiGame gui = GuiBase.getInterface().getNewGuiGame();
-            MatchController.setExtension(extension);
             // joins over Wi-Fi with mobile data on
             client = new CompanionClient(playerName(), gui, code, Forge.getDeviceAdapter(), store);
+            if (followAgain != null) {
+                client.followAgain(followAgain); // reads the copy's log, writes nothing; throws when it can't
+            }
+            MatchController.setExtension(extension);
             extension.setClient(client);
             // before the host seats this device, a closed connection isn't retried: the client tells its listeners
             client.addLobbyListener(new ILobbyListener() {
@@ -171,11 +197,14 @@ public class JoinGameScreen extends FScreen {
             extension.matchLeft();
         }
 
-        /** The extension's leave callback, on the UI thread: by Leave on the match screen, or after fail or cancel. */
-        private void ended() {
+        /**
+         * The extension's leave callback, on the UI thread: by Leave on the match screen, after fail or cancel, or
+         * with {@code notice} when the host ended the game or the copy failed.
+         */
+        private void ended(String notice) {
             if (!over) {
                 over = true;
-                showStatus(Forge.getLocalizer().getMessage("lblCompanionLeft"));
+                showStatus(notice != null ? notice : Forge.getLocalizer().getMessage("lblCompanionLeft"));
             }
             if (attempt == this) {
                 attempt = null;

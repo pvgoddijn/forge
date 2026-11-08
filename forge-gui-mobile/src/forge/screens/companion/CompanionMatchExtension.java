@@ -158,6 +158,7 @@ class CompanionMatchExtension implements MatchExtension {
     @Override
     public void matchLeft() {
         if (share != null) {
+            // after an End game, the end goes out first: stop sends what the phones are still owed
             share.stop(); // the joined devices lose the game with it (slice 04 keeps them waiting)
             share = null;
         }

@@ -3,35 +3,92 @@ package forge.screens.companion;
 import forge.Forge;
 import forge.assets.FSkinImage;
 import forge.game.player.PlayerView;
+import forge.gamemodes.companion.CompanionLogEntry;
+import forge.gamemodes.companion.CompanionSetup;
+import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.share.CompanionClient;
+import forge.gui.FThreads;
 import forge.menu.FDropDownMenu;
 import forge.menu.FMenuItem;
 import forge.screens.match.MatchController;
 import forge.screens.match.MatchExtension;
+import forge.toolbox.FOptionPane;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * The match screen of a game shared by another device and joined here (AC-107, AC-108): read-only. The game menu has
  * only Leave; no Concede, no Add card button, no life tap, no card menu. What the screen's own buttons and keys still
  * send (OK, Ctrl+Z, a tap on a card) the host drops ({@code PeerGate}). Set before the client connects, so the match
  * screen {@code openView} builds is built with it.
+ *
+ * <p>The game menu's History shows this device's own copy of the game's log ({@link CompanionStore#loadLog}, which
+ * writes nothing), with the player filter (AC-107). When the host ends the game, this device leaves the match screen
+ * and says so; the copy is then one of its past games (AC-113). When the copy can't be written, it stops following
+ * and says so, rather than going on with a copy that no longer matches the host's.
  */
 final class CompanionViewExtension implements MatchExtension {
-    private final Runnable onLeft;
+    private final CompanionStore store;
+    private final Consumer<String> onLeft;
     private volatile CompanionClient client;
     private volatile boolean left;
+    /** Set once the copy has ended or failed, so only the first of them leaves. */
+    private final AtomicBoolean stopping = new AtomicBoolean();
+    /** The notice for {@link #onLeft} when the copy makes this device leave, else null. UI thread. */
+    private String leaveNotice;
 
-    /** @param onLeft run on the UI thread once this device has left the game, by Leave or any other way out */
-    CompanionViewExtension(Runnable onLeft) {
+    /**
+     * @param store  where the client keeps the copy of the game
+     * @param onLeft run on the UI thread once this device has left the game, by Leave or any other way out; given
+     *               the notice shown when the copy made it leave (the host ended the game, or the copy failed), else
+     *               null
+     */
+    CompanionViewExtension(CompanionStore store, Consumer<String> onLeft) {
+        this.store = store;
         this.onLeft = onLeft;
     }
 
-    /** The connection to close on leaving; set before it connects. */
+    /** The connection to close on leaving; set before it connects. Listens to its copy for the end and failures. */
     void setClient(CompanionClient client) {
         this.client = client;
+        client.addCopyListener(new CompanionClient.CopyListener() {
+            @Override
+            public void ended(String game) {
+                leaveWithNotice(Forge.getLocalizer().getMessage("lblCompanionHostEnded"));
+            }
+
+            @Override
+            public void failed(String game, RuntimeException e) {
+                String why = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                leaveWithNotice(Forge.getLocalizer().getMessage("lblCompanionCopyFailed", why));
+            }
+        });
+    }
+
+    /** The copy's thread: leaves the game on the UI thread, once, and shows {@code notice}. */
+    private void leaveWithNotice(String notice) {
+        if (!stopping.compareAndSet(false, true)) {
+            return;
+        }
+        FThreads.invokeInEdtLater(() -> {
+            if (!left) {
+                leaveNotice = notice;
+                if (MatchController.getView() != null && Forge.getCurrentScreen() == MatchController.getView()) {
+                    MatchController.instance.afterGameEnd(); // as Leave: closes the match screen, then matchLeft
+                }
+                matchLeft(); // when the match screen wasn't open yet, or wasn't left that way
+            }
+            // also when this device had just left (what came before is still written): it's still news. After
+            // leaving, so the notice belongs to the screen this device is back on
+            FOptionPane.showMessageDialog(notice);
+        });
     }
 
     @Override
     public void addGameMenuItems(FDropDownMenu menu) {
+        menu.addItem(new FMenuItem(Forge.getLocalizer().getMessage("lblCompanionHistory"), e -> showHistory()));
         // the match screen closes through afterGameEnd, as at the end of any match; that calls matchLeft
         menu.addItem(new FMenuItem(Forge.getLocalizer().getMessage("lblLeave"), FSkinImage.CONCEDE,
                 e -> MatchController.instance.afterGameEnd()));
@@ -52,6 +109,26 @@ final class CompanionViewExtension implements MatchExtension {
         return !left && c != null && c.isActive();
     }
 
+    /** This device's own copy of the log: what the host sent, written here before it's shown. UI thread. */
+    private void showHistory() {
+        CompanionClient c = client;
+        String game = c == null ? null : c.welcomedTo();
+        if (game == null) {
+            return; // nothing followed yet: the menu shows only once the game has arrived, after the welcome
+        }
+        List<CompanionLogEntry> log;
+        List<String> seats;
+        try {
+            log = store.loadLog(game);
+            seats = store.loadSetup(game).seats().stream().map(CompanionSetup.Seat::name).toList();
+        } catch (RuntimeException e) {
+            FOptionPane.showErrorDialog(Forge.getLocalizer().getMessage("lblCompanionHistoryUnreadable",
+                    String.valueOf(e.getMessage())));
+            return;
+        }
+        Forge.openScreen(new CompanionHistoryScreen(log, seats));
+    }
+
     /** Closes the connection (no reconnect after it) and takes this extension off the match screen. Idempotent. */
     @Override
     public void matchLeft() {
@@ -64,7 +141,7 @@ final class CompanionViewExtension implements MatchExtension {
             c.close();
         }
         MatchController.clearExtension(this);
-        onLeft.run();
+        onLeft.accept(leaveNotice);
     }
 
     @Override
