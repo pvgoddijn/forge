@@ -13,6 +13,7 @@ import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.TableEditor;
+import forge.gamemodes.companion.share.CompanionShareHost;
 import forge.gamemodes.match.HostedMatch;
 import forge.gamemodes.match.input.InputPayMana;
 import forge.gui.FThreads;
@@ -60,6 +61,7 @@ class CompanionMatchExtension implements MatchExtension {
                 !table.addedThisTurn().isEmpty()));
         // the log as of that prompt too, published by the game thread: nothing here reads the game or the store
         menu.addItem(new FMenuItem(Forge.getLocalizer().getMessage("lblCompanionHistory"), e -> showHistory()));
+        menu.addItem(new FMenuItem(Forge.getLocalizer().getMessage("lblCompanionShareGame"), e -> share()));
         // the menu is built each time it opens, so the labels show the current settings
         boolean everyTurn = table.engineCombat();
         if (!everyTurn) {
@@ -138,6 +140,27 @@ class CompanionMatchExtension implements MatchExtension {
                         table.undoAdd(ran.seq());
                     }
                 }));
+    }
+
+    /**
+     * The share of this match's table, made the first time "Share game…" is picked; stopped from the dialog, or when
+     * the match is left. UI thread.
+     */
+    private CompanionShareHost share;
+
+    private void share() {
+        if (share == null) {
+            share = new CompanionShareHost(table);
+        }
+        new ShareDialog(share).show();
+    }
+
+    @Override
+    public void matchLeft() {
+        if (share != null) {
+            share.stop(); // the joined devices lose the game with it (slice 04 keeps them waiting)
+            share = null;
+        }
     }
 
     private void showHistory() {

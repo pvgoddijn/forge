@@ -65,6 +65,8 @@ public class CompanionSetupScreen extends LaunchScreen {
     /** On by default (AC-43): Start then asks for each player's commander (AC-44). */
     private final FCheckBox chkCommanderMode = form.add(new FCheckBox("Commander mode", true));
     private final FButton btnPastGames = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionPastGames")));
+    /** A game shared by another device, followed here read-only (AC-102). */
+    private final FButton btnJoinGame = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionJoinGame")));
     private int playerCount = 4;
 
     public CompanionSetupScreen() {
@@ -93,6 +95,7 @@ public class CompanionSetupScreen extends LaunchScreen {
         btnFewer.setCommand(e -> setPlayerCount(playerCount - 1));
         btnMore.setCommand(e -> setPlayerCount(playerCount + 1));
         btnPastGames.setCommand(e -> Forge.openScreen(new CompanionPastGamesScreen(store)));
+        btnJoinGame.setCommand(e -> Forge.openScreen(new JoinGameScreen()));
         updateRows();
     }
 
@@ -168,10 +171,12 @@ public class CompanionSetupScreen extends LaunchScreen {
 
     @Override
     protected void doLayoutAboveBtnStart(float startY, float width, float height) {
-        // Past games stays put above Start; the form above it scrolls
+        // Past games and Join game stay put above Start, side by side; the form above them scrolls
         float rowHeight = FTextField.getDefaultHeight();
         float pastGamesY = height - rowHeight - PADDING;
-        btnPastGames.setBounds(PADDING, pastGamesY, width - 2 * PADDING, rowHeight);
+        float buttonWidth = (width - 3 * PADDING) / 2;
+        btnPastGames.setBounds(PADDING, pastGamesY, buttonWidth, rowHeight);
+        btnJoinGame.setBounds(btnPastGames.getRight() + PADDING, pastGamesY, buttonWidth, rowHeight);
         form.setBounds(0, startY, width, pastGamesY - PADDING - startY);
     }
 

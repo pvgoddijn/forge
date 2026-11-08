@@ -29,6 +29,9 @@ public class VGameMenu extends FDropDownMenu {
         }
         if (MatchController.getExtension() != null) {
             MatchController.getExtension().addGameMenuItems(this);
+            if (MatchController.getExtension().replacesGameMenu()) {
+                return; // a watched game: nothing of Forge's own that would act on it
+            }
         }
         if (MatchController.offersConcede()) {
             addItem(new FMenuItem(MatchController.instance.getConcedeCaption(), FSkinImage.CONCEDE, e ->

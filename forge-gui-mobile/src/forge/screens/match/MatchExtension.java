@@ -91,4 +91,28 @@ public interface MatchExtension {
     default boolean leavesWhenGameOver() {
         return false;
     }
+
+    /**
+     * Whether the game menu shows only this mode's items, without Forge's own (Concede, Offer Draw, yields, Settings),
+     * as for a game this device only watches.
+     */
+    default boolean replacesGameMenu() {
+        return false;
+    }
+
+    /**
+     * Whether this extension is for a game hosted on another device and only shown here, through the network. Such a
+     * match has no {@link forge.gamemodes.match.HostedMatch} here to tell it apart from another game, so the extension
+     * applies for as long as it says yes; it says no once its mode has left the game.
+     */
+    default boolean followsRemoteGame() {
+        return false;
+    }
+
+    /**
+     * Called on the UI thread when the match screen is left after its game ended, and when another match is hosted.
+     * May be called more than once.
+     */
+    default void matchLeft() {
+    }
 }

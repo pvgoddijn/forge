@@ -690,6 +690,9 @@ public class MatchController extends NetworkGuiGame {
     @Override
     public void afterGameEnd() {
         super.afterGameEnd();
+        if (extension != null) {
+            extension.matchLeft(); // the field itself: the hosted match no longer has a game to compare with
+        }
         Forge.back(true);
         if (Forge.disposeTextures)
             ImageCache.getInstance().disposeTextures();
@@ -887,6 +890,9 @@ public class MatchController extends NetworkGuiGame {
 
     public static HostedMatch hostMatch() {
         hostedMatch = new HostedMatch();
+        if (extension != null) {
+            extension.matchLeft(); // its match is over, even if its screen wasn't left the usual way
+        }
         extension = null; // belongs to one match, so a new match starts without it
         return hostedMatch;
     }
@@ -896,7 +902,13 @@ public class MatchController extends NetworkGuiGame {
 
     /** The current match's extension, or null, as when another game, such as a network game, is shown. */
     public static MatchExtension getExtension() {
-        return extension != null && hostedMatch.getGameView() == instance.getGameView() ? extension : null;
+        if (extension == null) {
+            return null;
+        }
+        if (extension.followsRemoteGame()) {
+            return extension; // a game hosted elsewhere: no hosted match here to compare with
+        }
+        return hostedMatch != null && hostedMatch.getGameView() == instance.getGameView() ? extension : null;
     }
 
     /** Whether the current match offers Forge's Concede: any match, unless its extension says no. */
