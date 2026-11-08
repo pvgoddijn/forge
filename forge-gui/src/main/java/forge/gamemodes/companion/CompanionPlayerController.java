@@ -54,6 +54,7 @@ public class CompanionPlayerController extends PlayerControllerHuman {
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         Game game = getGame();
         table.endRevealRun(); // a reveal from here on is a new one, even if it's the same as the last
+        table.runSystemOps(); // a view attached or resynced (CompanionTable.runSystem), before any op changes the game
         PhaseHandler ph = game.getPhaseHandler();
         if (table.isParked()) {
             // A sorcery waits for its main phase (AC-42, D5). Until it's reached, every seat passes at every stop, so

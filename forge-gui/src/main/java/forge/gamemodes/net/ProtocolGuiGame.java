@@ -274,6 +274,28 @@ public class ProtocolGuiGame extends NetworkGuiGame implements IHasForgeLog {
         // but the Command zone dirty bit is sporadically lost in Commander games.
     }
 
+    /**
+     * Starts delta sync for a proxy attached after the game started, which never sees
+     * {@code GameEventGameStarted}: makes the current view the delta baseline and sends it as the
+     * full state, so the next flush carries only what changed since, and a later
+     * {@code GameEventSnapshotRestored} (an undo) sends the full state again. Call after
+     * {@link #openView}, on the game thread.
+     *
+     * <p>{@link DeltaSyncManager#registerNewObjects} isn't enough here: it only starts dirty
+     * tracking and leaves every object to go again, in full, in the next delta. A walk registers
+     * each object as sent and clears its dirty bits; its packet is dropped, as the full state sent
+     * right after it, with the walk's sequence number, carries the same.
+     */
+    public void attachMidGame() {
+        final GameView gameView = getGameView();
+        if (gameView == null) {
+            return;
+        }
+        syncManager.collectDeltas(gameView);
+        sendFullState();
+        objectsRegistered = true;
+    }
+
     @Override
     public void setGameView(final GameView gameView) {
         super.setGameView(gameView);

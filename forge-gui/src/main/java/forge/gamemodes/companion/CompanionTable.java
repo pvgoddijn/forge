@@ -203,6 +203,8 @@ public class CompanionTable {
     private volatile CompanionSetup setup; // the options in it can change during the game
     private final CompanionStore store;
     private final Queue<Op> pending = new ConcurrentLinkedQueue<>();
+    /** What {@link #runSystem} queued, run before the ops and never logged. */
+    private final Queue<Runnable> system = new ConcurrentLinkedQueue<>();
     private final List<CompanionPlayerController> seats = new CopyOnWriteArrayList<>();
     private volatile Consumer<TableEditor.Result> onResult = r -> { };
     private volatile Consumer<String> onNotice = n -> { };
@@ -605,6 +607,32 @@ public class CompanionTable {
         pending.add(op);
         for (CompanionPlayerController seat : seats) {
             endPriorityPrompt(seat);
+        }
+    }
+
+    /**
+     * Queues {@code task} to run on the game loop thread, before any queued op, and ends the priority prompt so it
+     * runs soon, as {@link #submit(Op)} does. Unlike an op it isn't an action at the table: it isn't logged, doesn't
+     * count toward the next save, and must leave the game as it found it (attaching a view, a resync). It runs only
+     * from a priority ask ({@link CompanionPlayerController#chooseSpellAbilityToPlay}), so while a target or choice
+     * prompt blocks the game thread it waits for that prompt to be answered. Any thread.
+     */
+    public void runSystem(Runnable task) {
+        system.add(task);
+        for (CompanionPlayerController seat : seats) {
+            endPriorityPrompt(seat);
+        }
+    }
+
+    /** Runs what {@link #runSystem} queued, in order. A failing one is reported and the rest still run. Game loop thread. */
+    void runSystemOps() {
+        Runnable task;
+        while ((task = system.poll()) != null) {
+            try {
+                task.run();
+            } catch (RuntimeException e) {
+                e.printStackTrace(); // a view's trouble mustn't stop the table
+            }
         }
     }
 

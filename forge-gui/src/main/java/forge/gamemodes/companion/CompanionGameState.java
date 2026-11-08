@@ -3,6 +3,7 @@ package forge.gamemodes.companion;
 import forge.game.Game;
 import forge.game.GameState;
 import forge.game.card.Card;
+import forge.game.event.GameEventSnapshotRestored;
 import forge.game.player.Player;
 import forge.game.zone.MagicStack;
 
@@ -84,13 +85,20 @@ public class CompanionGameState extends GameState {
      * {@link #clearStack}). A combat in progress is ended by Forge's own apply, which sets the phase.
      */
     public void applyNow(Game game) {
-        clearStack(game);
-        applyGameOnThread(game);
-        for (Player player : game.getPlayers()) {
-            clearLifeThisTurn(player);
+        // as Forge's own undo does: every card is made again with a new id, so a screen rebuilds and a remote view
+        // gets the whole state again (ProtocolGuiGame), as changes over the old ids would name nothing
+        game.fireEvent(new GameEventSnapshotRestored(true));
+        try {
+            clearStack(game);
+            applyGameOnThread(game);
+            for (Player player : game.getPlayers()) {
+                clearLifeThisTurn(player);
+            }
+            // Forge sets the turn number without telling the view, which would show the old turn until the next one began
+            game.updateTurnForView();
+        } finally {
+            game.fireEvent(new GameEventSnapshotRestored(false));
         }
-        // Forge sets the turn number without telling the view, which would show the old turn until the next one began
-        game.updateTurnForView();
     }
 
     /**
