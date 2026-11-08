@@ -280,6 +280,11 @@ public class CompanionTable {
         return setup;
     }
 
+    /** The seats of the running game, one per player, or none before a game runs. A view attaches to their inputs. */
+    public List<CompanionPlayerController> seats() {
+        return Collections.unmodifiableList(seats);
+    }
+
     /** Whether combat is declared through the engine every turn. A change counts from the next combat. */
     public boolean engineCombat() {
         return setup.engineCombat();

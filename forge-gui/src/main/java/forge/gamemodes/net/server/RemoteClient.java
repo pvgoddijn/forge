@@ -222,7 +222,8 @@ public final class RemoteClient implements IToClient, IHasForgeLog {
         return sendErrors.get();
     }
 
-    ReplyPool getReplyPool() {
+    /** The replies this client's host-side calls wait for. Public for Companion's own server. */
+    public ReplyPool getReplyPool() {
         return replies;
     }
 }

@@ -275,24 +275,29 @@ public class ProtocolGuiGame extends NetworkGuiGame implements IHasForgeLog {
     }
 
     /**
-     * Starts delta sync for a proxy attached after the game started, which never sees
-     * {@code GameEventGameStarted}: makes the current view the delta baseline and sends it as the
-     * full state, so the next flush carries only what changed since, and a later
-     * {@code GameEventSnapshotRestored} (an undo) sends the full state again. Call after
-     * {@link #openView}, on the game thread.
+     * Attaches this proxy to a game that has already started, in place of {@code setGameView}
+     * then {@link #openView}: the peer gets the board once, then its seats, and from then on
+     * deltas. A proxy attached this late never sees {@code GameEventGameStarted}, so this also
+     * does what that event does, which lets a later {@code GameEventSnapshotRestored} (an undo)
+     * send the full state again. Call on the game thread, after the forwarder is set.
      *
-     * <p>{@link DeltaSyncManager#registerNewObjects} isn't enough here: it only starts dirty
-     * tracking and leaves every object to go again, in full, in the next delta. A walk registers
-     * each object as sent and clears its dirty bits; its packet is dropped, as the full state sent
-     * right after it, with the walk's sequence number, carries the same.
+     * <p>The view is bound without a send, and {@code openView} goes out without the full sends
+     * {@link #openView} adds, as the peer already has the board: one full state on the wire
+     * instead of four. The peer needs the view before {@code openView}, as on a reconnect
+     * ({@code FServerManager.resumeAndResync}).
+     *
+     * <p>{@link DeltaSyncManager#registerNewObjects} isn't enough to start delta sync here: it
+     * only starts dirty tracking and leaves every object to go again, in full, in the next delta.
+     * A walk registers each object as sent and clears its dirty bits; its packet is dropped, as
+     * the full state sent right after it, with the walk's sequence number, carries the same.
      */
-    public void attachMidGame() {
-        final GameView gameView = getGameView();
-        if (gameView == null) {
-            return;
-        }
+    public void attachMidGame(final GameView gameView, final TrackableCollection<PlayerView> myPlayers) {
+        super.setGameView(null);
+        super.setGameView(gameView);
+        onTrackerBound(gameView.getTracker(), syncManager.getConsumerId());
         syncManager.collectDeltas(gameView);
         sendFullState();
+        send(ProtocolMethod.openView, myPlayers);
         objectsRegistered = true;
     }
 

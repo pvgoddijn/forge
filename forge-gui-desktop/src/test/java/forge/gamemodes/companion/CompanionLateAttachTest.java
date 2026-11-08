@@ -151,18 +151,16 @@ public class CompanionLateAttachTest extends AITest {
         ProtocolGuiGame proxy = new ProtocolGuiGame(peer);
         GameEventForwarder forwarder = new GameEventForwarder(proxy);
         table.runSystem(() -> {
-            proxy.setGameView(null);
-            proxy.setGameView(game.getView());
             proxy.setForwarder(forwarder);
             game.subscribeToEvents(forwarder);
             List<PlayerView> seats = new ArrayList<>();
             game.getPlayers().forEach(p -> seats.add(p.getView()));
-            proxy.openView(new TrackableCollection<>(seats));
-            proxy.attachMidGame();
+            proxy.attachMidGame(game.getView(), new TrackableCollection<>(seats));
         });
         assertTrue(peer.methods.isEmpty(), "nothing runs until the loop runs the system ops");
         table.runSystemOps();
-        assertFalse(peer.fullStates.isEmpty(), "the peer got the board on attach");
+        assertEquals(peer.methods, List.of("setGameView", "openView"),
+                "the board once, then the seats, as a client needs the view before openView");
         Set<Integer> attached = peer.fullStates.get(peer.fullStates.size() - 1);
         int bears = game.getCardsIn(ZoneType.Battlefield).stream()
                 .filter(c -> c.getName().equals("Grizzly Bears")).findFirst().orElseThrow().getId();
