@@ -8,12 +8,14 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
 import forge.gamemodes.companion.CompanionLogEntry.FromHand;
 import forge.gamemodes.companion.CompanionLogEntry.Kind;
+import forge.gamemodes.companion.CompanionStore.Verbatim;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -180,7 +182,7 @@ public class CompanionStoreShould {
                 .withCard("Llanowar Elves", FromHand.PLACEHOLDER);
         CompanionLogEntry undo = CompanionLogEntry.undo(2, List.of(3), 2, "Ann", "Undid Llanowar Elves");
 
-        CompanionLogEntry written = store.appendLog(id, add);
+        CompanionLogEntry written = store.appendLog(id, add).entry();
         store.appendLog(id, undo);
 
         assertThat(written.seq()).isEqualTo(1);
@@ -193,7 +195,7 @@ public class CompanionStoreShould {
         store.appendLog(id, CompanionLogEntry.of(Kind.NOTICE, 0, 1, null, null, "two"));
 
         CompanionLogEntry third = new CompanionStore(dir).appendLog(id,
-                CompanionLogEntry.of(Kind.NOTICE, 0, 1, null, null, "three"));
+                CompanionLogEntry.of(Kind.NOTICE, 0, 1, null, null, "three")).entry();
 
         assertThat(third.seq()).isEqualTo(3);
     }
@@ -246,11 +248,14 @@ public class CompanionStoreShould {
      */
     @Test
     public void deriveUndoneEntriesFromLaterUndoEntries() {
-        long first = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).seq();
-        long second = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "b")).seq();
-        long notice = store.appendLog(id, CompanionLogEntry.of(Kind.NOTICE, 2, 1, "Ann", List.of(), "c")).seq();
-        long undo = store.appendLog(id, CompanionLogEntry.undo(1, List.of(2), 1, "Ann", "undo")).seq();
-        long redone = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "d")).seq();
+        long first = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a"))
+                .entry().seq();
+        long second = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "b"))
+                .entry().seq();
+        long notice = store.appendLog(id, CompanionLogEntry.of(Kind.NOTICE, 2, 1, "Ann", List.of(), "c")).entry().seq();
+        long undo = store.appendLog(id, CompanionLogEntry.undo(1, List.of(2), 1, "Ann", "undo")).entry().seq();
+        long redone = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "d"))
+                .entry().seq();
 
         Set<Long> undone = CompanionLogEntry.undone(new CompanionStore(dir).loadLog(id));
 
@@ -299,15 +304,18 @@ public class CompanionStoreShould {
     @Test
     public void markUndoneTheEntriesOfAStepAnInterruptedUndoDiscarded() {
         store.saveState(id, "step 0");
-        long first = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).seq();
+        long first = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a"))
+                .entry().seq();
         store.saveState(id, "step 1");
-        long second = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "b")).seq();
+        long second = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "b"))
+                .entry().seq();
         store.saveState(id, "step 2");
         store.discardAfter(id, 1); // the undo's files; then the crash, so no undo entry
 
         CompanionStore restarted = new CompanionStore(dir);
         assertThat(restarted.loadState(id)).isEqualTo(lines("step 1"));
-        long redone = restarted.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "c")).seq();
+        long redone = restarted.appendLog(id, CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "c"))
+                .entry().seq();
         restarted.saveState(id, "step 2 again");
 
         assertThat(CompanionLogEntry.undone(restarted.loadLog(id))).containsExactly(second);
@@ -324,7 +332,7 @@ public class CompanionStoreShould {
     @Test
     public void markUndoneAnActionThatWasNeverSaved() {
         store.saveState(id, "step 0");
-        long lost = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).seq();
+        long lost = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).entry().seq();
 
         new CompanionStore(dir).loadState(id);
 
@@ -367,14 +375,15 @@ public class CompanionStoreShould {
     /** A log that can't be written keeps numbering on, so an entry kept in memory isn't given the next one's seq. */
     @Test
     public void takeTheSeqOfAnEntryItCouldntWrite() throws IOException {
-        assertThat(store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "a")).seq())
+        assertThat(store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "a")).entry().seq())
                 .isEqualTo(1);
         File log = new File(new File(dir, id), "log.txt");
         Files.delete(log.toPath());
         assertThat(log.mkdir()).isTrue(); // the log can't be written now
 
-        long unwritten = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "b")).seq();
-        long next = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "c")).seq();
+        long unwritten = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "b"))
+                .entry().seq();
+        long next = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 0, 1, "Ann", List.of("Ann"), "c")).entry().seq();
 
         assertThat(unwritten).isEqualTo(2);
         assertThat(next).isEqualTo(3);
@@ -451,10 +460,10 @@ public class CompanionStoreShould {
     @Test
     public void showAnEndedGamesUnsavedActionUndoneWithoutWritingItsLog() throws IOException {
         store.saveState(id, "step 0");
-        long kept = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).seq();
+        long kept = store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")).entry().seq();
         store.saveState(id, "step 1");
         long unsaved = store.appendLog(id, CompanionLogEntry.of(Kind.ACTION, 2, 1, "Ann", List.of("Ann"), "b"))
-                .seq();
+                .entry().seq();
         store.end(id);
         File log = new File(new File(dir, id), "log.txt");
         byte[] before = Files.readAllBytes(log.toPath());
@@ -567,5 +576,207 @@ public class CompanionStoreShould {
         String prefix = "p" + player + "library=";
         return state.stream().filter(line -> line.startsWith(prefix))
                 .mapToInt(line -> line.substring(prefix.length()).split(";").length).findFirst().orElse(-1);
+    }
+    /** What the host's journal would send: each entry's line as written, a gap for each failed append. */
+    private static class Recorder implements CompanionStore.Journal {
+        final List<Verbatim> sent = new ArrayList<>();
+        final List<String> events = new ArrayList<>();
+
+        @Override
+        public void appended(String gameId, CompanionLogEntry entry, String line) {
+            sent.add(Verbatim.entry(entry.seq(), line));
+            events.add("entry " + entry.seq());
+        }
+
+        @Override
+        public void appendFailed(String gameId, long seq) {
+            sent.add(Verbatim.gap(seq));
+            events.add("gap " + seq);
+        }
+
+        @Override
+        public void setupSaved(String gameId, CompanionSetup setup) {
+            events.add("setup");
+        }
+
+        @Override
+        public void ended(String gameId) {
+            events.add("end");
+        }
+    }
+
+    private static CompanionLogEntry notice(String text) {
+        return CompanionLogEntry.of(Kind.NOTICE, 0, 1, null, null, text);
+    }
+
+    private String logText(File gameDir) throws IOException {
+        return new String(Files.readAllBytes(new File(gameDir, "log.txt").toPath()), StandardCharsets.UTF_8);
+    }
+
+    /** A phone's store, following the game {@link #id} of {@link #store}. */
+    private CompanionStore follower() throws IOException {
+        File phoneDir = Files.createTempDirectory("companion-phone").toFile();
+        phoneDir.deleteOnExit();
+        CompanionStore phone = new CompanionStore(phoneDir);
+        phone.createWithId(id, CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false))));
+        return phone;
+    }
+
+    @Test
+    public void tellTheJournalOfEachAppendTheSetupAndTheEndInWriteOrder() {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+
+        assertThat(store.appendLog(id, notice("one")).written()).isTrue();
+        store.saveSetup(id, store.loadActive().orElseThrow().setup());
+        store.appendLog(id, notice("two"));
+        store.end(id);
+
+        assertThat(journal.events).containsExactly("entry 1", "setup", "entry 2", "end");
+    }
+
+    @Test
+    public void letTheJournalStampAnEntryBeforeItsNumbered() {
+        store.setJournal(new Recorder() {
+            @Override
+            public CompanionLogEntry stamp(String gameId, CompanionLogEntry entry) {
+                return entry.withOrigin(2, "host-device", "phone-2", "Bo's phone");
+            }
+        });
+
+        CompanionLogEntry written = store.appendLog(id, notice("one")).entry();
+
+        assertThat(written.seq()).isEqualTo(1);
+        assertThat(store.loadLog(id)).containsExactly(written);
+        assertThat(written.byName()).isEqualTo("Bo's phone");
+    }
+
+    /** AC-112: a failed write on the host becomes a tombstone on the phone, and later entries still append. */
+    @Test
+    public void turnAFailedAppendIntoATombstoneOnThePhoneAndKeepAppending() throws IOException {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+        store.appendLog(id, notice("a"));
+        File log = log();
+        File kept = new File(dir, "kept-log.txt");
+        Files.move(log.toPath(), kept.toPath());
+        assertThat(log.mkdir()).isTrue(); // the host's log can't be written now
+
+        CompanionStore.Appended failed = store.appendLog(id, notice("b"));
+
+        assertThat(failed.written()).isFalse();
+        assertThat(failed.entry().seq()).isEqualTo(2);
+        assertThat(journal.events).containsExactly("entry 1", "gap 2");
+        assertThat(log.delete()).isTrue();
+        Files.move(kept.toPath(), log.toPath());
+        assertThat(store.appendLog(id, notice("c")).written()).isTrue();
+
+        CompanionStore phone = follower();
+        assertThat(phone.appendVerbatim(id, journal.sent)).isEqualTo(3);
+
+        List<CompanionLogEntry> copy = phone.loadLog(id);
+        assertThat(copy).extracting(CompanionLogEntry::seq).containsExactly(1L, 2L, 3L);
+        assertThat(copy.get(1).kind()).isEqualTo(Kind.NOTICE);
+        assertThat(copy.get(1).text()).isEqualTo(CompanionStore.LOST_ON_HOST);
+        assertThat(copy).extracting(CompanionLogEntry::text).containsExactly("a", CompanionStore.LOST_ON_HOST, "c");
+        // the entries the host has are the same bytes on the phone
+        String[] hostLines = logText(new File(dir, id)).split("\n");
+        String[] phoneLines = logText(new File(phone.dir(), id)).split("\n");
+        assertThat(phoneLines[0]).isEqualTo(hostLines[0]);
+        assertThat(phoneLines[2]).isEqualTo(hostLines[1]);
+
+        store.appendLog(id, notice("d"));
+        assertThat(phone.appendVerbatim(id, journal.sent.subList(3, 4))).isEqualTo(1);
+        assertThat(phone.loadLog(id)).extracting(CompanionLogEntry::text).endsWith("c", "d");
+    }
+
+    @Test
+    public void copyTheHostsLogByteForByte() throws IOException {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+        store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a")
+                .withCard("Opt", FromHand.KNOWN));
+        store.appendLog(id, CompanionLogEntry.undo(0, List.of(1), 1, "Ann", "undo"));
+
+        CompanionStore phone = follower();
+        phone.appendVerbatim(id, journal.sent);
+
+        assertThat(logText(new File(phone.dir(), id))).isEqualTo(logText(new File(dir, id)));
+    }
+
+    @Test
+    public void skipEntriesThePhoneAlreadyHolds() throws IOException {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+        store.appendLog(id, notice("a"));
+        store.appendLog(id, notice("b"));
+        CompanionStore phone = follower();
+        phone.appendVerbatim(id, journal.sent.subList(0, 1));
+        String before = logText(new File(phone.dir(), id));
+
+        assertThat(phone.appendVerbatim(id, journal.sent.subList(0, 1))).isZero();
+        assertThat(logText(new File(phone.dir(), id))).isEqualTo(before);
+        assertThat(phone.appendVerbatim(id, journal.sent)).isEqualTo(1);
+        assertThat(logText(new File(phone.dir(), id))).isEqualTo(logText(new File(dir, id)));
+    }
+
+    @Test
+    public void refuseADifferentEntryForASeqItHolds() throws IOException {
+        CompanionStore phone = follower();
+        phone.appendVerbatim(id, List.of(Verbatim.entry(1, notice("a").withSeq(1).toLine())));
+
+        assertThatThrownBy(() -> phone.appendVerbatim(id,
+                List.of(Verbatim.entry(1, notice("other").withSeq(1).toLine()))))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    public void refuseAGapNoTombstoneFillsAndWriteNothing() throws IOException {
+        CompanionStore phone = follower();
+        List<Verbatim> withGap = List.of(Verbatim.entry(1, notice("a").withSeq(1).toLine()),
+                Verbatim.entry(3, notice("c").withSeq(3).toLine()));
+
+        assertThatThrownBy(() -> phone.appendVerbatim(id, withGap)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(phone.loadLog(id)).isEmpty();
+    }
+
+    @Test
+    public void refuseALineWhoseSeqIsntTheOneGiven() throws IOException {
+        CompanionStore phone = follower();
+
+        assertThatThrownBy(() -> phone.appendVerbatim(id, List.of(Verbatim.entry(1, notice("a").withSeq(2)
+                .toLine())))).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** After a takeover (M3) the phone logs on its own, numbered after what it copied. */
+    @Test
+    public void numberALaterAppendAfterTheCopiedEntries() throws IOException {
+        CompanionStore phone = follower();
+        phone.appendVerbatim(id, List.of(Verbatim.entry(1, notice("a").withSeq(1).toLine()), Verbatim.gap(2)));
+
+        assertThat(phone.appendLog(id, notice("mine")).entry().seq()).isEqualTo(3);
+    }
+
+    @Test
+    public void createAFollowedGameUnderTheHostsId() throws IOException {
+        CompanionStore phone = follower();
+
+        assertThat(new File(phone.dir(), id)).isDirectory();
+        assertThat(phone.loadActive()).get().extracting(CompanionStore.Saved::id).isEqualTo(id);
+        assertThatThrownBy(() -> phone.createWithId("../escape", phone.loadActive().orElseThrow().setup()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** With no journal, an append writes exactly what v1 wrote (AC-114). */
+    @Test
+    public void writeTheSameLogWithAJournalAsWithout() throws IOException {
+        store.appendLog(id, notice("a"));
+        String without = logText(new File(dir, id));
+        String other = store.create(store.loadActive().orElseThrow().setup());
+        store.setJournal(new Recorder());
+        store.appendLog(other, notice("a"));
+
+        assertThat(logText(new File(dir, other))).isEqualTo(without);
     }
 }

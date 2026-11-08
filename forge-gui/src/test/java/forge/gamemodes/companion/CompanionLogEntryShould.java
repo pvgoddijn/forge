@@ -168,4 +168,35 @@ public class CompanionLogEntryShould {
         assertThat(CompanionLogEntry.settle(log, 1)).isPresent();
         assertThat(CompanionLogEntry.settle(log, 2)).isEmpty();
     }
+
+    @Test
+    public void readBackTheTermHostAndAuthorThroughJson() {
+        CompanionLogEntry entry = CompanionLogEntry.of(Kind.ADD, 2, 1, "Ann", List.of("Ann"), "Ann casts Opt")
+                .withOrigin(3, "host-device", "phone-2", "Bo's phone").withSeq(7);
+
+        CompanionLogEntry read = CompanionLogEntry.fromLine(entry.toLine(), 0);
+
+        assertThat(read).isEqualTo(entry);
+        assertThat(read.term()).isEqualTo(3);
+        assertThat(read.host()).isEqualTo("host-device");
+        assertThat(read.by()).isEqualTo("phone-2");
+        assertThat(read.byName()).isEqualTo("Bo's phone");
+    }
+
+    /** A line written before the term and author fields reads with none, and writes back byte for byte. */
+    @Test
+    public void readAV1LineAsBeforeAndWriteItBackTheSame() {
+        String line = "{\"seq\":4,\"step\":2,\"turn\":1,\"active\":\"Ann\",\"affected\":[\"Ann\"],"
+                + "\"kind\":\"add\",\"text\":\"Ann casts Opt\",\"card\":\"Opt\",\"fromHand\":\"known\"}";
+
+        CompanionLogEntry read = CompanionLogEntry.fromLine(line, 0);
+
+        assertThat(read).isEqualTo(new CompanionLogEntry(4, 2, 1, "Ann", List.of("Ann"), Kind.ADD, "Ann casts Opt",
+                "Opt", FromHand.KNOWN, null));
+        assertThat(read.term()).isZero();
+        assertThat(read.host()).isNull();
+        assertThat(read.by()).isNull();
+        assertThat(read.byName()).isNull();
+        assertThat(read.toLine()).isEqualTo(line);
+    }
 }

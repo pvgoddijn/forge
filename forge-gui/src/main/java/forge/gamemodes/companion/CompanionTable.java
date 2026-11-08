@@ -377,7 +377,7 @@ public class CompanionTable {
      */
     private synchronized CompanionLogEntry append(CompanionLogEntry entry) {
         List<CompanionLogEntry> entries = cachedLog();
-        CompanionLogEntry written = store.appendLog(id, entry);
+        CompanionLogEntry written = store.appendLog(id, entry).entry();
         entries.add(written);
         return written;
     }

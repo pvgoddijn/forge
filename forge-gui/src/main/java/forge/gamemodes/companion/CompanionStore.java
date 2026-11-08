@@ -21,6 +21,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -38,6 +39,11 @@ import java.util.UUID;
  * </ul>
  * A folder with no {@code ended} file is the active game.
  * <p>
+ * A game followed from another phone (a shared game) has a folder under the host's game id ({@link #createWithId}),
+ * and its log is copied in as the host wrote it ({@link #appendVerbatim}). A following store must never call
+ * {@link #loadState} for that game: it would write a settle undo of its own, and the log would no longer be the host's
+ * byte for byte. It reads with {@link #loadLog} and {@link #loadFinalState}, which write nothing.
+ * <p>
  * The setup is mapped to JSON by hand, not through Gson's record support, which relies on reflection that isn't
  * dependable on Android.
  */
@@ -52,32 +58,128 @@ public class CompanionStore {
     private static final String ENDED = "ended";
     private static final String DAMAGED_SUFFIX = ".damaged";
 
+    /** The text of the notice that stands in for an entry the host couldn't write ({@link #appendVerbatim}). */
+    public static final String LOST_ON_HOST = "An entry was lost on the host";
+
     /** A saved game. Its latest state is read when it starts, by {@link #loadState}. */
     public record Saved(String id, CompanionSetup setup) { }
+
+    /**
+     * Told of what the store writes, in write order, on the thread that writes it: how a shared game's host feeds its
+     * phones. Each call is made while the store holds its lock for the write, so calls never overlap or reorder.
+     * With no journal ({@link #setJournal}) the store behaves exactly as before sharing (AC-114).
+     */
+    public interface Journal {
+        /**
+         * The entry to write in place of {@code entry}, before it's numbered: a shared game stamps it here with its
+         * term, host and author ({@link CompanionLogEntry#withOrigin}). By default it's written as it is.
+         */
+        default CompanionLogEntry stamp(String id, CompanionLogEntry entry) {
+            return entry;
+        }
+
+        /** {@code entry}, numbered, was written to the log as {@code line} (with no newline). */
+        void appended(String id, CompanionLogEntry entry, String line);
+
+        /** The entry numbered {@code seq} couldn't be written: the seq is used up, and nothing on disk has it. */
+        void appendFailed(String id, long seq);
+
+        /** The game's setup was written: at its creation, or changed during the game. */
+        void setupSaved(String id, CompanionSetup setup);
+
+        /** The game was marked ended. */
+        void ended(String id);
+    }
+
+    /**
+     * An entry as {@link #appendLog} wrote it, and whether it reached the log.
+     *
+     * @param entry   the entry, numbered (and stamped by the journal, if any)
+     * @param written false when the log couldn't be written: the entry's seq is still used up
+     */
+    public record Appended(CompanionLogEntry entry, boolean written) { }
+
+    /**
+     * One item of a log copied from the host, for {@link #appendVerbatim}: either a log line, or a gap, a seq the host
+     * used up without writing an entry (a failed write), which becomes a tombstone.
+     *
+     * @param seq  the seq of the entry, or of the gap
+     * @param line the log line exactly as the host wrote it, without its newline; null for a gap
+     */
+    public record Verbatim(long seq, String line) {
+        public Verbatim {
+            if (line != null && (line.indexOf('\n') >= 0 || line.indexOf('\r') >= 0)) {
+                throw new IllegalArgumentException("A log line has no line break in it: seq " + seq);
+            }
+        }
+
+        /** The host's log line {@code line}, numbered {@code seq}. */
+        public static Verbatim entry(long seq, String line) {
+            return new Verbatim(seq, Objects.requireNonNull(line));
+        }
+
+        /** The seq the host used up without writing an entry. */
+        public static Verbatim gap(long seq) {
+            return new Verbatim(seq, null);
+        }
+
+        public boolean isGap() {
+            return line == null;
+        }
+    }
 
     private final File dir;
     /** The last seq written to each game's log, read from the log at a game's first append. */
     private final Map<String, Long> lastSeq = new HashMap<>();
     private List<File> unreadable = new ArrayList<>();
+    private volatile Journal journal;
 
     public CompanionStore(File dir) {
         this.dir = dir;
     }
 
+    /** The folder holding every game's folder. */
+    File dir() {
+        return dir;
+    }
+
+    /** Tells {@code journal} of every write from now on, or nothing when it's null. */
+    public void setJournal(Journal journal) {
+        this.journal = journal;
+    }
+
     /** Starts a new game's folder, and returns its id. */
     public String create(CompanionSetup setup) {
         String id = UUID.randomUUID().toString();
+        createWithId(id, setup);
+        return id;
+    }
+
+    /**
+     * Makes the folder of a game followed from another phone, under the host's id, and writes its setup. A folder that
+     * is already there (following the same game again) is kept, with its log; its setup is replaced.
+     *
+     * @throws IllegalArgumentException for an id that isn't a plain folder name (letters, digits, '-'), as one from the
+     *                                  network might not be
+     */
+    public void createWithId(String id, CompanionSetup setup) {
+        if (id == null || !id.matches("[A-Za-z0-9-]{1,64}")) {
+            throw new IllegalArgumentException("Not a game id: " + id);
+        }
         File gameDir = new File(dir, id);
         if (!gameDir.mkdirs() && !gameDir.isDirectory()) {
             throw new UncheckedIOException(new IOException("Can't create " + gameDir));
         }
-        writeWhole(new File(gameDir, SETUP), toJson(setup));
-        return id;
+        saveSetup(id, setup);
     }
 
     /** Replaces the game's setup, for the options the operator can change during the game. */
-    public void saveSetup(String id, CompanionSetup setup) {
+    public synchronized void saveSetup(String id, CompanionSetup setup) {
         writeWhole(new File(new File(dir, id), SETUP), toJson(setup));
+        Journal j = journal;
+        if (j != null) {
+            j.setupSaved(id, setup);
+        }
     }
 
     /** Saves {@code state} as the next step, and returns its number: 0 for the game's first save. */
@@ -265,8 +367,12 @@ public class CompanionStore {
     }
 
     /** Marks the game ended, so it's no longer the active game and Companion doesn't resume it. */
-    public void end(String id) {
+    public synchronized void end(String id) {
         writeWhole(new File(new File(dir, id), ENDED), "");
+        Journal j = journal;
+        if (j != null) {
+            j.ended(id);
+        }
     }
 
     /** Moves a game that can't be loaded out of the way, so Companion doesn't keep trying to resume it. */
@@ -277,29 +383,147 @@ public class CompanionStore {
     }
 
     /**
-     * Adds {@code entry} to the game's log, numbered after the last entry, and returns it as written. A log that can't
-     * be written doesn't stop the game: the entry is returned, unwritten, and its seq is still taken. If a crash cut the last line short, the new
-     * entry starts on a line of its own, so only the cut line is lost.
+     * Adds {@code entry} to the game's log, numbered after the last entry, and returns it as written. The journal, if
+     * any, stamps it first and is told of it after. A log that can't be written doesn't stop the game: the entry is
+     * returned, unwritten ({@link Appended#written} false), its seq is still taken, and the journal is told of the
+     * failure. If a crash cut the last line short, the new entry starts on a line of its own, so only the cut line is
+     * lost.
      */
-    public synchronized CompanionLogEntry appendLog(String id, CompanionLogEntry entry) {
+    public synchronized Appended appendLog(String id, CompanionLogEntry entry) {
         File log = new File(new File(dir, id), LOG);
-        CompanionLogEntry numbered = entry;
+        Journal j = journal;
+        CompanionLogEntry numbered = j != null ? j.stamp(id, entry) : entry;
+        String line = null;
         try {
             Long last = lastSeq.get(id);
-            numbered = entry.withSeq((last != null ? last : lastSeq(id)) + 1);
+            numbered = numbered.withSeq((last != null ? last : lastSeq(id)) + 1);
             // taken even if the write fails: the table keeps the entry in memory, so the next one mustn't reuse it
             lastSeq.put(id, numbered.seq());
-            String line = numbered.toLine() + "\n";
+            line = numbered.toLine();
+            String text = line + "\n";
             if (endsCutShort(log)) {
-                line = "\n" + line;
+                text = "\n" + text;
             }
             try (FileOutputStream out = new FileOutputStream(log, true)) {
-                out.write(line.getBytes(StandardCharsets.UTF_8));
+                out.write(text.getBytes(StandardCharsets.UTF_8));
             }
         } catch (IOException | UncheckedIOException e) {
             System.err.println("Can't write companion log " + log + ": " + e);
+            line = null;
         }
-        return numbered;
+        if (j != null) {
+            if (line != null) {
+                j.appended(id, numbered, line);
+            } else {
+                j.appendFailed(id, numbered.seq());
+            }
+        }
+        return new Appended(numbered, line != null);
+    }
+
+    /**
+     * Copies the host's log entries into this (following) store's log, each with the host's seq and bytes, so the
+     * two logs stay the same byte for byte. The journal isn't told: these entries are the host's, not this store's.
+     * <ul>
+     * <li>{@code items} are in seq order. Each new item must be the next seq after the last one held: a gap no
+     * {@link Verbatim#gap} fills is refused.</li>
+     * <li>A {@link Verbatim#gap} is written as a tombstone, a {@link CompanionLogEntry.Kind#NOTICE} line
+     * "{@value #LOST_ON_HOST}" with that seq.</li>
+     * <li>An item whose seq is already held is skipped if the line held is the same, byte for byte (a tombstone for
+     * a tombstone), and refused if it isn't.</li>
+     * <li>The last seq is updated, so a later {@link #appendLog} (this phone taking over as host) numbers after
+     * it.</li>
+     * </ul>
+     * The whole call is checked before anything is written, so a refused call writes nothing. Everything new is written
+     * at once and synced to disk once.
+     *
+     * @return how many lines were written
+     * @throws IllegalArgumentException for a gap no tombstone fills, a different line for a seq already held, or a
+     *                                  line that doesn't read with the seq it was given
+     * @throws UncheckedIOException     when the log can't be read or written
+     */
+    public synchronized int appendVerbatim(String id, List<Verbatim> items) {
+        File log = new File(new File(dir, id), LOG);
+        Long cached = lastSeq.get(id);
+        long last = cached != null ? cached : lastSeq(id);
+        Map<Long, String> held = null;
+        StringBuilder text = new StringBuilder();
+        long next = last + 1;
+        for (Verbatim item : items) {
+            String line = item.isGap() ? tombstone(item.seq()) : item.line();
+            if (!item.isGap() && readSeq(line, item.seq()) != item.seq()) {
+                throw new IllegalArgumentException("Log line isn't seq " + item.seq() + ": " + line);
+            }
+            if (item.seq() < next) {
+                if (item.seq() > last) {
+                    throw new IllegalArgumentException("Seq " + item.seq() + " given twice");
+                }
+                if (held == null) {
+                    held = heldLines(log);
+                }
+                if (!line.equals(held.get(item.seq()))) {
+                    throw new IllegalArgumentException("A different entry " + item.seq() + " is already in " + log);
+                }
+                continue;
+            }
+            if (item.seq() > next) {
+                throw new IllegalArgumentException("Entries " + next + " to " + (item.seq() - 1) + " are missing");
+            }
+            text.append(line).append('\n');
+            next++;
+        }
+        if (next == last + 1) {
+            return 0;
+        }
+        try {
+            if (endsCutShort(log)) {
+                text.insert(0, '\n');
+            }
+            try (FileOutputStream out = new FileOutputStream(log, true)) {
+                out.write(text.toString().getBytes(StandardCharsets.UTF_8));
+                out.getFD().sync();
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        lastSeq.put(id, next - 1);
+        return (int) (next - 1 - last);
+    }
+
+    /** The line written for a seq the host used up without writing an entry. */
+    private static String tombstone(long seq) {
+        return new CompanionLogEntry(seq, NO_STEP, 0, null, null, CompanionLogEntry.Kind.NOTICE, LOST_ON_HOST, null,
+                null, null).toLine();
+    }
+
+    private static long readSeq(String line, long seqIfPlain) {
+        try {
+            return CompanionLogEntry.fromLine(line, seqIfPlain).seq();
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("Log line doesn't read: " + line, e);
+        }
+    }
+
+    /** The lines in {@code log} that read, by seq, as {@link #loadLog} numbers them. */
+    private static Map<Long, String> heldLines(File log) {
+        Map<Long, String> lines = new HashMap<>();
+        if (!log.exists()) {
+            return lines;
+        }
+        long seq = 0;
+        for (String line : read(log).split("\n")) {
+            if (line.isBlank()) {
+                continue;
+            }
+            try {
+                long read = CompanionLogEntry.fromLine(line, seq + 1).seq();
+                lines.put(read, line);
+                seq = Math.max(seq, read);
+            } catch (RuntimeException e) {
+                // skipped, as loadLog does
+            }
+        }
+        return lines;
     }
 
     /**

@@ -39,9 +39,14 @@ import java.util.TreeSet;
  * @param card     the card it's about, by name, or null
  * @param fromHand for an {@link Kind#ADD}, what left the hand (AC-22a), or null when not known
  * @param undid    for an {@link Kind#UNDO}, the steps it took back; empty otherwise
+ * @param term     the host's term when it was written (a shared game, after a takeover); 0 when absent
+ * @param host     the device id of the host that wrote it, or null for the game's creator
+ * @param by       the device id of the phone that did it, or null for the host's own operator
+ * @param byName   the name shown for {@link #by}, or null
  */
 public record CompanionLogEntry(long seq, int step, int turn, String active, List<String> affected, Kind kind,
-                                String text, String card, FromHand fromHand, List<Integer> undid) {
+                                String text, String card, FromHand fromHand, List<Integer> undid, long term,
+                                String host, String by, String byName) {
 
     /** What kind of entry. A kind this version doesn't know, from a later one, reads as {@link #NOTICE}. */
     public enum Kind {
@@ -98,6 +103,12 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         text = text == null ? "" : text;
     }
 
+    /** An entry by the game's creator and its own operator, in term 0: every entry of an unshared game. */
+    public CompanionLogEntry(long seq, int step, int turn, String active, List<String> affected, Kind kind,
+                             String text, String card, FromHand fromHand, List<Integer> undid) {
+        this(seq, step, turn, active, affected, kind, text, card, fromHand, undid, 0, null, null, null);
+    }
+
     /** An entry for {@link CompanionStore#appendLog}, which numbers it. */
     public static CompanionLogEntry of(Kind kind, int step, int turn, String active, List<String> affected,
                                        String text) {
@@ -110,11 +121,19 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
     }
 
     public CompanionLogEntry withSeq(long seq0) {
-        return new CompanionLogEntry(seq0, step, turn, active, affected, kind, text, card, fromHand, undid);
+        return new CompanionLogEntry(seq0, step, turn, active, affected, kind, text, card, fromHand, undid, term, host,
+                by, byName);
     }
 
     public CompanionLogEntry withCard(String card0, FromHand fromHand0) {
-        return new CompanionLogEntry(seq, step, turn, active, affected, kind, text, card0, fromHand0, undid);
+        return new CompanionLogEntry(seq, step, turn, active, affected, kind, text, card0, fromHand0, undid, term, host,
+                by, byName);
+    }
+
+    /** This entry stamped with who wrote it and who did it, for {@link CompanionStore.Journal#stamp}. */
+    public CompanionLogEntry withOrigin(long term0, String host0, String by0, String byName0) {
+        return new CompanionLogEntry(seq, step, turn, active, affected, kind, text, card, fromHand, undid, term0, host0,
+                by0, byName0);
     }
 
     /**
@@ -211,7 +230,10 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         return Collections.unmodifiableList(added);
     }
 
-    /** This entry as one line of JSON, with no newline in it. Unknown fields are left out. */
+    /**
+     * This entry as one line of JSON, with no newline in it. Unknown fields are left out, and so are {@link #term},
+     * {@link #host}, {@link #by} and {@link #byName} when absent, so such a line is byte for byte what v1 wrote.
+     */
     String toLine() {
         JsonObject json = new JsonObject();
         json.addProperty("seq", seq);
@@ -233,6 +255,19 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
             JsonArray steps = new JsonArray();
             undid.forEach(steps::add);
             json.add("undid", steps);
+        }
+        // last, and only when set, so an unshared game's lines stay as v1 wrote them
+        if (term != 0) {
+            json.addProperty("term", term);
+        }
+        if (host != null) {
+            json.addProperty("host", host);
+        }
+        if (by != null) {
+            json.addProperty("by", by);
+        }
+        if (byName != null) {
+            json.addProperty("byName", byName);
         }
         return json.toString();
     }
@@ -263,7 +298,8 @@ public record CompanionLogEntry(long seq, int step, int turn, String active, Lis
         return new CompanionLogEntry(json.get("seq").getAsLong(), json.get("step").getAsInt(),
                 json.has("turn") ? json.get("turn").getAsInt() : 0, string(json, "active"), affected,
                 kindOf(string(json, "kind")), string(json, "text"), string(json, "card"),
-                fromHandOf(string(json, "fromHand")), undid);
+                fromHandOf(string(json, "fromHand")), undid, json.has("term") ? json.get("term").getAsLong() : 0,
+                string(json, "host"), string(json, "by"), string(json, "byName"));
     }
 
     private static JsonArray strings(List<String> values) {
