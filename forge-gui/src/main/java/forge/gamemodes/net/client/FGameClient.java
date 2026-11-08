@@ -111,10 +111,14 @@ public class FGameClient implements IToServer, IHasForgeLog {
                             new LoggingHandler(LogLevel.INFO),
                             new CompatibleObjectEncoder(null), // Client doesn't need byte tracking
                             new CompatibleObjectDecoder(9766*1024, ClassResolvers.cacheDisabled(null)),
-                            new IdleStateHandler(READER_IDLE_SECONDS, HEARTBEAT_INTERVAL_SECONDS, 0, TimeUnit.SECONDS),
+                            new IdleStateHandler(readerIdleSeconds(), heartbeatIntervalSeconds(), 0, TimeUnit.SECONDS),
                             new MessageHandler(),
-                            new LobbyUpdateHandler(),
-                            new GameClientHandler(FGameClient.this));
+                            new LobbyUpdateHandler());
+                    final ChannelHandler extra = newExtraInboundHandler();
+                    if (extra != null) {
+                        pipeline.addLast(extra);
+                    }
+                    pipeline.addLast(new GameClientHandler(FGameClient.this));
                 }
              });
 
@@ -151,6 +155,25 @@ public class FGameClient implements IToServer, IHasForgeLog {
                 group.shutdownGracefully();
             }
         }
+    }
+
+    /**
+     * An extra inbound handler, put just before the game protocol handler in each new connection's pipeline (so once
+     * per connection, a reconnect's included), for a mode's own messages beside the view stream. Its
+     * {@code channelActive} runs before the protocol handler sends the login. None by default.
+     */
+    protected ChannelHandler newExtraInboundHandler() {
+        return null;
+    }
+
+    /** How long the client waits for anything from the server before it counts the connection as lost. */
+    protected int readerIdleSeconds() {
+        return READER_IDLE_SECONDS;
+    }
+
+    /** How long the client may stay silent before it sends a heartbeat. */
+    protected int heartbeatIntervalSeconds() {
+        return HEARTBEAT_INTERVAL_SECONDS;
     }
 
     public void close() {

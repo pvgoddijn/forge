@@ -31,6 +31,7 @@ import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
 
+import java.net.Inet4Address;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
@@ -159,6 +160,11 @@ public final class CompanionShareHost implements IHasForgeLog {
             codes.add(new Code(usable.interfaceName(), new JoinCode(usable.address(), p, token)));
         }
         return codes;
+    }
+
+    /** The code to join this share at {@code address}, such as loopback for a second instance on this PC. Once started. */
+    public JoinCode codeAt(Inet4Address address) {
+        return new JoinCode(address, port(), token);
     }
 
     /** The phones attached or attaching. */
