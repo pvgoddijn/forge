@@ -779,4 +779,47 @@ public class CompanionStoreShould {
 
         assertThat(logText(new File(dir, other))).isEqualTo(without);
     }
+
+    /** What a shared game's journal is rebuilt from: the lines on disk, as written, with their seqs. */
+    @Test
+    public void readTheLogLinesAsWrittenWithTheirSeqsAndWriteNothing() throws IOException {
+        String text = "a plain line\n"
+                + notice("three").withSeq(3).toLine() + "\n"
+                + "{not json\n"
+                + "\n"
+                + notice("four").withSeq(4).toLine() + "\n";
+        Files.write(log().toPath(), text.getBytes(StandardCharsets.UTF_8));
+
+        List<Verbatim> lines = store.loadLogLines(id);
+
+        assertThat(lines).containsExactly(Verbatim.entry(1, "a plain line"),
+                Verbatim.entry(3, notice("three").withSeq(3).toLine()),
+                Verbatim.entry(4, notice("four").withSeq(4).toLine()));
+        assertThat(logText(new File(dir, id))).isEqualTo(text);
+        assertThat(store.loadLogLines(store.create(store.loadSetup(id)))).isEmpty();
+    }
+
+    @Test
+    public void readASetupAndWhetherTheGameEnded() {
+        CompanionSetup setup = store.loadActive().orElseThrow().setup();
+
+        assertThat(store.loadSetup(id)).isEqualTo(setup);
+        assertThat(store.isEnded(id)).isFalse();
+        store.end(id);
+        assertThat(store.isEnded(id)).isTrue();
+    }
+
+    @Test
+    public void installAJournalBuiltFromTheStoreWithNoWriteInBetween() {
+        store.appendLog(id, notice("a"));
+        Recorder journal = store.installJournal(s -> {
+            Recorder r = new Recorder();
+            r.events.add("held " + s.loadLogLines(id).size());
+            return r;
+        });
+
+        store.appendLog(id, notice("b"));
+
+        assertThat(journal.events).containsExactly("held 1", "entry 2");
+    }
 }

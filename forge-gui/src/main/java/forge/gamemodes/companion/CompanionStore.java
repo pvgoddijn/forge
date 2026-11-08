@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 /**
  * Keeps each tracked game in its own folder, {@code <id>/}:
@@ -146,6 +147,19 @@ public class CompanionStore {
     /** Tells {@code journal} of every write from now on, or nothing when it's null. */
     public void setJournal(Journal journal) {
         this.journal = journal;
+    }
+
+    /**
+     * Builds a journal from what this store holds ({@link #loadLogLines}, {@link #loadSetup}, {@link #isEnded}) and
+     * tells it of every write from then on, holding the store's lock throughout, so no write falls between the reading
+     * and the installing.
+     *
+     * @return the journal {@code build} made
+     */
+    public synchronized <J extends Journal> J installJournal(Function<CompanionStore, J> build) {
+        J built = build.apply(this);
+        journal = built;
+        return built;
     }
 
     /** Starts a new game's folder, and returns its id. */
@@ -375,6 +389,16 @@ public class CompanionStore {
         }
     }
 
+    /** Whether the game has been marked ended ({@link #end}). */
+    public boolean isEnded(String id) {
+        return new File(new File(dir, id), ENDED).exists();
+    }
+
+    /** The game's setup, as last saved. */
+    public CompanionSetup loadSetup(String id) {
+        return load(new File(dir, id)).setup();
+    }
+
     /** Moves a game that can't be loaded out of the way, so Companion doesn't keep trying to resume it. */
     public File setAside(String id) {
         File game = new File(dir, id);
@@ -459,7 +483,10 @@ public class CompanionStore {
                     throw new IllegalArgumentException("Seq " + item.seq() + " given twice");
                 }
                 if (held == null) {
-                    held = heldLines(log);
+                    held = new HashMap<>();
+                    for (Verbatim onDisk : loadLogLines(id)) {
+                        held.put(onDisk.seq(), onDisk.line());
+                    }
                 }
                 if (!line.equals(held.get(item.seq()))) {
                     throw new IllegalArgumentException("A different entry " + item.seq() + " is already in " + log);
@@ -504,28 +531,6 @@ public class CompanionStore {
         }
     }
 
-    /** The lines in {@code log} that read, by seq, as {@link #loadLog} numbers them. */
-    private static Map<Long, String> heldLines(File log) {
-        Map<Long, String> lines = new HashMap<>();
-        if (!log.exists()) {
-            return lines;
-        }
-        long seq = 0;
-        for (String line : read(log).split("\n")) {
-            if (line.isBlank()) {
-                continue;
-            }
-            try {
-                long read = CompanionLogEntry.fromLine(line, seq + 1).seq();
-                lines.put(read, line);
-                seq = Math.max(seq, read);
-            } catch (RuntimeException e) {
-                // skipped, as loadLog does
-            }
-        }
-        return lines;
-    }
-
     /**
      * The game's log, oldest first. Lines from before entries read as notices; a line that doesn't read, such as the
      * last one cut short by a crash, is skipped. Empty when there is no log yet.
@@ -550,6 +555,33 @@ public class CompanionStore {
             }
         }
         return entries;
+    }
+
+    /**
+     * The game's log lines as they are on disk, each with its seq, in file order, without their newlines: what a
+     * shared game's journal is rebuilt from. The lines {@link #loadLog} skips are left out, and a plain line from
+     * before entries gets the seq {@code loadLog} gives it. Writes nothing.
+     */
+    public synchronized List<Verbatim> loadLogLines(String id) {
+        File log = new File(new File(dir, id), LOG);
+        List<Verbatim> lines = new ArrayList<>();
+        if (!log.exists()) {
+            return lines;
+        }
+        long seq = 0;
+        for (String line : read(log).split("\n")) {
+            if (line.isBlank()) {
+                continue;
+            }
+            try {
+                long read = CompanionLogEntry.fromLine(line, seq + 1).seq();
+                lines.add(Verbatim.entry(read, line));
+                seq = Math.max(seq, read);
+            } catch (RuntimeException e) {
+                // skipped, as loadLog does
+            }
+        }
+        return lines;
     }
 
     private long lastSeq(String id) {
@@ -633,7 +665,8 @@ public class CompanionStore {
         }
     }
 
-    static String toJson(CompanionSetup setup) {
+    /** The setup as {@code setup.json} has it. */
+    public static String toJson(CompanionSetup setup) {
         JsonObject json = new JsonObject();
         json.addProperty("version", 3);
         json.addProperty("life", setup.life());
@@ -656,7 +689,8 @@ public class CompanionStore {
         return json.toString();
     }
 
-    static CompanionSetup fromJson(String text) {
+    /** A setup from the text {@link #toJson} makes, or one an older version saved. */
+    public static CompanionSetup fromJson(String text) {
         JsonObject json = JsonParser.parseString(text).getAsJsonObject();
         List<CompanionSetup.Seat> seats = new ArrayList<>();
         for (JsonElement element : json.getAsJsonArray("seats")) {

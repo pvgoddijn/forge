@@ -1856,6 +1856,55 @@ public class TableEditorTest extends AITest {
         saveAsTheTableDoes(rec, game);
     }
 
+    /**
+     * AC-114: sharing with no phone connected only feeds the journal in memory. The same actions, undo included, on a
+     * shared table and an unshared one write the same log, byte for byte. (Steps are compared from slice 03 on.)
+     */
+    @Test
+    public void sharedWithNoPeerWritesTheSameLogAsUnshared() throws java.io.IOException {
+        byte[] unshared = playScriptedGame(false);
+        byte[] shared = playScriptedGame(true);
+
+        assertTrue(unshared.length > 0, "the script logged something");
+        assertEquals(new String(shared, java.nio.charset.StandardCharsets.UTF_8),
+                new String(unshared, java.nio.charset.StandardCharsets.UTF_8));
+        assertTrue(java.util.Arrays.equals(shared, unshared), "byte for byte");
+    }
+
+    /** Plays the same few actions on a fresh table, shared (a journal and no peer) or not, and returns its log. */
+    private byte[] playScriptedGame(boolean shared) throws java.io.IOException {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.store.saveSetup("t", rec.table.setup());
+        forge.gamemodes.companion.share.ShareJournal journal = shared
+                ? forge.gamemodes.companion.share.ShareJournal.install(rec.store, "t") : null;
+        saveAsTheTableDoes(rec, game);
+
+        act(rec, game, new CompanionTable.AddCard(ann.getName(), "Grizzly Bears", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        act(rec, game, new CompanionTable.AddCard(bo.getName(), "Llanowar Elves", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        act(rec, game, new CompanionTable.AddCard(bo.getName(), "Opt", true, TableEditor.Mode.CAST));
+        resolveAll(game);
+        rec.table.save(game);
+        undo(rec, game);
+        act(rec, game, new CompanionTable.AddCard(ann.getName(), "Sol Ring", false,
+                TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false));
+        rec.table.tell("A notice for the log");
+
+        java.io.File log = new java.io.File(new java.io.File(rec.store.dir(), "t"), "log.txt");
+        byte[] bytes = java.nio.file.Files.readAllBytes(log.toPath());
+        if (journal != null) {
+            assertEquals(journal.latestSeq(), (long) rec.store.loadLog("t").size(), "the journal holds every entry");
+            assertTrue(rec.store.loadLog("t").stream().anyMatch(e -> e.kind() == CompanionLogEntry.Kind.UNDO),
+                    "the script undid something");
+        }
+        return bytes;
+    }
+
     private static CompanionLogEntry lastEntry(Recorded rec) {
         List<CompanionLogEntry> log = rec.store.loadLog("t");
         return log.get(log.size() - 1);

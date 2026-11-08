@@ -256,7 +256,8 @@ public final class CompanionShareHost implements IHasForgeLog {
             CompanionPeer joined = new CompanionPeer(table, client, ctx::close, meter, bytes);
             peer = joined;
             peers.add(joined);
-            client.send(new ShareMessages.Welcome(table.id()));
+            // no journal yet, so no seq to give: the data stream joins this in slice 02's wiring
+            client.send(new ShareMessages.Welcome(table.id(), table.setup(), 0));
             joined.attach();
             netLog.info("[Companion] {} joined {} from {}", client.getUsername(), table.id(),
                     ctx.channel().remoteAddress());

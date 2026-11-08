@@ -214,7 +214,7 @@ public class CompanionClient extends FGameClient {
             // writes on the event loop go out in order, so the host's TokenGate reads these 8 bytes first
             ctx.channel().writeAndFlush(TokenGate.preamble(ctx.alloc(), token));
             super.channelActive(ctx); // the protocol handler after this one sends the login
-            ctx.channel().writeAndFlush(new ShareMessages.Hello(token, null));
+            ctx.channel().writeAndFlush(new ShareMessages.Hello(token, null, ShareMessages.Hello.NOTHING));
         }
 
         @Override
