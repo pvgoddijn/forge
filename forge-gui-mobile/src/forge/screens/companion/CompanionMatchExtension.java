@@ -14,6 +14,7 @@ import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.TableEditor;
 import forge.gamemodes.match.HostedMatch;
+import forge.gamemodes.match.input.InputPayMana;
 import forge.gui.FThreads;
 import forge.interfaces.IGameController;
 import forge.menu.FDropDownMenu;
@@ -255,19 +256,28 @@ class CompanionMatchExtension implements MatchExtension {
         return false; // one operator answers for every seat, so one prompt the right way up
     }
 
+    /** The payment prompt the button was last labelled for, so a tap does what the label said; null for Add card. */
+    private InputPayMana labelledPayment;
+
+    @Override
+    public String promptActionLabel() {
+        return promptActionLabel(null);
+    }
+
     /**
      * The main thing done at the table, so it sits where the thumb is: adding a card, or while a mana cost is asked
      * for, beside Auto, taking it as paid at the table without tapping anything.
      */
     @Override
-    public String promptActionLabel() {
-        return table.atPaymentPrompt() ? Forge.getLocalizer().getMessage("lblCompanionManaPaid") : "Add card";
+    public String promptActionLabel(PlayerView owner) {
+        labelledPayment = table.paymentPrompt(owner);
+        return Forge.getLocalizer().getMessage(labelledPayment != null ? "lblCompanionManaPaid" : "lblCompanionAddCard");
     }
 
     @Override
     public void runPromptAction() {
-        if (table.atPaymentPrompt()) {
-            table.acceptManaAsPaid();
+        if (labelledPayment != null) {
+            table.acceptManaAsPaid(labelledPayment); // nothing if that prompt has closed since
             return;
         }
         CardSearchDialog.addByPhoto(table, MatchController.instance.getGameView());

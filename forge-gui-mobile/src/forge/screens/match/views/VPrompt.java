@@ -173,15 +173,19 @@ public class VPrompt extends FContainer {
 
     /**
      * Puts a button for the match's main action between OK and Cancel, where the message was, and moves the message
-     * onto a strip above the buttons. The prompt is then {@link #getBarHeight()} tall. Called again, it only relabels
-     * the button; the action stays the first one.
+     * onto a strip above the buttons. The prompt is then {@link #getBarHeight()} tall.
      */
     public void setAction(String label, Runnable action) {
         if (btnAction == null) {
             btnAction = add(new FButton(label, e -> action.run()));
             btnAction.setCorner(Corner.None);
-            revalidate();
-        } else if (!label.equals(btnAction.getText())) {
+        }
+        revalidate();
+    }
+
+    /** Relabels the main action's button if this prompt has one ({@link #setAction}); one without it is left as it is. */
+    public void relabelAction(String label) {
+        if (btnAction != null && label != null && !label.equals(btnAction.getText())) {
             btnAction.setText(label);
         }
     }

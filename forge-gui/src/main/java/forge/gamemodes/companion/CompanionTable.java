@@ -629,29 +629,38 @@ public class CompanionTable {
         return seats.stream().anyMatch(seat -> priorityPrompt(seat) != null);
     }
 
-    /** The mana payment prompt a seat is waiting at, or null when none is. */
-    private InputPayMana paymentPrompt() {
+    /**
+     * The mana payment prompt open on the table, as for an activated ability's cost, or null when none is: {@code
+     * owner}'s if that seat is paying, as that's the prompt on screen, otherwise any seat's. Any thread.
+     */
+    public InputPayMana paymentPrompt(PlayerView owner) {
+        InputPayMana any = null;
         for (CompanionPlayerController seat : seats) {
             if (seat.getInputQueue().getInput() instanceof InputPayMana payment) {
-                return payment;
+                if (owner == null || seat.getPlayer().getView() == owner) {
+                    return payment;
+                }
+                if (any == null) {
+                    any = payment;
+                }
             }
         }
-        return null;
+        return any;
     }
 
-    /** Whether a seat is waiting at a prompt to pay mana, as for an activated ability's cost. Any thread. */
+    /** Whether a seat is waiting at a prompt to pay mana. Any thread. */
     public boolean atPaymentPrompt() {
-        return paymentPrompt() != null;
+        return paymentPrompt(null) != null;
     }
 
     /**
-     * Takes the open mana payment as paid without tapping anything: the players paid at the table, so the tracker only
-     * records it. The ability's other costs ({T}, a sacrifice, life) are still paid as usual, and its activation goes
-     * on the stack as it would. Any thread; does nothing if no payment prompt is open.
+     * Takes {@code payment}, a prompt from {@link #paymentPrompt}, as paid at the table, without tapping anything (see
+     * {@link InputPayMana#acceptManaAsPaid}): the ability's other costs ({T}, a sacrifice, life) are still paid as
+     * usual, and its activation goes on the stack as it would. Does nothing if that prompt is no longer open, so a tap
+     * on a label shown just before it closed changes nothing. UI thread, as the prompt's buttons.
      */
-    public void acceptManaAsPaid() {
-        InputPayMana payment = paymentPrompt();
-        if (payment != null) {
+    public void acceptManaAsPaid(InputPayMana payment) {
+        if (payment != null && seats.stream().anyMatch(seat -> seat.getInputQueue().getInput() == payment)) {
             payment.acceptManaAsPaid();
         }
     }

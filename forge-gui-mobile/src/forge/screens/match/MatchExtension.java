@@ -47,6 +47,14 @@ public interface MatchExtension {
         return null;
     }
 
+    /**
+     * The main action's label for {@code owner}'s prompt, asked on the UI thread each time that prompt's buttons change,
+     * so the action can follow the prompt. Only a prompt that has the button (the bottom one) is relabelled.
+     */
+    default String promptActionLabel(PlayerView owner) {
+        return promptActionLabel();
+    }
+
     /** Runs the main action, on the UI thread. */
     default void runPromptAction() {
     }

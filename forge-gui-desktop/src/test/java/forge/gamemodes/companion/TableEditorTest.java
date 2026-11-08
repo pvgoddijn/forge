@@ -4219,13 +4219,17 @@ public class TableEditorTest extends AITest {
         assertEquals(coins.stream().filter(c -> c.endsWith("(heads)")).count(), 1L, "one seat won");
     }
 
-    /** A screen shared by every seat, recording the caption of each reveal and message it shows. */
+    /** A screen shared by every seat, recording the caption of each reveal and message it shows; a prompt waits. */
     private static forge.gui.interfaces.IGuiGame screenRecordingReveals(List<String> shown) {
         return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
                 TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
                 (proxy, method, args) -> {
                     if (method.getName().equals("reveal") || method.getName().equals("message")) {
                         shown.add(String.valueOf(args[0]));
+                    }
+                    if (method.getName().equals("awaitInput")) { // as the match screen, until the prompt is answered
+                        ((java.util.concurrent.CountDownLatch) args[0]).await();
+                        return null;
                     }
                     Class<?> type = method.getReturnType();
                     if (type == boolean.class) {
@@ -4316,8 +4320,9 @@ public class TableEditorTest extends AITest {
     }
 
     /**
-     * Paid, beside Auto: an activated ability's mana was paid at the table, so its cost is taken as paid without
-     * tapping a land. Its {T} is still paid, and it resolves as usual.
+     * Paid, beside Auto: an activated ability's mana was paid at the table, so the cost is taken as paid without
+     * tapping a land. Floating mana is used first; the rest is recorded as spent in the cost's own colours. Its {T} is
+     * still paid, and it resolves as usual.
      */
     @Test
     public void paidTakesAnAbilitysManaAsPaidWithoutTappingLands() throws InterruptedException {
@@ -4325,59 +4330,52 @@ public class TableEditorTest extends AITest {
         CompanionSetup setup = CompanionSetup.withDefaults(List.of(
                 new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
         CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
-        seatEveryoneOn(game, screenAwaitingInput(), p ->
+        seatEveryoneOn(game, screenRecordingReveals(new ArrayList<>()), p ->
                 new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
         Player ann = game.getPlayers().get(0);
-        List<Card> islands = new ArrayList<>();
-        for (int i = 0; i < 4; i++) {
-            islands.add(addCardToZone("Island", ann, ZoneType.Battlefield));
-        }
-        Card tome = addCardToZone("Jayemdae Tome", ann, ZoneType.Battlefield);
-        forge.game.spellability.SpellAbility draw = tome.getSpellAbilities().stream()
-                .filter(sa -> sa.isActivatedAbility() && !sa.isManaAbility()).findFirst().orElseThrow();
-        draw.setActivatingPlayer(ann);
-        int hand = ann.getCardsIn(ZoneType.Hand).size();
+        Card plains = addCardToZone("Plains", ann, ZoneType.Battlefield);
+        Card mountain = addCardToZone("Mountain", ann, ZoneType.Battlefield);
+        Card obelisk = addCardToZone("Obelisk of Alara", ann, ZoneType.Battlefield);
+        forge.game.spellability.SpellAbility gain = obelisk.getSpellAbilities().stream()
+                .filter(sa -> sa.isActivatedAbility() && sa.getApi() == forge.game.ability.ApiType.GainLife)
+                .findFirst().orElseThrow(); // {1}{W}, {T}: You gain 5 life.
+        gain.setActivatingPlayer(ann);
+        ann.getManaPool().addMana(new forge.game.mana.Mana(forge.card.MagicColor.RED, mountain, null, ann));
 
         boolean[] played = new boolean[1];
-        Thread loop = new Thread(() -> played[0] = new forge.game.player.PlaySpellAbility(ann.getController(), draw)
+        Thread loop = new Thread(() -> played[0] = new forge.game.player.PlaySpellAbility(ann.getController(), gain)
                 .playAbility(true, false, false), "Game loop (test)");
-        loop.start();
-        for (int i = 0; i < 200 && !table.atPaymentPrompt(); i++) {
-            Thread.sleep(25);
+        loop.setDaemon(true);
+        try {
+            loop.start();
+            forge.gamemodes.match.input.InputPayMana payment = null;
+            for (int i = 0; i < 200 && payment == null; i++) {
+                Thread.sleep(25);
+                payment = table.paymentPrompt(ann.getView());
+            }
+            assertTrue(payment != null, "the {1}{W} is asked for");
+            table.acceptManaAsPaid(payment);
+            table.acceptManaAsPaid(payment); // a second tap pays nothing twice
+            loop.join(5000);
+            assertFalse(loop.isAlive(), "the payment prompt closed");
+        } finally {
+            loop.interrupt();
         }
-        assertTrue(table.atPaymentPrompt(), "the {4} is asked for");
-        table.acceptManaAsPaid();
-        loop.join(5000);
-        assertFalse(loop.isAlive(), "the payment prompt closed");
 
         assertTrue(played[0], "the ability was activated");
         assertFalse(table.atPaymentPrompt());
-        assertTrue(islands.stream().noneMatch(Card::isTapped), "no land was tapped");
-        assertTrue(tome.isTapped(), "the rest of the cost is paid as usual");
+        assertFalse(plains.isTapped() || mountain.isTapped(), "no land was tapped");
+        assertTrue(obelisk.isTapped(), "the rest of the cost is paid as usual");
+        assertTrue(ann.getManaPool().isEmpty(), "the floating red was spent on it");
+        List<Byte> spent = new ArrayList<>();
+        for (forge.game.mana.Mana m : game.getStack().peekAbility().getPayingMana()) {
+            spent.add(m.getColor());
+        }
+        spent.sort(null);
+        assertEquals(spent, List.of(forge.card.MagicColor.WHITE, forge.card.MagicColor.RED),
+                "spent as the cost's colours, so 'if {W} was spent' sees it");
+        int life = ann.getLife();
         resolveAll(game);
-        assertEquals(ann.getCardsIn(ZoneType.Hand).size(), hand + 1, "it resolved: Ann drew");
-    }
-
-    /** A screen that shows nothing, but waits for each prompt to be answered as the match screen does. */
-    private static forge.gui.interfaces.IGuiGame screenAwaitingInput() {
-        return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
-                TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
-                (proxy, method, args) -> {
-                    if (method.getName().equals("awaitInput")) {
-                        ((java.util.concurrent.CountDownLatch) args[0]).await();
-                        return null;
-                    }
-                    Class<?> type = method.getReturnType();
-                    if (type == boolean.class) {
-                        return false;
-                    }
-                    if (type == int.class) {
-                        return 0;
-                    }
-                    if (type.isPrimitive() && type != void.class) {
-                        throw new UnsupportedOperationException(method.getName());
-                    }
-                    return null;
-                });
+        assertEquals(ann.getLife(), life + 5, "it resolved");
     }
 }

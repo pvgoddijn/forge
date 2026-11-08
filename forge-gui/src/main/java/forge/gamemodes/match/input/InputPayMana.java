@@ -6,11 +6,13 @@ import forge.ai.PlayerControllerAi;
 import forge.card.ColorSet;
 import forge.card.MagicColor;
 import forge.card.mana.ManaAtom;
+import forge.card.mana.ManaCostShard;
 import forge.game.Game;
 import forge.game.GameActionUtil;
 import forge.game.card.Card;
 import forge.game.card.CardView;
 import forge.game.card.CardCollection;
+import forge.game.mana.Mana;
 import forge.game.mana.ManaCostBeingPaid;
 import forge.game.player.PlaySpellAbility;
 import forge.game.player.Player;
@@ -404,19 +406,53 @@ public abstract class InputPayMana extends InputSyncronizedBase {
     }
 
     /**
-     * Ends the prompt as if the rest of the mana cost had been paid, without tapping or spending anything. Only the
-     * mana is waived: the ability's other costs are paid as usual, and mana already spent on it stays spent. Forge's
-     * own games never call this; it's for a mode that records a game played elsewhere, where the mana was paid at the
-     * table. Any thread; ignored while Auto is paying.
+     * Ends the prompt with the mana cost paid without tapping anything. Forge's own games never call this; it's for a
+     * mode that records a game played elsewhere, where the mana was paid at the table. Mana floating in the pool is
+     * used first, as a payment by hand would use it; the rest is paid with mana that comes from nowhere, one of the
+     * cost's own colours for each coloured shard and colourless for generic, recorded as spent as any mana is, so
+     * sunburst, converge, "if {R} was spent" and X by colour see the cost's colours. Mana already spent on it stays
+     * spent, Phyrexian life already chosen is paid, and the ability's other costs are paid as usual. A snow shard,
+     * which that mana can't pay, is waived without any. If a later cost is cancelled, that mana is refunded to the
+     * pool like any other and empties from it at the end of the step.
+     * <p>
+     * Called on the UI thread, as Auto is; ignored while Auto or an earlier call is paying, or once the prompt is done.
      */
     public void acceptManaAsPaid() {
+        if (locked || isFinished() || bPaid) {
+            return;
+        }
+        locked = true; // as Auto does, so a second tap, or Auto after this, pays nothing twice
         game.getAction().invoke(() -> {
-            if (locked || isFinished() || bPaid) {
-                return;
-            }
+            player.getManaPool().payManaCostFromPool(manaCost, saPaidFor, false, saPaidFor.getPayingMana());
+            spendManaFromNowhere();
             bPaid = true;
             onStateChanged();
         });
+    }
+
+    private void spendManaFromNowhere() {
+        final List<ManaCostShard> unpaid = manaCost.getUnpaidShards();
+        Collections.sort(unpaid); // the hardest shards first, as the pool pays them
+        for (final ManaCostShard shard : unpaid) {
+            if (shard == ManaCostShard.X || manaCost.isPaid()) {
+                continue;
+            }
+            final Mana mana = new Mana(colorToPay(shard), saPaidFor.getHostCard(), null, player);
+            if (manaCost.isNeeded(mana, player.getManaPool()) && manaCost.payMana(mana, player.getManaPool())) {
+                saPaidFor.getPayingMana().add(mana);
+            }
+        }
+    }
+
+    private static byte colorToPay(final ManaCostShard shard) {
+        if (!shard.isGeneric() && !shard.isColorless()) {
+            for (final byte color : MagicColor.WUBRG) {
+                if (shard.isColor(color)) {
+                    return color;
+                }
+            }
+        }
+        return (byte) ManaAtom.COLORLESS;
     }
 
     protected void updateButtons() {
