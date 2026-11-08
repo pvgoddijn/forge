@@ -153,7 +153,7 @@ public final class CompanionPeer implements IHasForgeLog {
             return;
         }
         Game game = seats.get(0).getGame();
-        forwarder = new GameEventForwarder(gui);
+        forwarder = new GameEventForwarder(gui, Thread.currentThread()); // this is the game loop thread
         gui.setForwarder(forwarder);
         // Game has no unsubscribe: the bus keeps the relay, which close() empties, so the forwarder can go
         relay.target = forwarder;

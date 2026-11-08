@@ -128,11 +128,16 @@ public class ProtocolGuiGame extends NetworkGuiGame implements IHasForgeLog {
         }
     }
 
+    /**
+     * Sends the waiting events, with the state they need, before this returns, on whatever thread this is: the caller
+     * is about to send something that needs them (a prompt, or a reconnect's {@code openView}). A forwarder's own
+     * {@link GameEventForwarder#flush()} would only mark a flush as due off the game thread.
+     */
     private void flushPendingEvents() {
         if (forwarder != null && !flushing) {
             flushing = true;
             try {
-                forwarder.flush();
+                forwarder.flushNow();
             } finally {
                 flushing = false;
             }
@@ -186,10 +191,19 @@ public class ProtocolGuiGame extends NetworkGuiGame implements IHasForgeLog {
      * setGameView before delta sync is established. Game-thread-only.
      *
      * <p>Called internally by {@link #syncAndSend} and {@link #syncAndSendAndWait};
-     * also invoked directly from the reconnect handshake.
+     * also invoked directly from the reconnect handshake, on a Netty thread. Whatever the thread,
+     * what it has to send is sent before it returns, and it holds the forwarder's lock, so it never
+     * encodes at the same time as a forwarder flush on another thread.
      */
     public void updateGameView() {
-        updateGameView(true);
+        final GameEventForwarder f = forwarder;
+        if (f == null) {
+            updateGameView(true);
+            return;
+        }
+        synchronized (f) {
+            updateGameView(true);
+        }
     }
     private void updateGameView(boolean flush) {
         if (paused) { return; }

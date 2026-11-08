@@ -77,6 +77,7 @@ import org.tinylog.Logger;
 import org.tinylog.TaggedLogger;
 
 import java.io.*;
+import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Date;
@@ -584,6 +585,9 @@ public class Main extends AndroidApplication {
             heapHeartbeatHandler.removeCallbacks(heapHeartbeat);
             heapHeartbeatHandler = null;
         }
+        if (Gadapter != null) {
+            Gadapter.holdLocalNetwork(false); // a join still holding the Wi-Fi request mustn't outlive the activity
+        }
         triggerDispose();
         super.onDestroy();
         //ensure app doesn't stick around
@@ -743,61 +747,93 @@ public class Main extends AndroidApplication {
             return result;
         }
 
-        /** Guards the fields below; the binding's calls come from any thread, its callbacks from ConnectivityThread. */
+        /** Guards the fields below; the join's calls come from any thread, the callback's from ConnectivityThread. */
         private final Object localNetworkLock = new Object();
-        /** True between bindToLocalNetwork(true) and (false). */
-        private boolean localNetworkWanted;
-        /** The Wi-Fi network the process is bound to now; null: not bound. */
-        private Network boundWifi;
+        /** The Wi-Fi network a Companion join's sockets are bound to; null: none known (the default route). */
+        private Network wifi;
+        /** Asks Android to keep a Wi-Fi network while a Companion join holds it; null when not held. */
         private ConnectivityManager.NetworkCallback wifiCallback;
 
         /**
          * Companion's join (plan 2.4): on a Wi-Fi with no internet Android keeps mobile data as the default network,
-         * so a socket to the host's LAN address would leave over cellular. While joined, bind the whole process to the
-         * Wi-Fi network (Netty NIO can't take {@code Network.getSocketFactory()}). A phone that is itself the hotspot
-         * has no Wi-Fi client network (its access point isn't a {@link Network}), so nothing is bound there and the
-         * default routing applies; a host never binds, as it only accepts connections. All APIs here are API 21-23.
+         * so a socket to the host's LAN address would leave over cellular. While a join holds the local network, the
+         * Wi-Fi network is requested ({@code requestNetwork}, which needs CHANGE_NETWORK_STATE, a normal permission),
+         * so Android keeps it up even with no internet and tells us which it is; each of the join's sockets is then
+         * bound to it ({@link #openLocalNetworkSocket}). Nothing else is bound: card image downloads and DNS keep the
+         * default network. A phone that is itself the hotspot has no Wi-Fi client network (its access point isn't a
+         * {@link Network}), so its sockets take the default route, which reaches its hotspot clients.
          */
         @Override
-        public void bindToLocalNetwork(boolean bind) {
+        public void holdLocalNetwork(boolean hold) {
             if (connManager == null) {
                 return;
             }
             synchronized (localNetworkLock) {
-                if (bind == localNetworkWanted) {
+                if (hold == (wifiCallback != null)) {
                     return; // a repeat call does nothing more
                 }
-                localNetworkWanted = bind;
-                try {
-                    if (bind) {
-                        // found now, so the connect that follows at once already goes over Wi-Fi; the callback
-                        // (ACCESS_NETWORK_STATE only, unlike requestNetwork) follows the Wi-Fi coming and going
-                        Network wifi = findWifiNetwork();
-                        if (wifi != null) {
-                            bindTo(wifi);
-                        } else {
-                            netLog.info("[Companion] No Wi-Fi network: not binding (this phone may be the hotspot)");
-                        }
-                        wifiCallback = new WifiCallback();
-                        connManager.registerNetworkCallback(wifiRequest(), wifiCallback);
-                    } else {
-                        if (wifiCallback != null) {
-                            connManager.unregisterNetworkCallback(wifiCallback);
-                            wifiCallback = null;
-                        }
-                        if (boundWifi != null) {
-                            connManager.bindProcessToNetwork(null);
-                            boundWifi = null;
-                            netLog.info("[Companion] Unbound the process from Wi-Fi");
-                        }
+                if (hold) {
+                    // found now, so the connect that follows at once already has it; the callback follows it after
+                    wifi = findWifiNetwork();
+                    netLog.info("[Companion] Holding the local network; Wi-Fi now: {}", wifi);
+                    WifiCallback callback = new WifiCallback();
+                    try {
+                        connManager.requestNetwork(wifiRequest(), callback);
+                        wifiCallback = callback; // only once Android took it, so a failed one isn't let go of later
+                    } catch (RuntimeException e) { // SecurityException, or the per-app request limit
+                        netLog.warn(e, "[Companion] Couldn't request the Wi-Fi network; joining with the one found now");
                     }
-                } catch (RuntimeException e) { // SecurityException, or a callback limit: join without the binding
-                    netLog.warn(e, "[Companion] Local network binding ({}) failed", bind);
+                } else {
+                    try {
+                        connManager.unregisterNetworkCallback(wifiCallback);
+                    } catch (RuntimeException e) {
+                        netLog.warn(e, "[Companion] Couldn't release the Wi-Fi network request");
+                    } finally {
+                        wifiCallback = null;
+                        wifi = null;
+                        netLog.info("[Companion] Let go of the local network");
+                    }
                 }
             }
         }
 
-        /** Wi-Fi, with or without internet (a bare router has none). */
+        /**
+         * A socket bound to the Wi-Fi network ({@code Network.bindSocket}, API 22), or null for the default route when
+         * there is no Wi-Fi network (this phone may be the hotspot) or the binding fails.
+         */
+        @Override
+        public SocketChannel openLocalNetworkSocket() {
+            Network network;
+            synchronized (localNetworkLock) {
+                if (wifi == null) {
+                    wifi = findWifiNetwork(); // it may have come since
+                }
+                network = wifi;
+            }
+            if (network == null) {
+                netLog.info("[Companion] No Wi-Fi network: connecting on the default route (this phone may be the hotspot)");
+                return null;
+            }
+            SocketChannel socket = null;
+            try {
+                socket = SocketChannel.open();
+                network.bindSocket(socket.socket());
+                netLog.info("[Companion] Bound the join's socket to Wi-Fi network {}", network);
+                return socket;
+            } catch (IOException | RuntimeException e) {
+                netLog.warn(e, "[Companion] Couldn't bind the join's socket to Wi-Fi network {}; using the default route", network);
+                if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {
+                        // it was never connected
+                    }
+                }
+                return null;
+            }
+        }
+
+        /** Wi-Fi, with or without internet (a bare router has none); NOT_VPN is in the builder's defaults. */
         private NetworkRequest wifiRequest() {
             return new NetworkRequest.Builder()
                     .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -805,33 +841,26 @@ public class Main extends AndroidApplication {
                     .build();
         }
 
+        /** A Wi-Fi network that isn't a VPN over it (a VPN on Wi-Fi reports both transports). */
         @SuppressWarnings("deprecation") // getAllNetworks: its replacement is a callback, which answers later
         private Network findWifiNetwork() {
             for (Network network : connManager.getAllNetworks()) {
                 NetworkCapabilities caps = connManager.getNetworkCapabilities(network);
-                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                        && !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
                     return network;
                 }
             }
             return null;
         }
 
-        /** Under localNetworkLock. */
-        private void bindTo(Network wifi) {
-            if (connManager.bindProcessToNetwork(wifi)) {
-                boundWifi = wifi;
-                netLog.info("[Companion] Bound the process to Wi-Fi network {}", wifi);
-            } else {
-                netLog.warn("[Companion] Couldn't bind the process to Wi-Fi network {}", wifi);
-            }
-        }
-
         private final class WifiCallback extends ConnectivityManager.NetworkCallback {
             @Override
             public void onAvailable(Network network) {
                 synchronized (localNetworkLock) {
-                    if (localNetworkWanted && wifiCallback == this && boundWifi == null) {
-                        bindTo(network);
+                    if (wifiCallback == this && !network.equals(wifi)) {
+                        wifi = network;
+                        netLog.info("[Companion] Wi-Fi network {} available", network);
                     }
                 }
             }
@@ -839,11 +868,13 @@ public class Main extends AndroidApplication {
             @Override
             public void onLost(Network network) {
                 synchronized (localNetworkLock) {
-                    if (localNetworkWanted && wifiCallback == this && network.equals(boundWifi)) {
-                        // bound to a network that's gone, every new socket would fail: unbind until Wi-Fi is back
-                        connManager.bindProcessToNetwork(null);
-                        boundWifi = null;
-                        netLog.info("[Companion] Wi-Fi network {} lost: unbound", network);
+                    if (wifiCallback == this && network.equals(wifi)) {
+                        // a socket bound to a gone network fails: look for another, or take the default route
+                        wifi = findWifiNetwork();
+                        if (network.equals(wifi)) {
+                            wifi = null;
+                        }
+                        netLog.info("[Companion] Wi-Fi network {} lost; now: {}", network, wifi);
                     }
                 }
             }

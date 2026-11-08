@@ -26,6 +26,8 @@
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- Companion join: requestNetwork keeps a Wi-Fi without internet up while joined. A normal permission. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
     <uses-feature android:name="android.hardware.gamepad" android:required="false"/>
     <!-- Companion Mode photographs cards to read their names. Asked for on first use; Forge works without it. -->
     <uses-permission android:name="android.permission.CAMERA"/>

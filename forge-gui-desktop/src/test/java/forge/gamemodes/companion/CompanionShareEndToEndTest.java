@@ -63,11 +63,11 @@ public class CompanionShareEndToEndTest extends AITest {
         }
     }
 
-    /** A device whose local-network binding calls land in {@code binds}. */
+    /** A device whose {@code holdLocalNetwork} calls land in {@code binds}. */
     private static IDeviceAdapter recordingDevice(List<Boolean> binds) {
         return (IDeviceAdapter) Proxy.newProxyInstance(IDeviceAdapter.class.getClassLoader(),
                 new Class<?>[] { IDeviceAdapter.class }, (proxy, method, args) -> {
-                    if ("bindToLocalNetwork".equals(method.getName())) {
+                    if ("holdLocalNetwork".equals(method.getName())) {
                         binds.add((Boolean) args[0]);
                     }
                     return null;
@@ -167,8 +167,8 @@ public class CompanionShareEndToEndTest extends AITest {
             assertEquals(intruder.epoch(), 0);
             assertFalse(wrongView.isOpenViewCalled(), "no view for a wrong token");
             // refused before it was seated, so no reconnect follows: the join is over without a close()
-            await(() -> !intruder.isBoundToLocalNetwork(), () -> { }, "the refused client unbinding");
-            assertEquals(binds, List.of(true, false), "bound to connect, unbound once refused");
+            await(() -> !intruder.isHoldingLocalNetwork(), () -> { }, "the refused client letting go of the local network");
+            assertEquals(binds, List.of(true, false), "held to connect, let go once refused");
         } finally {
             intruder.close();
         }
@@ -200,7 +200,7 @@ public class CompanionShareEndToEndTest extends AITest {
             List<Boolean> binds = new CopyOnWriteArrayList<>();
             client = new CompanionClient("Joiner", view, typed, recordingDevice(binds));
             client.connect();
-            assertEquals(binds, List.of(true), "bound to the local network before connecting");
+            assertEquals(binds, List.of(true), "held the local network before connecting");
             CompanionClient joined = client;
             await(() -> joined.epoch() >= 1 && view.isOpenViewCalled(), table::runSystemOps, "the attach");
             assertEquals(joined.welcomedTo(), "t", "welcomed to the shared game");
@@ -267,11 +267,11 @@ public class CompanionShareEndToEndTest extends AITest {
             assertEquals(board(game.getView()), beforeCalls, "the host's board is as it was");
             assertEquals(joined.epoch(), 2, "nothing was resent");
 
-            // leaving unbinds, once
-            assertEquals(binds, List.of(true), "still bound while joined");
+            // leaving lets go, once
+            assertEquals(binds, List.of(true), "still held while joined");
             client.close();
             client.close();
-            assertEquals(binds, List.of(true, false), "unbound on leaving");
+            assertEquals(binds, List.of(true, false), "let go on leaving");
         } finally {
             if (client != null) {
                 client.close();

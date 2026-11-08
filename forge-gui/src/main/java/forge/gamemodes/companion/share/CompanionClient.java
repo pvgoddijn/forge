@@ -9,10 +9,14 @@ import forge.gamemodes.net.event.GuiGameEvent;
 import forge.gui.interfaces.IGuiGame;
 import forge.interfaces.IDeviceAdapter;
 import forge.interfaces.ILobbyListener;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFactory;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.socket.nio.NioSocketChannel;
 
+import java.nio.channels.SocketChannel;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -30,10 +34,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * the host gone after 15 s too. Reconnect is net play's, which says hello again on each new connection (slice 04 makes
  * it unbounded).
  *
- * <p>With a device adapter, the process is bound to the local network ({@link IDeviceAdapter#bindToLocalNetwork}) before
- * each connect, so a phone with mobile data on still reaches a host on a Wi-Fi without internet, and unbound on every
- * way out: {@link #close}, a first connect that fails, a connection closed with no reconnect to follow (refused,
- * dropped before the game, the game never arrived), and net play's reconnect giving up or losing the seat.
+ * <p>With a device adapter, each connection's socket comes from {@link IDeviceAdapter#openLocalNetworkSocket}, bound to
+ * the Wi-Fi network, so a phone with mobile data on still reaches a host on a Wi-Fi without internet; nothing else in
+ * the app is bound. The client holds the local network ({@link IDeviceAdapter#holdLocalNetwork}) from its first connect
+ * and lets it go on every way out: {@link #close} (also when it comes during a connect), a first connect that fails, a
+ * connection closed with no reconnect to follow (refused, dropped before the game, the game never arrived), and net
+ * play's reconnect giving up or losing the seat.
  */
 public class CompanionClient extends FGameClient {
     static final int HEARTBEAT_SECONDS = 5;
@@ -53,15 +59,17 @@ public class CompanionClient extends FGameClient {
     private volatile boolean attachTimedOut;
     /** The listeners added from outside, for a close net play's handler didn't count (see the data handler). */
     private final List<ILobbyListener> listeners = new CopyOnWriteArrayList<>();
-    /** Binds the process to the local network while joined; null: nothing to bind (desktop, tests). */
+    /** Holds the local network while joined and makes its sockets; null: the default route (desktop, tests). */
     private final IDeviceAdapter network;
-    private final AtomicBoolean bound = new AtomicBoolean();
+    private final AtomicBoolean held = new AtomicBoolean();
+    /** The newest connection whose {@code channelActive} ran: only its close counts (see the data handler). */
+    private volatile Channel newestChannel;
 
     public CompanionClient(String username, IGuiGame gui, JoinCode code) {
         this(username, gui, code, null);
     }
 
-    /** {@code network} binds the process to the local network while joined (Android); null for none. */
+    /** {@code network} holds the local network and binds each connection's socket to it (Android); null for none. */
     public CompanionClient(String username, IGuiGame gui, JoinCode code, IDeviceAdapter network) {
         super(username, gui, code.address().getHostAddress(), code.port());
         this.token = code.token();
@@ -107,39 +115,55 @@ public class CompanionClient extends FGameClient {
     public void close() {
         left = true;
         super.close();
-        bindToLocalNetwork(false);
+        holdLocalNetwork(false);
     }
 
-    /** Net play's connect, on the local network. A reconnect attempt comes through here too, and binds again. */
+    /** Net play's connect, on the local network. A reconnect attempt comes through here too, and holds it again. */
     @Override
     public void connect() {
-        bindToLocalNetwork(true);
+        holdLocalNetwork(true);
+        boolean connected = false;
         try {
             super.connect();
-        } catch (RuntimeException e) {
-            if (getReconnectState() != ReconnectState.RECONNECTING) {
-                bindToLocalNetwork(false); // the first connect failed: no join, no retry
+            connected = true;
+        } finally {
+            // Netty rethrows a refused connect as a checked ConnectException it doesn't declare, so not in a catch.
+            // Let go when the first connect failed (no join, no retry), and when close() came while this connect was
+            // under way: close() let go before this connect held again
+            if (left || !connected && getReconnectState() != ReconnectState.RECONNECTING) {
+                holdLocalNetwork(false);
             }
-            throw e;
         }
     }
 
     @Override
     protected void onReconnectStateChanged(ReconnectState state) {
         if (state == ReconnectState.FAILED || state == ReconnectState.SEAT_LOST) {
-            bindToLocalNetwork(false); // a manual rejoin connects, and so binds, again
+            holdLocalNetwork(false); // a manual rejoin connects, and so holds, again
         }
     }
 
-    /** Whether the process is bound to the local network for this client now. */
-    public boolean isBoundToLocalNetwork() {
-        return bound.get();
+    /** Each connection's socket, bound to the Wi-Fi network when the device has one. */
+    @Override
+    protected ChannelFactory<? extends Channel> channelFactory() {
+        if (network == null) {
+            return super.channelFactory();
+        }
+        return () -> {
+            SocketChannel socket = network.openLocalNetworkSocket();
+            return socket == null ? new NioSocketChannel() : new NioSocketChannel(socket);
+        };
     }
 
-    private void bindToLocalNetwork(boolean bind) {
-        if (network != null && bound.compareAndSet(!bind, bind)) {
-            netLog.info("[Companion] {} the local network", bind ? "Binding to" : "Unbinding from");
-            network.bindToLocalNetwork(bind);
+    /** Whether this client holds the local network now. */
+    public boolean isHoldingLocalNetwork() {
+        return held.get();
+    }
+
+    private void holdLocalNetwork(boolean hold) {
+        if (network != null && held.compareAndSet(!hold, hold)) {
+            netLog.info("[Companion] {} the local network", hold ? "Holding" : "Letting go of");
+            network.holdLocalNetwork(hold);
         }
     }
 
@@ -183,6 +207,7 @@ public class CompanionClient extends FGameClient {
     private final class DataHandler extends ChannelInboundHandlerAdapter {
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
+            newestChannel = ctx.channel();
             connectionOpen = true;
             listenersTold = false;
             // before the login: this handler's channelActive runs before the protocol handler's, which writes it, and
@@ -194,6 +219,13 @@ public class CompanionClient extends FGameClient {
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            // an older connection closing late, after a newer one opened, says nothing about the newer one. Not net
+            // play's isActiveChannel: connect() sets that channel only after the connect, which a host closing at once
+            // (a wrong token) can beat, and that close must count
+            if (ctx.channel() != newestChannel) {
+                super.channelInactive(ctx);
+                return;
+            }
             connectionOpen = false;
             // net play's handler, before this one, tells the listeners only when this is its current channel; a host
             // that closes at once (a wrong token) can beat connect() to setting it, and then no one would hear of it
@@ -205,7 +237,7 @@ public class CompanionClient extends FGameClient {
             }
             // net play's handler before this one has decided: no reconnect follows, so this join is over
             if (getReconnectState() != ReconnectState.RECONNECTING) {
-                bindToLocalNetwork(false);
+                holdLocalNetwork(false);
             }
             super.channelInactive(ctx);
         }

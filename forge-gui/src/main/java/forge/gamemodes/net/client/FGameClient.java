@@ -102,7 +102,7 @@ public class FGameClient implements IToServer, IHasForgeLog {
         try {
             final Bootstrap b = new Bootstrap()
              .group(group)
-             .channel(NioSocketChannel.class)
+             .channelFactory(channelFactory())
              .handler(new ChannelInitializer<SocketChannel>() {
                 @Override
                 public void initChannel(final SocketChannel ch) throws Exception {
@@ -155,6 +155,14 @@ public class FGameClient implements IToServer, IHasForgeLog {
                 group.shutdownGracefully();
             }
         }
+    }
+
+    /**
+     * Makes each connection's channel, a reconnect's included: a mode can hand Netty a socket of its own (Companion's
+     * join, bound to the Wi-Fi network). Called on the connecting thread. A plain {@link NioSocketChannel} by default.
+     */
+    protected ChannelFactory<? extends Channel> channelFactory() {
+        return NioSocketChannel::new;
     }
 
     /**

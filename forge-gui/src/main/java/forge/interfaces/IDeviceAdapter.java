@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.SocketChannel;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Set;
@@ -38,11 +39,21 @@ public interface IDeviceAdapter {
     }
 
     /**
-     * {@code true}: send this process's new connections over the local network (Wi-Fi), even when it has no internet
-     * and mobile data is on, so a Companion join reaches the host; {@code false}: undo it. Called again with the same
-     * value, it does nothing more. Any thread. Default no-op (Android binds the process to the Wi-Fi network).
+     * {@code true}: a Companion join starts; keep the local network (Wi-Fi) up and known while it lasts, also when it
+     * has no internet and mobile data is on; {@code false}: the join is over, let it go. Called again with the same
+     * value, it does nothing more. Any thread. Default no-op (Android asks to keep the Wi-Fi network).
      */
-    default void bindToLocalNetwork(boolean bind) {
+    default void holdLocalNetwork(boolean hold) {
+    }
+
+    /**
+     * A new, unconnected socket that connects over the local network (Wi-Fi) even when it has no internet and mobile
+     * data is on, or null for one on the default route (no Wi-Fi network: this phone may be the hotspot; a desktop).
+     * Only this socket is bound: the rest of the app (card image downloads, DNS) keeps the default network. Any thread,
+     * between {@code holdLocalNetwork(true)} and {@code (false)}. Default null.
+     */
+    default SocketChannel openLocalNetworkSocket() {
+        return null;
     }
 
     Set<String> LWJGL_SUPPORTED_AUDIO_TYPES = Set.of(".wav", ".mp3", ".ogg");
