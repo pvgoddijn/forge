@@ -132,8 +132,12 @@ public class MatchScreen extends FScreen {
                 e -> getGameController().selectButtonCancel()));
 
         bottomPlayerPrompt.setOverMatch(true);
+        MatchExtension extension = MatchController.getExtension();
+        if (extension != null && extension.promptActionLabel() != null) {
+            bottomPlayerPrompt.setAction(extension.promptActionLabel(), extension::runPromptAction);
+        }
 
-        if (humanCount < 2 || MatchController.instance.hotSeatMode() || MatchController.isSingleOperator()
+        if (humanCount < 2 || MatchController.instance.hotSeatMode() || extension != null && !extension.showsTopPrompt()
                 || GuiBase.isNetPlay(MatchController.instance))
             topPlayerPrompt = null;
         else {
@@ -438,7 +442,7 @@ public class MatchScreen extends FScreen {
             unifiedPhase.setVisible(unified);
             if (unified) {
                 unifiedPhase.setBounds(width - buttonWidth, 0, buttonWidth, barHeight);
-                unifiedPhase.getMenu().layoutFor(width, barHeight, height - VPrompt.HEIGHT - barHeight);
+                unifiedPhase.getMenu().layoutFor(width, barHeight, height - bottomPlayerPrompt.getBarHeight() - barHeight);
             } else {
                 unifiedPhase.getMenu().close();
             }
@@ -452,8 +456,9 @@ public class MatchScreen extends FScreen {
             startY = VPrompt.HEIGHT;
             scrollerWidth -= menuBarWidth;
         }
-        scroller.setBounds(0, startY, scrollerWidth, height - VPrompt.HEIGHT - startY);
-        bottomPlayerPrompt.setBounds(0, height - VPrompt.HEIGHT, width, VPrompt.HEIGHT);
+        final float promptHeight = bottomPlayerPrompt.getBarHeight();
+        scroller.setBounds(0, startY, scrollerWidth, height - promptHeight - startY);
+        bottomPlayerPrompt.setBounds(0, height - promptHeight, width, promptHeight);
     }
 
     @Override
@@ -464,7 +469,7 @@ public class MatchScreen extends FScreen {
     @Override
     public Rectangle getDropDownBoundary() {
         if (topPlayerPrompt == null) {
-            return new Rectangle(0, 0, getWidth(), getHeight() - VPrompt.HEIGHT); //prevent covering prompt
+            return new Rectangle(0, 0, getWidth(), getHeight() - bottomPlayerPrompt.getBarHeight()); //prevent covering prompt
         }
         return new Rectangle(0, VPrompt.HEIGHT, scroller.getWidth(), getHeight() - 2 * VPrompt.HEIGHT);
     }

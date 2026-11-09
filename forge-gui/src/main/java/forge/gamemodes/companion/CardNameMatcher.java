@@ -33,12 +33,18 @@ public class CardNameMatcher {
         unique.forEach((normalized, name) -> entries.add(new Entry(name, normalized)));
     }
 
-    /** Every face of every card in Forge's database, plus every token. */
-    public static CardNameMatcher fromStaticData() {
+    /** The name of every face of every card in Forge's database: what a photo of a card can show. */
+    public static List<String> cardFaceNames() {
         List<String> names = new ArrayList<>();
         for (ICardFace face : StaticData.instance().getCommonCards().getAllFaces()) {
             names.add(face.getName());
         }
+        return names;
+    }
+
+    /** Every face of every card in Forge's database, plus every token. */
+    public static CardNameMatcher fromStaticData() {
+        List<String> names = cardFaceNames();
         for (CardRules token : StaticData.instance().getAllTokens().getRules().values()) {
             names.add(token.getName());
         }

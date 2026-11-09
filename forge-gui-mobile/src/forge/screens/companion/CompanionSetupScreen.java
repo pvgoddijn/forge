@@ -10,11 +10,13 @@ import forge.gamemodes.match.HostedMatch;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
 import forge.localinstance.properties.ForgeConstants;
+import forge.menu.FDropDownMenu;
 import forge.menu.FMenuItem;
 import forge.screens.LaunchScreen;
 import forge.screens.LoadingOverlay;
 import forge.screens.home.NewGameMenu;
 import forge.screens.match.MatchController;
+import forge.screens.match.MatchExtension;
 import forge.toolbox.FButton;
 import forge.toolbox.FCheckBox;
 import forge.toolbox.FOptionPane;
@@ -181,18 +183,41 @@ public class CompanionSetupScreen extends LaunchScreen {
         table.setOnNotice(notice -> FThreads.invokeInEdtLater(() -> FOptionPane.showMessageDialog(notice)));
         LoadingOverlay.show("Setting up the table", true, () -> {
             HostedMatch match = MatchController.hostMatch();
-            MatchController.setGameMenuExtension(menu -> {
-                menu.addItem(new FMenuItem("Add card", FSkinImage.PLUS,
-                        e -> new CardSearchDialog(table, MatchController.instance.getGameView()).show()));
-                // the menu is built each time it opens, so the labels show the current settings
-                boolean everyTurn = table.engineCombat();
-                if (!everyTurn) {
-                    boolean thisTurn = table.engineCombatThisTurn();
-                    menu.addItem(new FMenuItem(thisTurn ? "Combat this turn: on" : "Combat this turn: off", FSkinImage.ATTACK,
-                            e -> table.setEngineCombatThisTurn(!thisTurn)));
+            MatchController.setExtension(new MatchExtension() {
+                @Override
+                public void addGameMenuItems(FDropDownMenu menu) {
+                    menu.addItem(new FMenuItem("Add card by name", FSkinImage.PLUS,
+                            e -> CardSearchDialog.addByName(table, MatchController.instance.getGameView())));
+                    // the menu is built each time it opens, so the labels show the current settings
+                    boolean everyTurn = table.engineCombat();
+                    if (!everyTurn) {
+                        boolean thisTurn = table.engineCombatThisTurn();
+                        menu.addItem(new FMenuItem(thisTurn ? "Combat this turn: on" : "Combat this turn: off",
+                                FSkinImage.ATTACK, e -> table.setEngineCombatThisTurn(!thisTurn)));
+                    }
+                    menu.addItem(new FMenuItem(everyTurn ? "Combat every turn: on" : "Combat every turn: off",
+                            FSkinImage.ATTACK, e -> table.setEngineCombat(!everyTurn)));
                 }
-                menu.addItem(new FMenuItem(everyTurn ? "Combat every turn: on" : "Combat every turn: off", FSkinImage.ATTACK,
-                        e -> table.setEngineCombat(!everyTurn)));
+
+                @Override
+                public boolean showsHandsAtStart() {
+                    return false; // a paper game's hands aren't known: the rows would only show card backs
+                }
+
+                @Override
+                public boolean showsTopPrompt() {
+                    return false; // one operator answers for every seat, so one prompt the right way up
+                }
+
+                @Override
+                public String promptActionLabel() {
+                    return "Add card"; // the main thing done at the table, so it sits where the thumb is
+                }
+
+                @Override
+                public void runPromptAction() {
+                    CardSearchDialog.addByPhoto(table, MatchController.instance.getGameView());
+                }
             });
             CompanionMatch.start(match, GuiBase.getInterface().getNewGuiGame(), table);
         });

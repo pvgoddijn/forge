@@ -1,0 +1,48 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <artifactId>forge</artifactId>
+        <groupId>forge</groupId>
+        <version>${revision}</version>
+    </parent>
+
+    <!--
+        Reads a card's printed name from a photo, on the device and offline: finds the card, reads its
+        title with PP-OCR models through ONNX Runtime, and matches the text against card names.
+        Plain Java with no Android or AWT types, so the dev build and Android share it.
+        Only forge-gui-android and forge-gui-mobile-dev depend on this module. forge-gui-mobile must
+        not, or the native ONNX libraries would reach the iOS build.
+    -->
+    <artifactId>forge-card-ocr</artifactId>
+    <name>Forge Card OCR</name>
+
+    <properties>
+        <!-- MIT licence. The desktop jar and the Android AAR share this Java API. -->
+        <onnxruntime.version>1.31.1</onnxruntime.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>forge</groupId>
+            <artifactId>forge-gui</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!--
+            Provided: each backend brings its own build, the desktop jar (forge-gui-mobile-dev) or the
+            Android AAR (forge-gui-android).
+        -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime</artifactId>
+            <version>${onnxruntime.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.1.3</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
