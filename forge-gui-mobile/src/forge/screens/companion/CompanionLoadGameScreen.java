@@ -9,6 +9,7 @@ import forge.assets.FSkinFont;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.share.ActiveGame;
+import forge.gamemodes.companion.share.CompanionResume;
 import forge.screens.FScreen;
 import forge.toolbox.FLabel;
 import forge.toolbox.FList;
@@ -25,9 +26,10 @@ import java.util.function.BiConsumer;
 /**
  * The games that haven't ended, most recently played first, each with when it was last played and its players: "Load
  * game". Several may be unfinished side by side. Tapping a game of this phone's own offers Continue or End game (it
- * then goes to the past games, after a confirm). A game followed from another phone is marked so, and offers "Join
- * again" or "Stop following" instead: it is never continued here, as loading its state would write to the copy that
- * must stay the host's. Listing writes nothing to a game.
+ * then goes to the past games, after a confirm); one it shared is shared again on the same code. A game followed from
+ * another phone is marked so, and offers Continue, which rejoins its host without a code (slice 04), or "Stop
+ * following": it is never opened as this phone's own, as loading its state would write to the copy that must stay the
+ * host's. Listing writes nothing to a game.
  */
 public class CompanionLoadGameScreen extends FScreen {
     private static final float PADDING = Utils.scale(5);
@@ -125,16 +127,22 @@ public class CompanionLoadGameScreen extends FScreen {
     }
 
     /**
-     * A game followed from another phone, left without ending (closed, killed, or Leave): "Stop following" makes it a
-     * past game; "Join again" joins its host with the code it was joined with, asking only for what the copy lacks.
-     * Never continued with {@code openGame}: loading its state would write to the host's copy.
+     * A game followed from another phone, left without ending (closed, killed, or Leave): Continue rejoins its host
+     * with the code it was joined with, nothing to type, and shows N6 until the host's board arrives
+     * ({@link CompanionRejoinScreen}); when its {@code share.json} doesn't read, the code is typed instead. "Type a
+     * code" is for a host whose code changed. "Stop following" makes it a past game. Never continued with
+     * {@code openGame}: loading its state would write to the host's copy.
      */
     private void offerFollowed(ActiveGame game) {
         Localizer localizer = Forge.getLocalizer();
+        boolean rejoins = CompanionResume.pick(store, game) == CompanionResume.Pick.REJOIN;
+        List<String> options = rejoins
+                ? List.of(localizer.getMessage("lblCompanionStopFollowing"),
+                        localizer.getMessage("lblCompanionTypeCode"), localizer.getMessage("lblCompanionContinue"))
+                : List.of(localizer.getMessage("lblCompanionStopFollowing"),
+                        localizer.getMessage("lblCompanionContinue"));
         FOptionPane.showOptionDialog(localizer.getMessage("lblCompanionFollowedGame"),
-                localizer.getMessage("lblCompanionJoinGame"), null,
-                List.of(localizer.getMessage("lblCompanionStopFollowing"),
-                        localizer.getMessage("lblCompanionJoinAgain")), 1, choice -> {
+                String.join(", ", game.game().seatNames()), null, options, options.size() - 1, choice -> {
             if (choice == null) {
                 return;
             }
@@ -146,7 +154,12 @@ public class CompanionLoadGameScreen extends FScreen {
                             e.getMessage()));
                 }
                 refresh();
+            } else if (choice == options.size() - 1 && rejoins) {
+                CompanionRejoinScreen screen = new CompanionRejoinScreen(store, game, game.code().get());
+                Forge.openScreen(screen);
+                screen.start();
             } else {
+                // the code from share.json to edit, or none when it doesn't read: typed, as for a new join
                 Forge.openScreen(new JoinGameScreen(store, game.id(), game.code().orElse(null)));
             }
         });

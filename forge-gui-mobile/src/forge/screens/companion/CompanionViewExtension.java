@@ -7,6 +7,7 @@ import forge.gamemodes.companion.CompanionLogEntry;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.share.CompanionClient;
+import forge.gamemodes.companion.share.CompanionResume;
 import forge.gui.FThreads;
 import forge.menu.FDropDownMenu;
 import forge.menu.FMenuItem;
@@ -29,6 +30,10 @@ import java.util.stream.Collectors;
  * writes nothing), with the player filter (AC-107). When the host ends the game, this device leaves the match screen
  * and says so; the copy is then one of its past games (AC-113). When the copy can't be written, it stops following
  * and says so, rather than going on with a copy that no longer matches the host's.
+ *
+ * <p>While the host can't be reached, the board stays and {@link CompanionReconnectNotice} says it's reconnecting
+ * (AC-111, slice 04); it goes once the host is back, whose attach then brings the board up to date. Before the board
+ * arrives the screen that joined says how the link is (N6 for a rejoin), so the notice shows only over the board.
  */
 final class CompanionViewExtension implements MatchExtension {
     private final CompanionStore store;
@@ -39,6 +44,9 @@ final class CompanionViewExtension implements MatchExtension {
     private final AtomicBoolean stopping = new AtomicBoolean();
     /** The notice for {@link #onLeft} when the copy makes this device leave, else null. UI thread. */
     private String leaveNotice;
+    /** Over the board while the host can't be reached; Leave there leaves as the menu's Leave does. UI thread. */
+    private final CompanionReconnectNotice reconnectNotice = new CompanionReconnectNotice(
+            () -> MatchController.instance.afterGameEnd());
 
     /**
      * @param store  where the client keeps the copy of the game
@@ -54,6 +62,7 @@ final class CompanionViewExtension implements MatchExtension {
     /** The connection to close on leaving; set before it connects. Listens to its copy for the end and failures. */
     void setClient(CompanionClient client) {
         this.client = client;
+        client.addLinkListener(link -> FThreads.invokeInEdtLater(() -> linkChanged(link)));
         client.addCopyListener(new CompanionClient.CopyListener() {
             @Override
             public void ended(String game) {
@@ -66,6 +75,25 @@ final class CompanionViewExtension implements MatchExtension {
                 leaveWithNotice(Forge.getLocalizer().getMessage("lblCompanionCopyFailed", why));
             }
         });
+    }
+
+    /** The board shows the reconnect notice while the host can't be reached, and only then. UI thread. */
+    private void linkChanged(CompanionClient.Link link) {
+        if (!left && CompanionResume.showsReconnectNotice(link, boardShown())) {
+            reconnectNotice.show();
+        } else {
+            reconnectNotice.dismiss();
+        }
+    }
+
+    /** Whether this game's board is on screen: the match screen, current, while this extension is set. */
+    private static boolean boardShown() {
+        return MatchController.getView() != null && Forge.getCurrentScreen() == MatchController.getView();
+    }
+
+    @Override
+    public boolean showsOwnReconnectState() {
+        return true;
     }
 
     /** The copy's thread: leaves the game on the UI thread, once, and shows {@code notice}. */
@@ -139,6 +167,7 @@ final class CompanionViewExtension implements MatchExtension {
             return;
         }
         left = true;
+        reconnectNotice.dismiss();
         CompanionClient c = client;
         if (c != null) {
             c.close();

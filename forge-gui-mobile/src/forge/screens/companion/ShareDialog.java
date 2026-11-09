@@ -16,7 +16,8 @@ import java.util.List;
 /**
  * Shares the running table (AC-101, text code only): starts {@code share} if it isn't yet, then shows a join code per
  * usable local address, labelled with its interface, and how many devices are connected. Stop sharing lets every
- * joined device go; Close keeps sharing. No QR code (slice 08), no list of the phones (slice 05). UI thread.
+ * joined device go, for good: continuing the game later doesn't share it again (slice 04); Close keeps sharing. No
+ * QR code (slice 08), no list of the phones (slice 05). UI thread.
  */
 class ShareDialog extends FDialog {
     private static final float PADDING = Utils.scale(5);
@@ -40,7 +41,8 @@ class ShareDialog extends FDialog {
         text.setFont(FONT);
         text.setAlignment(Align.center);
         initButton(0, Forge.getLocalizer().getMessage("lblCompanionStopSharing"), e -> {
-            share.stop();
+            // for good: the game's share state goes too, so continuing it later doesn't share it again
+            share.stopForGood();
             hide();
         });
         initButton(1, Forge.getLocalizer().getMessage("lblClose"), e -> hide());

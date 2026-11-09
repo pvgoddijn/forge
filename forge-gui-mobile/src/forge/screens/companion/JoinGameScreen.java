@@ -31,9 +31,10 @@ import java.util.function.Consumer;
  * says what went wrong: not a code, nothing reachable there, the host refused the code, the host left first, or the
  * game didn't arrive in time. Back from this screen ends a join under way.
  *
- * <p>"Join again" opens it for a game this device already follows: the code is filled in from the game's
- * {@code share.json} (when it reads), and the join asks the host only for what the copy lacks
- * ({@link CompanionClient#followAgain}).
+ * <p>Load game opens it for a game this device already follows when a code must be typed: "Type a code" (the host's
+ * code changed), with the code from the game's {@code share.json} to edit, or a {@code share.json} that doesn't read,
+ * with an empty field. The join asks the host only for what the copy lacks ({@link CompanionClient#followAgain}).
+ * Continue in Load game rejoins without a code instead ({@link CompanionRejoinScreen}).
  */
 public class JoinGameScreen extends FScreen {
     private static final float PADDING = Utils.scale(5);
@@ -57,7 +58,7 @@ public class JoinGameScreen extends FScreen {
     }
 
     /**
-     * "Join again": follows again the game {@code game} this device holds a copy of, at {@code code}; null when its
+     * Follows again the game {@code game} this device holds a copy of, at {@code code}; null when its
      * {@code share.json} doesn't read, and the code is then typed.
      */
     public JoinGameScreen(CompanionStore store, String game, JoinCode code) {
@@ -106,7 +107,7 @@ public class JoinGameScreen extends FScreen {
         return code.address().getHostAddress() + ":" + code.port();
     }
 
-    private static String playerName() {
+    static String playerName() {
         String name = FModel.getPreferences().getPref(FPref.PLAYER_NAME);
         return name == null || name.isBlank() ? DEFAULT_NAME : name.trim();
     }

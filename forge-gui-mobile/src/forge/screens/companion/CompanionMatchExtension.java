@@ -29,6 +29,7 @@ import forge.util.ThreadUtil;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -45,6 +46,7 @@ class CompanionMatchExtension implements MatchExtension {
         this.table = table;
         this.store = store;
         this.match = match;
+        stopEndedShare(); // a new Companion game on this device: the last one's phones have had their end
     }
 
     /** Set once the game is marked ended, so its game over closes the match screen. */
@@ -144,10 +146,27 @@ class CompanionMatchExtension implements MatchExtension {
     }
 
     /**
-     * The share of this match's table, made the first time "Share game…" is picked; stopped from the dialog, or when
-     * the match is left. UI thread.
+     * The share of this match's table, made the first time "Share game…" is picked (its {@code start} writes the
+     * game's {@code share.json}), or when a game this device shared is continued; stopped from the dialog, or when the
+     * match is left. UI thread.
      */
     private CompanionShareHost share;
+    /** Set once the match is left, so a share again that comes late doesn't start. UI thread. */
+    private boolean left;
+
+    /**
+     * The share of the last game that ended here, still answering its phones with the end (plan 4.1: an ended host
+     * keeps answering {@code end} until the app leaves Companion), so a phone that was away when it ended learns it
+     * when it comes back. Stopped once another Companion game opens on this device, or with the app. UI thread.
+     */
+    private static CompanionShareHost endedShare;
+
+    private static void stopEndedShare() {
+        if (endedShare != null) {
+            endedShare.stopForGood(); // an ended game isn't continued, so its share state has nothing left to do
+            endedShare = null;
+        }
+    }
 
     private void share() {
         if (share == null) {
@@ -156,11 +175,58 @@ class CompanionMatchExtension implements MatchExtension {
         new ShareDialog(share).show();
     }
 
+    /**
+     * Continuing a game this device shared (its {@code share.json} says hosting): once its game has started, it's
+     * shared again on the same port and token, so its phones come back by themselves. When that port is taken, the
+     * code changes, and the host is told the new one. Call before the match starts.
+     */
+    void shareAgainWhenStarted() {
+        table.addGameStartListener(new Consumer<Game>() {
+            @Override
+            public void accept(Game game) {
+                table.removeGameStartListener(this); // once: a restart from the match screen keeps the share
+                FThreads.invokeInEdtLater(CompanionMatchExtension.this::shareAgain);
+            }
+        });
+    }
+
+    private void shareAgain() {
+        if (left || share != null) {
+            return;
+        }
+        CompanionShareHost again = new CompanionShareHost(table);
+        try {
+            again.start();
+        } catch (RuntimeException e) {
+            // no free port, or the network refused to listen: the game goes on unshared; Share game… tries again
+            FOptionPane.showErrorDialog(Forge.getLocalizer().getMessage("lblCompanionShareFailed", e.getMessage()));
+            return;
+        }
+        share = again;
+        if (again.codeChanged()) {
+            List<String> codes = new ArrayList<>();
+            for (CompanionShareHost.Code code : again.codes()) {
+                codes.add(code.code().text());
+            }
+            FOptionPane.showMessageDialog(Forge.getLocalizer().getMessage("lblCompanionCodeChanged",
+                    String.join("\n", codes)));
+        }
+    }
+
+    /**
+     * Leaving the match keeps the game's share state, so Continue in Load game shares it again on the same code; its
+     * phones keep trying meanwhile. An ended game's share goes on answering with the end ({@link #endedShare}).
+     */
     @Override
     public void matchLeft() {
+        left = true;
         if (share != null) {
-            // after an End game, the end goes out first: stop sends what the phones are still owed
-            share.stop(); // the joined devices lose the game with it (slice 04 keeps them waiting)
+            if (ending) {
+                stopEndedShare();
+                endedShare = share; // the end goes out to the phones attached, and to those that come back
+            } else {
+                share.stop();
+            }
             share = null;
         }
     }

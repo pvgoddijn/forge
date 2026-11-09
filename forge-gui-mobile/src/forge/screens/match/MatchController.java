@@ -226,6 +226,8 @@ public class MatchController extends NetworkGuiGame {
     @Override
     public void openView(final TrackableCollection<PlayerView> myPlayers) {
         final boolean noHumans = !hasLocalPlayers();
+        final boolean replacesShownMatch = view != null && Forge.getCurrentScreen() == view
+                && getExtension() != null && getExtension().followsRemoteGame();
 
         FCollectionView<PlayerView> players = getGameView().getPlayers();
         if (players.size() == 2 && myPlayers != null && myPlayers.size() == 1 && myPlayers.get(0).equals(players.get(1))) {
@@ -277,7 +279,9 @@ public class MatchController extends NetworkGuiGame {
         actuateMatchPreferences();
         //reset daytime every match
         updateDayTime(null);
-        Forge.openScreen(view);
+        // a followed game's next openView (a reconnect's attach, or the host's new game) comes without an afterGameEnd
+        // first: the new match screen takes the shown one's place, so leaving it doesn't go back to the stale one
+        Forge.openScreen(view, replacesShownMatch);
     }
 
     public void showPromptMessageNoCancel(final PlayerView player, final String message) {
@@ -970,6 +974,9 @@ public class MatchController extends NetworkGuiGame {
     @Override
     public void onReconnectStateChanged(final FGameClient.ReconnectState state, final int attemptIndex, final int nextDelaySeconds) {
         FThreads.invokeInEdtLater(() -> {
+            if (extension != null && extension.showsOwnReconnectState()) {
+                return; // e.g. Companion: its own notice, and it never gives up; net play's client isn't this one
+            }
             final FGameClient client = OnlineLobbyScreen.getfGameClient();
             switch (state) {
                 case RECONNECTING:

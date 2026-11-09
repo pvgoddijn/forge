@@ -110,6 +110,14 @@ public interface MatchExtension {
     }
 
     /**
+     * Whether this mode tells of a lost connection and its reconnect itself, so net play's reconnect dialogs (which
+     * count attempts and give up) don't show for it.
+     */
+    default boolean showsOwnReconnectState() {
+        return false;
+    }
+
+    /**
      * Called on the UI thread when the match screen is left after its game ended, and when another match is hosted.
      * May be called more than once.
      */

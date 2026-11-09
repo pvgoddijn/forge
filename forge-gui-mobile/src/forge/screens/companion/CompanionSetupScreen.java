@@ -364,9 +364,16 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         // over the prompt the game shows next; dismissing it leaves that prompt as it was
         table.setOnNotice(notice -> FThreads.invokeInEdtLater(() -> FOptionPane.showMessageDialog(notice)));
+        // a game this device shared (its share.json says hosting): shared again on the same code once it's started,
+        // so its phones come back by themselves (slice 04)
+        boolean shareAgain = ShareState.hosted(store, id).isPresent();
         LoadingOverlay.show("Setting up the table", true, () -> {
             HostedMatch match = MatchController.hostMatch();
-            MatchController.setExtension(new CompanionMatchExtension(table, store, match));
+            CompanionMatchExtension extension = new CompanionMatchExtension(table, store, match);
+            if (shareAgain) {
+                extension.shareAgainWhenStarted();
+            }
+            MatchController.setExtension(extension);
             CompanionMatch.start(match, GuiBase.getInterface().getNewGuiGame(), table);
         });
     }

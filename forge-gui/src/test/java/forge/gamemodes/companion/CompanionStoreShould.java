@@ -8,10 +8,14 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.stream.Stream;
 
 import forge.gamemodes.companion.CompanionLogEntry.FromHand;
 import forge.gamemodes.companion.CompanionLogEntry.Kind;
@@ -478,6 +482,62 @@ public class CompanionStoreShould {
                 .extracting(CompanionHistory.Row::undone).containsExactly(false);
         assertThat(kept).isLessThan(unsaved);
         assertThat(Files.readAllBytes(log.toPath())).isEqualTo(before);
+    }
+
+    /**
+     * Slice 04, AC-112: a following phone killed between an entry and its step is restarted with entries past its
+     * latest step. What it does with its copy until the host's board arrives (Load game's list, N6's last board and
+     * history) writes nothing, no settling {@code UNDO} as a resume would add, so it stays byte for byte the host's.
+     */
+    @Test
+    public void writeNothingWhenAFollowingStoreRestartsWithEntriesPastItsLatestStep() throws IOException {
+        store.saveState(id, "step 0");
+        store.appendLog(id, CompanionLogEntry.of(Kind.ADD, 1, 1, "Ann", List.of("Ann"), "a"));
+        store.saveState(id, "step 1");
+        long past = store.appendLog(id, CompanionLogEntry.of(Kind.ACTION, 2, 1, "Ann", List.of("Ann"), "b"))
+                .entry().seq(); // its step 2 never came
+        File phoneDir = Files.createTempDirectory("companion-follower").toFile();
+        phoneDir.deleteOnExit();
+        copyTree(new File(dir, id), new File(phoneDir, id)); // the copy, verbatim, as the host's
+        Map<String, String> host = contents(new File(dir, id));
+
+        CompanionStore restarted = new CompanionStore(phoneDir);
+        assertThat(restarted.listUnfinished()).extracting(CompanionStore.Unfinished::id).containsExactly(id);
+        assertThat(restarted.latestStep(id)).isEqualTo(1);
+        assertThat(restarted.loadFinalState(id)).isEqualTo(lines("step 1"));
+        assertThat(CompanionLogEntry.undone(restarted.loadFinalLog(id))).containsExactly(past);
+        assertThat(restarted.loadLogLines(id)).hasSize(2);
+
+        assertThat(contents(new File(phoneDir, id))).isEqualTo(host);
+        assertThat(CompanionLogEntry.undone(restarted.loadLog(id))).as("no UNDO written").isEmpty();
+    }
+
+    private static void copyTree(File from, File to) throws IOException {
+        Path root = from.toPath();
+        try (Stream<Path> walk = Files.walk(root)) {
+            for (Path p : (Iterable<Path>) walk::iterator) {
+                Path target = to.toPath().resolve(root.relativize(p).toString());
+                if (Files.isDirectory(p)) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.copy(p, target);
+                }
+            }
+        }
+    }
+
+    /** Every file under {@code root}, by its path there, with its bytes as text. */
+    private static Map<String, String> contents(File root) throws IOException {
+        Map<String, String> files = new TreeMap<>();
+        try (Stream<Path> walk = Files.walk(root.toPath())) {
+            for (Path p : (Iterable<Path>) walk::iterator) {
+                if (Files.isRegularFile(p)) {
+                    files.put(root.toPath().relativize(p).toString(),
+                            new String(Files.readAllBytes(p), StandardCharsets.ISO_8859_1));
+                }
+            }
+        }
+        return files;
     }
 
     /** Slice 6: the seats' commanders and decklists, and Commander mode, come back as they were saved. */
