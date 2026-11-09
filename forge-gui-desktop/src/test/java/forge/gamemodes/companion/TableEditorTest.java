@@ -1847,6 +1847,22 @@ public class TableEditorTest extends AITest {
                 "an undo sent anyway is refused");
     }
 
+    /** The history the UI reads is the log as of the latest prompt: an entry written since shows at the next one. */
+    @Test
+    public void logAtPromptIsTheLogAsOfTheLatestPrompt() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        assertTrue(rec.table.logAtPrompt().isEmpty(), "no prompt yet");
+
+        rec.table.submit(g -> TableEditor.setLife(ann, 30, false));
+        rec.table.runPending(game);
+        assertTrue(rec.table.logAtPrompt().isEmpty(), "written, but no prompt since");
+        saveAsTheTableDoes(rec, game);
+        assertFalse(rec.table.logAtPrompt().isEmpty());
+        assertEquals(rec.table.logAtPrompt(), rec.table.log());
+    }
+
     /** The undone entries stay in the log, marked by the undo; a new action after it writes the step again, unmarked. */
     @Test
     public void anUndoneEntryStaysMarkedAndTheNextActionWritesItsStepAgain() {
@@ -2559,5 +2575,171 @@ public class TableEditorTest extends AITest {
         saveAsTheTableDoes(rec, game);
         assertEquals(rec.table.couldHaveCast("Counterspell"), List.of(bo.getName()));
         assertEquals(rec.table.couldHaveCast("Divination").size(), 3);
+    }
+
+    // ---- History: what the engine did (slice 5, chunk 2) ----
+
+    private static List<CompanionLogEntry> engineEntries(List<CompanionLogEntry> log) {
+        return log.stream().filter(e -> e.kind() == CompanionLogEntry.Kind.ENGINE).toList();
+    }
+
+    /** The messages of the {@code type} entries Forge's game log gained after it had {@code from} entries. */
+    private static List<String> forgeLogSince(Game game, int from, forge.game.GameLogEntryType type) {
+        List<forge.game.GameLogEntry> all = game.getGameLog().getAllEntries();
+        return all.subList(from, all.size()).stream().filter(e -> e.type() == type)
+                .map(forge.game.GameLogEntry::message).toList();
+    }
+
+    /**
+     * Through the real loop: Ann casts a Gray Merchant in her Main 1, everyone passes, it and its trigger resolve.
+     * Each life change is an engine entry about the player whose life changed, under the step the next save writes,
+     * and the cache answers as the log on disk does. One undo marks them all undone, and the undo's own load of the
+     * earlier life totals isn't copied as engine entries.
+     */
+    @Test
+    public void onTheGameLoopAGrayMerchantWritesAnEngineEntryForEachLifeChange() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        boolean[] cast = {false};
+        seatsFor(game, rec, new ArrayList<>(), seat -> {
+            if (!game.getStack().isEmpty()) {
+                return null; // the operator passes, and it resolves
+            }
+            saveAsTheTableDoes(rec, game);
+            if (!cast[0]) {
+                cast[0] = true;
+                rec.table.submit(cast(ann, "Gray Merchant of Asphodel"));
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+        int forgeLogBefore = game.getGameLog().size();
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(ann.getLife(), CompanionSetup.DEFAULT_LIFE + 4, "the drain resolved");
+        assertEquals(rec.store.latestStep("t"), 1, "the start, and the board after the Merchant");
+        List<CompanionLogEntry> log = rec.store.loadLog("t");
+        List<String> lifeChanges = forgeLogSince(game, forgeLogBefore, forge.game.GameLogEntryType.LIFE);
+        assertEquals(lifeChanges.size(), 3, "two losses and a gain: " + lifeChanges);
+        List<String> affected = new ArrayList<>();
+        for (String change : lifeChanges) {
+            List<CompanionLogEntry> copied = engineEntries(log).stream().filter(e -> e.text().equals(change))
+                    .toList();
+            assertEquals(copied.size(), 1, change + " in " + log);
+            CompanionLogEntry entry = copied.get(0);
+            assertEquals(entry.step(), 1, "under the step the save after it wrote");
+            assertEquals(entry.turn(), 1);
+            assertEquals(entry.active(), ann.getName());
+            assertEquals(entry.affected().size(), 1, entry.toString());
+            assertTrue(change.contains(entry.affected().get(0)), "about the player whose life it is: " + entry);
+            affected.add(entry.affected().get(0));
+        }
+        List<String> everyone = new ArrayList<>(game.getPlayers().stream().map(Player::getName).toList());
+        java.util.Collections.sort(everyone);
+        java.util.Collections.sort(affected);
+        assertEquals(affected, everyone, "each player's life change is about that player");
+        assertTrue(engineEntries(log).stream().noneMatch(e -> e.text().contains("Mana")),
+                "only the useful types: " + engineEntries(log));
+        assertEquals(rec.table.log(), log, "the cache is the log on disk");
+        assertEquals(rec.table.latestStep(), rec.store.latestStep("t"));
+
+        undo(rec, game);
+
+        log = rec.store.loadLog("t");
+        int undoAt = log.size() - 1;
+        while (log.get(undoAt).kind() != CompanionLogEntry.Kind.UNDO) {
+            undoAt--;
+        }
+        assertTrue(engineEntries(log.subList(undoAt, log.size())).isEmpty(),
+                "the undo's load isn't something the engine did: " + log.subList(undoAt, log.size()));
+        CompanionHistory history = CompanionHistory.of(log);
+        List<CompanionHistory.Row> drains = history.rows().stream()
+                .filter(r -> r.kind() == CompanionLogEntry.Kind.ENGINE && lifeChanges.contains(r.text())).toList();
+        assertEquals(drains.size(), 3);
+        assertTrue(drains.stream().allMatch(CompanionHistory.Row::undone), "undone with the cast: " + drains);
+        assertEquals(history.filter(ann.getName()).rows().stream()
+                .filter(r -> lifeChanges.contains(r.text())).count(), 1L, "Ann's filter keeps only her gain");
+        assertEquals(rec.table.log(), log, "the cache is the log on disk after the undo too");
+        assertEquals(rec.table.latestStep(), 0);
+        assertEquals(rec.table.latestStep(), rec.store.latestStep("t"));
+    }
+
+    /**
+     * A restart from the menu builds a new game with new seats on the same table: the old game's engine log copier
+     * stops, and the new game's writes.
+     */
+    @Test
+    public void aRestartStopsTheOldGamesEngineLog() {
+        Game old = startTableIn(PhaseType.MAIN1);
+        Recorded rec = new Recorded();
+        seatsFor(old, rec, new ArrayList<>(), seat -> {
+            throw new OperatorAsked();
+        });
+        Player oldBo = old.getPlayers().get(1);
+        old.fireEvent(new forge.game.event.GameEventPlayerLivesChanged(oldBo, 40, 30));
+        assertEquals(engineEntries(rec.store.loadLog("t")).size(), 1, "the old game's copier writes before");
+
+        Game restarted = startTableIn(PhaseType.MAIN1);
+        seatsFor(restarted, rec, new ArrayList<>(), seat -> {
+            throw new OperatorAsked();
+        });
+        old.fireEvent(new forge.game.event.GameEventPlayerLivesChanged(oldBo, 30, 20));
+        assertEquals(engineEntries(rec.store.loadLog("t")).size(), 1, "the old game's copier stopped");
+
+        Player newCy = restarted.getPlayers().get(2);
+        restarted.fireEvent(new forge.game.event.GameEventPlayerLivesChanged(newCy, 40, 35));
+        List<CompanionLogEntry> engine = engineEntries(rec.store.loadLog("t"));
+        assertEquals(engine.size(), 2, "the new game's copier writes");
+        assertEquals(engine.get(1).affected(), List.of(newCy.getName()));
+    }
+
+    /**
+     * Damage is about its source's controller as well as whoever was dealt it, so filtering on the attacker shows
+     * "Bo's Bears deals 2 to Ann". A stolen creature's move is about the players of both zones, thief and owner.
+     */
+    @Test
+    public void damageIsAboutItsSourcesControllerAndAStolenCreaturesMoveAboutThiefAndOwner() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        Recorded rec = new Recorded();
+        seatsFor(game, rec, new ArrayList<>(), seat -> {
+            throw new OperatorAsked();
+        });
+        Card bosBears = putIn(game, bo, "Grizzly Bears");
+        Card cysBears = putIn(game, cy, "Grizzly Bears");
+        int before = engineEntries(rec.store.loadLog("t")).size();
+
+        game.fireEvent(new forge.game.event.GameEventPlayerDamaged(ann.getView(), bosBears.getView(), 2, true,
+                false));
+        game.fireEvent(new forge.game.event.GameEventCardDamaged(cysBears.getView(), bosBears.getView(), 2,
+                forge.game.event.GameEventCardDamaged.DamageType.Normal));
+        // Cy's Bears, stolen by Ann, die: from Ann's battlefield to Cy's graveyard
+        game.fireEvent(new forge.game.event.GameEventCardChangeZone(cysBears.getView(),
+                new forge.game.zone.ZoneView(ann.getView(), ZoneType.Battlefield),
+                new forge.game.zone.ZoneView(cy.getView(), ZoneType.Graveyard)));
+
+        List<CompanionLogEntry> engine = engineEntries(rec.store.loadLog("t"));
+        assertEquals(engine.size(), before + 3, engine.toString());
+        assertEquals(engine.get(before).affected(), List.of(ann.getName(), bo.getName()), "damage to a player");
+        assertEquals(engine.get(before + 1).affected(), List.of(cy.getName(), bo.getName()), "damage to a card");
+        assertEquals(new java.util.HashSet<>(engine.get(before + 2).affected()),
+                java.util.Set.of(ann.getName(), cy.getName()), "the thief and the owner");
+        List<String> damage = List.of(engine.get(before).text(), engine.get(before + 1).text());
+        CompanionHistory history = CompanionHistory.of(rec.store.loadLog("t"));
+        assertEquals(history.filter(bo.getName()).rows().stream().filter(r -> damage.contains(r.text())).count(), 2L,
+                "Bo's filter shows the damage his Bears dealt: " + damage);
+    }
+
+    /** Text with no player in its event is matched to seats by whole words only. */
+    @Test
+    public void aSeatNameIsMentionedOnlyAsAWholeWord() {
+        assertTrue(CompanionTable.mentions("Bo milled 2 cards", "Bo"));
+        assertTrue(CompanionTable.mentions("Ann's Grizzly Bears", "Ann"));
+        assertFalse(CompanionTable.mentions("Bob milled 2 cards", "Bo"));
+        assertFalse(CompanionTable.mentions("Annul resolves", "Ann"));
     }
 }
