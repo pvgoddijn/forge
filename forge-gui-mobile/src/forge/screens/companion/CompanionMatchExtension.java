@@ -148,7 +148,8 @@ class CompanionMatchExtension implements MatchExtension {
     /**
      * The share of this match's table, made the first time "Share game…" is picked (its {@code start} writes the
      * game's {@code share.json}), or when a game this device shared is continued; stopped from the dialog, or when the
-     * match is left. UI thread.
+     * match is left. Stopped for good from the dialog, it's dropped, so a later "Share game…" makes a new share with a
+     * new token: the old code no longer gets in. UI thread.
      */
     private CompanionShareHost share;
     /** Set once the match is left, so a share again that comes late doesn't start. UI thread. */
@@ -158,6 +159,10 @@ class CompanionMatchExtension implements MatchExtension {
      * The share of the last game that ended here, still answering its phones with the end (plan 4.1: an ended host
      * keeps answering {@code end} until the app leaves Companion), so a phone that was away when it ended learns it
      * when it comes back. Stopped once another Companion game opens on this device, or with the app. UI thread.
+     *
+     * <p>Known limit: until then it holds the ended game's table and {@code Game} in memory, and keeps its port, so
+     * another share started meanwhile takes the next one. Leaving Companion for another Forge mode doesn't stop it (no
+     * hook for that on mobile yet).
      */
     private static CompanionShareHost endedShare;
 
@@ -172,7 +177,12 @@ class CompanionMatchExtension implements MatchExtension {
         if (share == null) {
             share = new CompanionShareHost(table);
         }
-        new ShareDialog(share).show();
+        CompanionShareHost shown = share;
+        new ShareDialog(shown, () -> {
+            if (share == shown) {
+                share = null; // for good: Share game… again is a new share, with a new token
+            }
+        }).show();
     }
 
     /**

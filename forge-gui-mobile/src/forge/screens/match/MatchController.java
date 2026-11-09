@@ -974,7 +974,8 @@ public class MatchController extends NetworkGuiGame {
     @Override
     public void onReconnectStateChanged(final FGameClient.ReconnectState state, final int attemptIndex, final int nextDelaySeconds) {
         FThreads.invokeInEdtLater(() -> {
-            if (extension != null && extension.showsOwnReconnectState()) {
+            final MatchExtension ext = getExtension();
+            if (ext != null && ext.showsOwnReconnectState()) {
                 return; // e.g. Companion: its own notice, and it never gives up; net play's client isn't this one
             }
             final FGameClient client = OnlineLobbyScreen.getfGameClient();

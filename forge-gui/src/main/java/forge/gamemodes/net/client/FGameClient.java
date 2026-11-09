@@ -70,6 +70,8 @@ public class FGameClient implements IToServer, IHasForgeLog {
     private volatile Channel channel;
     // A server refuses a login by closing the connection, so only a client that held a seat reconnects
     private volatile boolean seated;
+    /** Whether a game view came on one of this client's own connections (see {@link #reusesShownTracker}). */
+    private volatile boolean ownViewArrived;
 
     private ReconnectState reconnectState = ReconnectState.CONNECTED;
     private boolean shuttingDown = false;
@@ -223,6 +225,21 @@ public class FGameClient implements IToServer, IHasForgeLog {
      */
     protected boolean keepsTrackerAcrossConnections() {
         return false;
+    }
+
+    /**
+     * Whether a new connection's first game view goes into the tracker of the view still shown: only for a mode that
+     * {@link #keepsTrackerAcrossConnections keeps it}, and only once this client's own first view arrived. The view
+     * still shown before that isn't this client's: the GUI may be reused from an earlier match (mobile's
+     * {@code MatchController} is one for the app), so the first connection always starts with a tracker of its own.
+     */
+    final boolean reusesShownTracker() {
+        return ownViewArrived && keepsTrackerAcrossConnections();
+    }
+
+    /** A game view came on one of this client's connections, and is in the tracker its handler chose. IO thread. */
+    final void ownViewArrived() {
+        ownViewArrived = true;
     }
 
     /**

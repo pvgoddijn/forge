@@ -351,6 +351,10 @@ public class MatchScreen extends FScreen {
             devMenu.getMenuTab().setVisible(ForgePreferences.DEV_MODE);
         }
         revalidate(); //the compact layout and unified phase settings may have changed in Settings
+        final MatchExtension extension = MatchController.getExtension();
+        if (extension != null) {
+            extension.matchShown();
+        }
     }
 
     public boolean isTopHumanPlayerActive() {

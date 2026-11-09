@@ -26,6 +26,8 @@ class ShareDialog extends FDialog {
     private static final float REFRESH_SECONDS = 1;
 
     private final CompanionShareHost share;
+    /** Told once the share was stopped for good, so the next "Share game…" makes a new one. */
+    private final Runnable onStoppedForGood;
     private final FTextArea text = add(new FTextArea(false));
     private final Timer.Task refresh = new Timer.Task() {
         @Override
@@ -35,14 +37,17 @@ class ShareDialog extends FDialog {
     };
     private List<CompanionShareHost.Code> codes = List.of();
 
-    ShareDialog(CompanionShareHost share) {
+    /** @param onStoppedForGood run once Stop sharing stopped {@code share} for good */
+    ShareDialog(CompanionShareHost share, Runnable onStoppedForGood) {
         super(Forge.getLocalizer().getMessage("lblCompanionShareTitle"), 2);
         this.share = share;
+        this.onStoppedForGood = onStoppedForGood;
         text.setFont(FONT);
         text.setAlignment(Align.center);
         initButton(0, Forge.getLocalizer().getMessage("lblCompanionStopSharing"), e -> {
             // for good: the game's share state goes too, so continuing it later doesn't share it again
             share.stopForGood();
+            onStoppedForGood.run();
             hide();
         });
         initButton(1, Forge.getLocalizer().getMessage("lblClose"), e -> hide());

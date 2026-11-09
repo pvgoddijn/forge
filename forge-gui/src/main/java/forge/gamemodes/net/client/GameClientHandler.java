@@ -95,10 +95,7 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
             case setGameView:
                 if (args.length > 0 && args[0] instanceof GameView gameView) {
                     if (this.tracker == null) {
-                        // a mode whose reconnect sends the board afresh into the view still shown keeps that view's
-                        // tracker, so the new board's card views replace the old ones in it, as after an undo
-                        final GameView shown = client.keepsTrackerAcrossConnections() ? gui.getGameView() : null;
-                        this.tracker = shown != null && shown.getTracker() != null ? shown.getTracker() : new Tracker();
+                        this.tracker = trackerForNewConnection();
                         // Encoder uses the tracker to emit IdRef for client→server CardView args
                         // (presence check only — stale detection is server-only).
                         // Ephemerals absent from the tracker serialize as full objects in both directions.
@@ -117,6 +114,7 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
                     if (gameView.getTracker() == null) {
                         updateTrackers(new Object[]{gameView});
                     }
+                    client.ownViewArrived();
                 }
                 if (client.isActiveChannel(ctx.channel())
                         && client.getReconnectState() == FGameClient.ReconnectState.RECONNECTING) {
@@ -152,6 +150,22 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
             }
             replicateProps(args);
         }
+    }
+
+    /**
+     * The tracker of this connection, chosen at its first game view: a mode whose reconnect sends the board afresh
+     * into the view still shown keeps that view's tracker, so the new board's card views replace the old ones in it,
+     * as after an undo; but only once this client's own first view arrived ({@link FGameClient#reusesShownTracker}).
+     * Otherwise a new one.
+     */
+    Tracker trackerForNewConnection() {
+        final GameView shown = client.reusesShownTracker() ? gui.getGameView() : null;
+        return shown != null && shown.getTracker() != null ? shown.getTracker() : new Tracker();
+    }
+
+    /** This connection's tracker, null before its first game view. For the tests. */
+    Tracker tracker() {
+        return tracker;
     }
 
     /**

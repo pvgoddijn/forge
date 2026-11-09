@@ -309,14 +309,19 @@ public class CompanionClient extends FGameClient {
 
     /**
      * Net play's connect, on the local network. A reconnect attempt comes through here too, and holds it again; it
-     * first closes the attempt before it if that's still open (a welcome that didn't come in time), so a host never
-     * holds two connections of one phone.
+     * first lets go of the attempt before it (a welcome that didn't come in time): it's no longer the newest, so a
+     * welcome that still comes on it counts for nothing, and it's closed if it's still open, so a host never holds two
+     * connections of one phone.
      */
     @Override
     public void connect() {
         Channel stale = newestChannel;
-        if (stale != null && stale.isOpen() && getReconnectState() == ReconnectState.RECONNECTING) {
-            stale.close();
+        if (stale != null && getReconnectState() == ReconnectState.RECONNECTING) {
+            newestChannel = null; // before the close: a welcome read on it meanwhile is a stale one's
+            connectionOpen = false;
+            if (stale.isOpen()) {
+                stale.close();
+            }
         }
         holdLocalNetwork(true);
         boolean connected = false;
@@ -485,11 +490,15 @@ public class CompanionClient extends FGameClient {
             if (msg instanceof ShareMessages.Welcome welcome) {
                 netLog.info("[Companion] {}", welcome);
                 Channel channel = ctx.channel();
-                if (channel == newestChannel) {
-                    // the host answered: a reconnect attempt succeeded, though the view comes only at its next prompt
-                    resumeAnswered();
-                    setLink(Link.CONNECTED);
+                if (channel != newestChannel) {
+                    // a late welcome on an attempt let go of by a newer one: not this phone's connection any more
+                    netLog.info("[Companion] A welcome on a stale connection: closing it");
+                    ctx.close();
+                    return;
                 }
+                // the host answered: a reconnect attempt succeeded, though the view comes only at its next prompt
+                resumeAnswered();
+                setLink(Link.CONNECTED);
                 copy(() -> follow(welcome, channel)); // sets welcomedTo once the id is checked and the copy made
                 if (!viewArrived) {
                     ctx.executor().schedule(() -> {

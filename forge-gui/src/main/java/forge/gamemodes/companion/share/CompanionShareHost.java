@@ -125,6 +125,11 @@ public final class CompanionShareHost implements IHasForgeLog {
         this(table, ShareState.hosted(table.store(), table.id()));
     }
 
+    /**
+     * Known limit: the token is 32 bits and lasts for the game (kept in {@code share.json} across restarts), and the
+     * {@link TokenGate} refuses wrong ones without limit, so a device on the local network could try tokens for as
+     * long as the share runs. A per-address backoff of refused connections is for later (slice 07, or M-later).
+     */
     private CompanionShareHost(CompanionTable table, Optional<ShareState> earlier) {
         this(table, earlier.map(ShareState::token).orElseGet(() -> new SecureRandom().nextInt()), earlier);
     }
@@ -166,6 +171,11 @@ public final class CompanionShareHost implements IHasForgeLog {
         ServerBootstrap bootstrap = new ServerBootstrap()
                 .group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
+                // a restarted share binds its earlier port again though the last share's connections may still be in
+                // TIME_WAIT, which blocks a listener's bind on Linux and Android without it. Not needed on Windows,
+                // where TIME_WAIT doesn't block a listener's bind (the JDK keeps its exclusive bind there). A port
+                // another program listens on stays taken either way (codeChanged)
+                .option(ChannelOption.SO_REUSEADDR, true)
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override

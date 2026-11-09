@@ -117,6 +117,10 @@ public interface MatchExtension {
         return false;
     }
 
+    /** Called on the UI thread each time the match screen becomes the current screen again, as back from History. */
+    default void matchShown() {
+    }
+
     /**
      * Called on the UI thread when the match screen is left after its game ended, and when another match is hosted.
      * May be called more than once.

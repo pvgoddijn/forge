@@ -97,7 +97,9 @@ public record ShareState(Role role, String hostAddress, int port, int token, Lis
 
     /**
      * Whether the game {@code game} is followed from another phone, so never resumed as this device's own: it has a
-     * share state that isn't {@link Role#HOSTING}. One that can't be read counts as followed, to be safe.
+     * share state that isn't {@link Role#HOSTING}. One that can't be read counts as followed, to be safe. Known limit:
+     * that includes a game this device hosted whose {@code share.json} got damaged: Load game then offers it as
+     * followed (Stop following, or a code to type), and it can't be continued as this device's own any more.
      */
     public static boolean isFollowed(CompanionStore store, String game) {
         if (!exists(store, game)) {

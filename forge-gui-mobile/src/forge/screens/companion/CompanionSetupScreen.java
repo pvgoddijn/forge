@@ -8,7 +8,8 @@ import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
-import forge.gamemodes.companion.share.ShareState;
+import forge.gamemodes.companion.share.ActiveGame;
+import forge.gamemodes.companion.share.CompanionResume;
 import forge.gamemodes.match.HostedMatch;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
@@ -97,7 +98,7 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         btnFewer.setCommand(e -> setPlayerCount(playerCount - 1));
         btnMore.setCommand(e -> setPlayerCount(playerCount + 1));
-        btnLoadGame.setCommand(e -> Forge.openScreen(new CompanionLoadGameScreen(store, this::openGame)));
+        btnLoadGame.setCommand(e -> Forge.openScreen(new CompanionLoadGameScreen(store, this::continueGame)));
         btnPastGames.setCommand(e -> Forge.openScreen(new CompanionPastGamesScreen(store)));
         btnJoinGame.setCommand(e -> Forge.openScreen(new JoinGameScreen(store)));
         updateRows();
@@ -334,14 +335,27 @@ public class CompanionSetupScreen extends LaunchScreen {
             FOptionPane.showErrorDialog("The game couldn't be saved, so it wasn't started.\n" + e.getMessage());
             return;
         }
-        openGame(id, setup);
+        openGame(id, setup, false);
     }
 
-    private void openGame(String id, CompanionSetup setup) {
-        if (ShareState.isFollowed(store, id)) {
+    /**
+     * Load game's Continue for a game of this device's own, as {@link CompanionResume#pick} says: opened as before, and
+     * shared again on the same code when this device shared it.
+     */
+    private void continueGame(ActiveGame game) {
+        CompanionResume.Pick pick = CompanionResume.pick(store, game);
+        if (pick != CompanionResume.Pick.CONTINUE && pick != CompanionResume.Pick.CONTINUE_SHARING) {
             // a followed game: loading its state would write to the host's copy. Load game never asks for this.
-            throw new IllegalStateException("A followed game can't be opened as this device's own: " + id);
+            throw new IllegalStateException("A followed game can't be opened as this device's own: " + game.id());
         }
+        openGame(game.id(), game.game().setup(), pick == CompanionResume.Pick.CONTINUE_SHARING);
+    }
+
+    /**
+     * Opens the game {@code id} on the match screen; {@code shareAgain}: a game this device shared (its share.json
+     * says hosting), shared again on the same code once it's started, so its phones come back by themselves (slice 04).
+     */
+    private void openGame(String id, CompanionSetup setup, boolean shareAgain) {
         CompanionTable table = new CompanionTable(id, setup, store);
         try {
             // check it here, where a bad save can be set aside, rather than in the starting game where it can't
@@ -364,9 +378,6 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         // over the prompt the game shows next; dismissing it leaves that prompt as it was
         table.setOnNotice(notice -> FThreads.invokeInEdtLater(() -> FOptionPane.showMessageDialog(notice)));
-        // a game this device shared (its share.json says hosting): shared again on the same code once it's started,
-        // so its phones come back by themselves (slice 04)
-        boolean shareAgain = ShareState.hosted(store, id).isPresent();
         LoadingOverlay.show("Setting up the table", true, () -> {
             HostedMatch match = MatchController.hostMatch();
             CompanionMatchExtension extension = new CompanionMatchExtension(table, store, match);

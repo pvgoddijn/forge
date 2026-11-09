@@ -29,6 +29,14 @@ public class FGameClientDefaultsShould {
         assertThat(client.connectTimeoutMillis()).isEqualTo(30_000); // Netty's own default
     }
 
+    /** Net play keys a new tracker on each connection's first game view, and never takes the shown view's. */
+    @Test
+    public void keepNoTrackerAcrossConnections() {
+        assertThat(client.keepsTrackerAcrossConnections()).isFalse();
+        client.ownViewArrived();
+        assertThat(client.reusesShownTracker()).isFalse();
+    }
+
     @Test
     public void startNoReconnectForAClientThatWasNeverSeated() {
         client.startReconnecting(); // not seated: as for a refused login, nothing to reconnect to

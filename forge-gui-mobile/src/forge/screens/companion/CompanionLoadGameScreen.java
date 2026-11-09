@@ -6,7 +6,6 @@ import forge.Forge;
 import forge.Graphics;
 import forge.assets.FSkinColor;
 import forge.assets.FSkinFont;
-import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.share.ActiveGame;
 import forge.gamemodes.companion.share.CompanionResume;
@@ -21,7 +20,7 @@ import java.io.UncheckedIOException;
 import java.text.DateFormat;
 import java.util.Date;
 import java.util.List;
-import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /**
  * The games that haven't ended, most recently played first, each with when it was last played and its players: "Load
@@ -37,13 +36,16 @@ public class CompanionLoadGameScreen extends FScreen {
     private static final FSkinFont SEATS_FONT = FSkinFont.get(14);
 
     private final CompanionStore store;
-    /** Continues a game of this phone's own: the setup screen's way of opening a game on the match screen. */
-    private final BiConsumer<String, CompanionSetup> openGame;
+    /**
+     * Continues a game of this phone's own: the setup screen's way of opening a game on the match screen, which shares
+     * it again when {@link CompanionResume#pick} says so.
+     */
+    private final Consumer<ActiveGame> openGame;
     private final FList<ActiveGame> lstGames = add(new FList<>());
     private final FLabel lblEmpty = add(new FLabel.Builder().align(Align.center)
             .text(Forge.getLocalizer().getMessage("lblCompanionNoUnfinishedGames")).build());
 
-    public CompanionLoadGameScreen(CompanionStore store, BiConsumer<String, CompanionSetup> openGame) {
+    public CompanionLoadGameScreen(CompanionStore store, Consumer<ActiveGame> openGame) {
         super(Forge.getLocalizer().getMessage("lblCompanionLoadGame"));
         this.store = store;
         this.openGame = openGame;
@@ -82,11 +84,19 @@ public class CompanionLoadGameScreen extends FScreen {
         return game.followed() ? Forge.getLocalizer().getMessage("lblCompanionFollowedMark", date(game)) : date(game);
     }
 
+    /** As {@link CompanionResume#pick} says: the game's own Continue, or a followed game's. */
     private void choose(ActiveGame game) {
-        if (game.followed()) {
-            offerFollowed(game);
-        } else {
-            offerOwn(game);
+        switch (CompanionResume.pick(store, game)) {
+            case CONTINUE:
+            case CONTINUE_SHARING:
+                offerOwn(game);
+                break;
+            case REJOIN:
+                offerFollowed(game, true);
+                break;
+            default:
+                offerFollowed(game, false);
+                break;
         }
     }
 
@@ -101,7 +111,7 @@ public class CompanionLoadGameScreen extends FScreen {
                 return;
             }
             if (choice == 1) {
-                openGame.accept(game.id(), game.game().setup());
+                openGame.accept(game);
                 refresh(); // a save that didn't read is set aside by then
             } else {
                 confirmEnd(game);
@@ -133,9 +143,8 @@ public class CompanionLoadGameScreen extends FScreen {
      * code" is for a host whose code changed. "Stop following" makes it a past game. Never continued with
      * {@code openGame}: loading its state would write to the host's copy.
      */
-    private void offerFollowed(ActiveGame game) {
+    private void offerFollowed(ActiveGame game, boolean rejoins) {
         Localizer localizer = Forge.getLocalizer();
-        boolean rejoins = CompanionResume.pick(store, game) == CompanionResume.Pick.REJOIN;
         List<String> options = rejoins
                 ? List.of(localizer.getMessage("lblCompanionStopFollowing"),
                         localizer.getMessage("lblCompanionTypeCode"), localizer.getMessage("lblCompanionContinue"))

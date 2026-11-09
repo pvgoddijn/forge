@@ -4,7 +4,6 @@ import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.share.CompanionClient.Link;
 import forge.gamemodes.companion.share.CompanionResume.Pick;
-import forge.gamemodes.companion.share.CompanionResume.Shown;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
@@ -80,27 +79,16 @@ public class CompanionResumeShould {
     }
 
     @Test
-    public void showTheLastSavedBoardUntilTheHostsBoardArrives() {
-        assertThat(CompanionResume.shown(Link.CONNECTING, false)).isEqualTo(Shown.LAST_SAVED);
-        assertThat(CompanionResume.shown(Link.RECONNECTING, false)).isEqualTo(Shown.LAST_SAVED);
-        assertThat(CompanionResume.shown(Link.CONNECTED, false)).isEqualTo(Shown.LAST_SAVED);
-        assertThat(CompanionResume.shown(Link.CONNECTED, true)).isEqualTo(Shown.BOARD);
-    }
-
-    @Test
-    public void keepTheBoardWithTheNoticeWhileItReconnects() {
-        assertThat(CompanionResume.shown(Link.RECONNECTING, true)).isEqualTo(Shown.BOARD);
+    public void showTheNoticeOverTheBoardWhileItReconnects() {
         assertThat(CompanionResume.showsReconnectNotice(Link.RECONNECTING, true)).isTrue();
         assertThat(CompanionResume.showsReconnectNotice(Link.CONNECTED, true)).isFalse();
         assertThat(CompanionResume.showsReconnectNotice(Link.RECONNECTING, false)).as("N6 says so itself").isFalse();
     }
 
     @Test
-    public void showAnEndedGameAsEndedWhetherOrNotItsBoardArrived() {
-        assertThat(CompanionResume.shown(Link.ENDED, false)).isEqualTo(Shown.ENDED);
-        assertThat(CompanionResume.shown(Link.ENDED, true)).isEqualTo(Shown.ENDED);
-        assertThat(CompanionResume.shown(Link.CLOSED, true)).isEqualTo(Shown.STOPPED);
+    public void showNoNoticeOnceTheGameEndedOrWasLeft() {
         assertThat(CompanionResume.showsReconnectNotice(Link.ENDED, true)).isFalse();
+        assertThat(CompanionResume.showsReconnectNotice(Link.CLOSED, true)).isFalse();
     }
 
     /** It never says it gave up while it's still trying. */

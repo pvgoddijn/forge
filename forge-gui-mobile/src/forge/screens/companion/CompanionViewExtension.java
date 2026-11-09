@@ -13,6 +13,8 @@ import forge.menu.FDropDownMenu;
 import forge.menu.FMenuItem;
 import forge.screens.match.MatchController;
 import forge.screens.match.MatchExtension;
+import forge.screens.match.MatchScreen;
+import forge.screens.match.views.VPrompt;
 import forge.toolbox.FOptionPane;
 
 import java.util.List;
@@ -34,6 +36,8 @@ import java.util.stream.Collectors;
  * <p>While the host can't be reached, the board stays and {@link CompanionReconnectNotice} says it's reconnecting
  * (AC-111, slice 04); it goes once the host is back, whose attach then brings the board up to date. Before the board
  * arrives the screen that joined says how the link is (N6 for a rejoin), so the notice shows only over the board.
+ * Hidden with View board, the board stays marked as disconnected (a line under the prompt's message) for as long as it
+ * reconnects (AC-111), and the notice comes back each time the board does, as back from History.
  */
 final class CompanionViewExtension implements MatchExtension {
     private final CompanionStore store;
@@ -47,6 +51,11 @@ final class CompanionViewExtension implements MatchExtension {
     /** Over the board while the host can't be reached; Leave there leaves as the menu's Leave does. UI thread. */
     private final CompanionReconnectNotice reconnectNotice = new CompanionReconnectNotice(
             () -> MatchController.instance.afterGameEnd());
+    /** The link as last heard of. UI thread. */
+    private CompanionClient.Link link = CompanionClient.Link.CONNECTING;
+    /** The prompt marked as disconnected, and its message before the mark; null when none is. UI thread. */
+    private VPrompt markedPrompt;
+    private String unmarkedMessage;
 
     /**
      * @param store  where the client keeps the copy of the game
@@ -77,12 +86,52 @@ final class CompanionViewExtension implements MatchExtension {
         });
     }
 
-    /** The board shows the reconnect notice while the host can't be reached, and only then. UI thread. */
+    /**
+     * The board shows the reconnect notice while the host can't be reached, and only then, and stays marked as
+     * disconnected meanwhile. UI thread.
+     */
     private void linkChanged(CompanionClient.Link link) {
+        this.link = link;
+        boolean reconnecting = !left && link == CompanionClient.Link.RECONNECTING;
+        markDisconnected(reconnecting);
         if (!left && CompanionResume.showsReconnectNotice(link, boardShown())) {
             reconnectNotice.show();
         } else {
             reconnectNotice.dismiss();
+        }
+    }
+
+    /** Back on the board (from History, say): the notice again while it still reconnects. UI thread. */
+    @Override
+    public void matchShown() {
+        // later: the screen is being switched to now, and the notice goes over it once it's current
+        FThreads.invokeInEdtLater(() -> linkChanged(link));
+    }
+
+    /**
+     * Adds a line under the prompt's message saying the board is disconnected, or takes it away, unless a new prompt
+     * replaced that message meanwhile. Kept simple: the host sends no prompt while it can't be reached. UI thread.
+     */
+    private void markDisconnected(boolean disconnected) {
+        if (disconnected) {
+            MatchScreen view = MatchController.getView();
+            if (markedPrompt != null || view == null) {
+                return;
+            }
+            VPrompt prompt = view.getActivePrompt();
+            unmarkedMessage = prompt.getMessage();
+            String mark = Forge.getLocalizer().getMessage("lblCompanionDisconnectedMark");
+            prompt.setMessage(unmarkedMessage == null || unmarkedMessage.isEmpty() ? mark
+                    : unmarkedMessage + "\n" + mark);
+            markedPrompt = prompt;
+        } else if (markedPrompt != null) {
+            String mark = Forge.getLocalizer().getMessage("lblCompanionDisconnectedMark");
+            String shown = markedPrompt.getMessage();
+            if (shown != null && shown.endsWith(mark)) {
+                markedPrompt.setMessage(unmarkedMessage);
+            }
+            markedPrompt = null;
+            unmarkedMessage = null;
         }
     }
 
@@ -168,6 +217,7 @@ final class CompanionViewExtension implements MatchExtension {
         }
         left = true;
         reconnectNotice.dismiss();
+        markDisconnected(false);
         CompanionClient c = client;
         if (c != null) {
             c.close();

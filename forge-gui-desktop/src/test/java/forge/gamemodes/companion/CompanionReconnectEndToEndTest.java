@@ -2,6 +2,10 @@ package forge.gamemodes.companion;
 
 import forge.ai.AITest;
 import forge.game.Game;
+import forge.game.event.GameEvent;
+import forge.game.event.GameEventFlipCoin;
+import forge.game.event.GameEventPlayerPriority;
+import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
 import forge.gamemodes.companion.share.CompanionClient;
@@ -19,10 +23,13 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
@@ -56,6 +63,16 @@ public class CompanionReconnectEndToEndTest extends AITest {
         final AtomicInteger opened = new AtomicInteger();
         final AtomicInteger lastAttempt = new AtomicInteger(-1);
         final List<FGameClient.ReconnectState> states = new CopyOnWriteArrayList<>();
+        /** The kinds of game event that reached this view. */
+        final Set<String> events = ConcurrentHashMap.newKeySet();
+
+        @Override
+        public void handleGameEvents(List<GameEvent> batch) {
+            for (GameEvent event : batch) {
+                events.add(event.getClass().getSimpleName());
+            }
+            super.handleGameEvents(batch);
+        }
 
         @Override
         public void openView(TrackableCollection<PlayerView> myPlayers) {
@@ -281,6 +298,165 @@ public class CompanionReconnectEndToEndTest extends AITest {
         }
     }
 
+    /**
+     * The same code after a restart, when the earlier port wasn't the first: the share was on the next port, as the
+     * first was taken then; restarted once it's free, it goes back to the earlier port, not the first, so the code
+     * stays and the phone comes back by itself.
+     */
+    @Test(timeOut = 120_000)
+    public void aHostRestartedSharesOnItsEarlierPortThoughTheFirstIsFreeAgain() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        CompanionStore hostStore = table.store();
+        share(table, game, "Grizzly Bears");
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionShareHost restarted = null;
+        CompanionClient client = null;
+        try {
+            int port;
+            try (ServerSocket taken = new ServerSocket()) {
+                taken.bind(new InetSocketAddress(CompanionShareHost.FIRST_PORT));
+                port = host.start();
+            }
+            assertNotEquals(port, CompanionShareHost.FIRST_PORT, "the first port was taken");
+            JoinCode code = host.codeAt(loopback());
+            CompanionStore phone = tempStore();
+            CountingView view = new CountingView();
+            client = joined(table, code, view, phone);
+            CompanionClient c = client;
+            await(() -> sameCopy(hostStore, phone, "t"), () -> { }, "the first copy");
+
+            host.stop(); // the first port is free again now
+            await(() -> c.link() == Link.RECONNECTING, () -> { }, "the phone reconnecting");
+            restarted = new CompanionShareHost(table);
+            assertEquals(restarted.start(), port, "the earlier port, before the first");
+            assertFalse(restarted.codeChanged(), "the same code");
+            assertEquals(restarted.codeAt(loopback()), code);
+
+            await(() -> view.opened.get() == 2 && c.link() == Link.CONNECTED, table::runSystemOps,
+                    "the phone back by itself on the same code");
+            assertEquals(restarted.peerCount(), 1);
+        } finally {
+            close(client);
+            stop(host);
+            stop(restarted);
+        }
+    }
+
+    /**
+     * "Stop sharing" is for good: the game's share state goes, so a later share of the game (Share game… again, or
+     * Continue) is a new one, with a new token, and the old code no longer gets in.
+     */
+    @Test(timeOut = 120_000)
+    public void aShareStoppedForGoodIsForgotten() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionShareHost again = null;
+        try {
+            int port = host.start();
+            JoinCode code = host.codeAt(loopback());
+            assertTrue(ShareState.hosted(table.store(), "t").isPresent());
+
+            host.stopForGood();
+            assertFalse(host.isStarted());
+            // the stop waited for the listener to close: its port is free the moment it returns, for a restart
+            try (ServerSocket free = new ServerSocket()) {
+                free.bind(new InetSocketAddress(port));
+            }
+            assertFalse(ShareState.hosted(table.store(), "t").isPresent(), "the share state is gone");
+            assertFalse(ShareState.isFollowed(table.store(), "t"), "still the host's own game");
+
+            again = new CompanionShareHost(table);
+            again.start();
+            assertNotEquals(again.codeAt(loopback()).token(), code.token(), "a new token: the old code is no good");
+            assertFalse(again.codeChanged(), "no earlier share to compare with");
+        } finally {
+            stop(host);
+            stop(again);
+        }
+    }
+
+    /**
+     * A reconnect attempt the host never welcomes is closed before the next one opens, so the host never holds two
+     * connections of one phone: a host that accepts and never answers, several attempts.
+     */
+    @Test(timeOut = 120_000)
+    public void aStaleReconnectAttemptIsClosedBeforeTheNextOpens() throws Exception {
+        CompanionStore phone = tempStore();
+        phone.createDir("t");
+        int port;
+        try (ServerSocket probe = new ServerSocket(0)) {
+            port = probe.getLocalPort(); // free for now: nothing listens there when the phone first tries
+        }
+        JoinCode code = new JoinCode(loopback(), port, 12345);
+        List<Socket> accepted = new CopyOnWriteArrayList<>();
+        Set<Socket> open = ConcurrentHashMap.newKeySet();
+        CompanionClient client = new CompanionClient("Joiner", new CountingView(), code, phone);
+        ServerSocket mute = null;
+        try {
+            client.rejoin("t");
+            assertEquals(client.link(), Link.RECONNECTING, "nothing listens: reconnecting");
+            mute = new ServerSocket();
+            mute.setReuseAddress(true);
+            mute.bind(new InetSocketAddress(port));
+            ServerSocket server = mute;
+            Thread acceptor = new Thread(() -> acceptAndNeverWelcome(server, accepted, open), "Mute-Host");
+            acceptor.setDaemon(true);
+            acceptor.start();
+
+            // each attempt waits 5 s for a welcome, then the next comes; the phone counts the host silent only
+            // after 15 s, so without the close the attempts would pile up
+            for (int n = 2; n <= 3; n++) {
+                int count = n;
+                await(() -> accepted.size() >= count, () -> { }, LONG_WAIT_MS, "attempt " + count);
+                Socket earlier = accepted.get(count - 2);
+                await(() -> !open.contains(earlier), () -> { }, 2_000,
+                        "the attempt before " + count + " closed by the phone");
+                assertTrue(open.size() <= 1, "at most one connection of the phone open: " + open.size());
+            }
+            assertEquals(client.link(), Link.RECONNECTING, "still trying");
+        } finally {
+            client.close();
+            if (mute != null) {
+                mute.close();
+            }
+            for (Socket socket : accepted) {
+                socket.close();
+            }
+        }
+    }
+
+    /** Accepts each connection and reads what it sends, never answering, until the phone closes it. */
+    private static void acceptAndNeverWelcome(ServerSocket server, List<Socket> accepted, Set<Socket> open) {
+        while (!server.isClosed()) {
+            Socket socket;
+            try {
+                socket = server.accept();
+            } catch (java.io.IOException e) {
+                return; // the test closed it
+            }
+            open.add(socket);
+            accepted.add(socket);
+            Thread reader = new Thread(() -> {
+                byte[] buffer = new byte[4096];
+                try {
+                    while (socket.getInputStream().read(buffer) >= 0) {
+                        // what the phone says goes unanswered
+                    }
+                } catch (SocketException e) {
+                    // closed by the test
+                } catch (java.io.IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                } finally {
+                    open.remove(socket);
+                }
+            }, "Mute-Host-Reader");
+            reader.setDaemon(true);
+            reader.start();
+        }
+    }
+
     /** A new game on the host (restart from the match screen) gives the phone a fresh attach to the new board. */
     @Test(timeOut = 120_000)
     public void aPhoneFollowsTheHostsNewGame() throws Exception {
@@ -314,6 +490,14 @@ public class CompanionReconnectEndToEndTest extends AITest {
             stale.removeAll(newIds);
             await(() -> trackerHolds(view, newIds, stale), () -> { }, "the tracker holding the new game's cards");
 
+            // the old game is let go of: what still happens on it no longer reaches the phone (its forwarder is shut
+            // down and taken off its bus and inputs). A coin flip, which nothing else here makes, then a priority
+            // that would flush it; the new game's action after it shows the phone has read past where it would be
+            Player oldActive = game.getPhaseHandler().getPlayerTurn();
+            game.fireEvent(new GameEventFlipCoin(oldActive.getView(), true, false));
+            game.fireEvent(new GameEventPlayerPriority(oldActive.getView(), PhaseType.MAIN1, oldActive.getView()));
+            flushViews(table);
+
             // the new game's actions reach the phone
             share(table, next, "Forest");
             flushViews(table);
@@ -321,6 +505,8 @@ public class CompanionReconnectEndToEndTest extends AITest {
             await(() -> board(view.getGameView()).equals(board(next.getView())), () -> { }, "the board after it");
             assertEquals(client.epoch(), 2, "an action is a delta");
             assertEquals(host.peerCount(), 1);
+            assertFalse(view.events.contains("GameEventFlipCoin"), "nothing of the old game after the new one: "
+                    + view.events);
         } finally {
             close(client);
             host.stop();

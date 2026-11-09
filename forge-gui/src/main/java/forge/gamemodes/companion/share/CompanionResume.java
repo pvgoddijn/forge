@@ -6,8 +6,10 @@ import forge.gamemodes.companion.share.CompanionClient.Link;
 /**
  * What the screens do to carry on with an unfinished game, apart from libGDX (slice 04, owner's decision 2026-11-09):
  * Companion never goes into a game by itself on opening; an unfinished game is carried on from Load game, which
- * {@link #pick}s how. A followed game rejoins its host without a code, and {@link #shown} says what the phone shows
- * meanwhile: N6 (the last saved board as text, and the history) until the host's board arrives.
+ * {@link #pick}s how (Load game's dialog, and the setup screen's Continue, follow it). A followed game rejoins its host
+ * without a code, and the phone shows N6 meanwhile (the last saved board as text, and the history, with
+ * {@link #statusKey}) until the host's board arrives; then the match screen, with the reconnect notice over it while
+ * the host can't be reached ({@link #showsReconnectNotice}).
  */
 public final class CompanionResume {
     private CompanionResume() {
@@ -31,33 +33,6 @@ public final class CompanionResume {
             return ShareState.hosted(store, game.id()).isPresent() ? Pick.CONTINUE_SHARING : Pick.CONTINUE;
         }
         return game.code().isPresent() ? Pick.REJOIN : Pick.JOIN_WITH_CODE;
-    }
-
-    /** What a phone rejoining a followed game shows. */
-    public enum Shown {
-        /** N6: the last saved board as text plus the history, with "Stop following"; it keeps trying. */
-        LAST_SAVED,
-        /** The match screen with the host's board; while it reconnects, with the reconnect notice over it. */
-        BOARD,
-        /** The host ended the game: it's one of the past games. */
-        ENDED,
-        /** Over without the game's end (left, or let go by the host): nothing is tried any more. */
-        STOPPED
-    }
-
-    /**
-     * What to show for {@code link}, once the host's board did or didn't arrive on this follow. A board that arrived
-     * stays on screen while the link is lost (the notice says so), as the phone reconnects to the same game.
-     */
-    public static Shown shown(Link link, boolean boardArrived) {
-        switch (link) {
-            case ENDED:
-                return Shown.ENDED;
-            case CLOSED:
-                return Shown.STOPPED;
-            default:
-                return boardArrived ? Shown.BOARD : Shown.LAST_SAVED;
-        }
     }
 
     /** Whether the match screen shows the reconnect notice: the board is on screen and the host can't be reached. */
