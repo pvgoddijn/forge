@@ -221,7 +221,7 @@ class CompanionMatchExtension implements MatchExtension {
                         return;
                     }
                     try {
-                        store.end(table.id()); // first, so the setup screen we go back to doesn't resume it
+                        store.end(table.id()); // first, so it's a past game whatever happens to the match after
                     } catch (UncheckedIOException e) {
                         FOptionPane.showErrorDialog("The game couldn't be ended.\n" + e.getMessage());
                         return;

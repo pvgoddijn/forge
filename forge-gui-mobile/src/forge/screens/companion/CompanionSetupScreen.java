@@ -8,7 +8,7 @@ import forge.gamemodes.companion.CompanionMatch;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
-import forge.gamemodes.companion.share.ActiveGame;
+import forge.gamemodes.companion.share.ShareState;
 import forge.gamemodes.match.HostedMatch;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
@@ -30,14 +30,14 @@ import java.io.File;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /**
  * Sets up a tracked game: players in seat order, and which one is Me. The game itself is a real match on Forge's match
- * screen, with every seat answered by the operator. Goes straight to the active game if there is one; with none, it's
- * a new game's setup, and Past games for the ones that have ended.
+ * screen, with every seat answered by the operator. Always opens on a new game's setup, leaving any unfinished games
+ * as they are: Load game lists those to continue or end (several may be unfinished side by side), and Past games the
+ * ones that have ended.
  */
 public class CompanionSetupScreen extends LaunchScreen {
     private static final float PADDING = Utils.scale(5);
@@ -65,6 +65,8 @@ public class CompanionSetupScreen extends LaunchScreen {
     private final FTextField txtLife = form.add(new FTextField(String.valueOf(CompanionSetup.DEFAULT_LIFE)));
     /** On by default (AC-43): Start then asks for each player's commander (AC-44). */
     private final FCheckBox chkCommanderMode = form.add(new FCheckBox("Commander mode", true));
+    /** The unfinished games, to continue or end; disabled while there are none. */
+    private final FButton btnLoadGame = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionLoadGame")));
     private final FButton btnPastGames = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionPastGames")));
     /** A game shared by another device, followed here read-only (AC-102). */
     private final FButton btnJoinGame = add(new FButton(Forge.getLocalizer().getMessage("lblCompanionJoinGame")));
@@ -95,54 +97,31 @@ public class CompanionSetupScreen extends LaunchScreen {
         });
         btnFewer.setCommand(e -> setPlayerCount(playerCount - 1));
         btnMore.setCommand(e -> setPlayerCount(playerCount + 1));
+        btnLoadGame.setCommand(e -> Forge.openScreen(new CompanionLoadGameScreen(store, this::openGame)));
         btnPastGames.setCommand(e -> Forge.openScreen(new CompanionPastGamesScreen(store)));
         btnJoinGame.setCommand(e -> Forge.openScreen(new JoinGameScreen(store)));
         updateRows();
     }
 
+    /**
+     * Always the new game's setup, never straight into an unfinished game (owner's decision, 2026-11-09): those are
+     * under Load game, which is enabled only when there is one. A game that couldn't be read is told of here.
+     */
     @Override
     public void onActivate() {
         super.onActivate();
-        Optional<ActiveGame> active = ActiveGame.find(store);
+        boolean anyUnfinished = !store.listUnfinished().isEmpty();
         List<File> unreadable = store.unreadableFiles();
-        // later, because this runs while the screen change that got us here is still happening
+        btnLoadGame.setEnabled(anyUnfinished);
+        if (unreadable.isEmpty()) {
+            return;
+        }
+        // later, because this runs while the screen change that got us here is still happening, and a dialog
+        // belongs to the screen that was current when it was shown
         FThreads.invokeInEdtLater(() -> {
-            active.ifPresent(game -> {
-                if (game.followed()) {
-                    offerFollowed(game); // never openGame: loading its state would write to the host's copy
-                } else {
-                    openGame(game.saved().id(), game.saved().setup());
-                }
-            });
-            // after opening the game, as a dialog belongs to the screen that was current when it was shown
             for (File file : unreadable) {
-                FOptionPane.showErrorDialog("A saved game couldn't be read, so it wasn't resumed. Its file is kept at:\n" + file);
-            }
-        });
-    }
-
-    /**
-     * A game followed from another phone, left without ending (closed, killed, or Leave): "Stop following" makes it a
-     * past game; "Join again" joins its host with the code it was joined with, asking only for what the copy lacks.
-     * Dismissed, it stays as it is and is offered again next time.
-     */
-    private void offerFollowed(ActiveGame game) {
-        FOptionPane.showOptionDialog(Forge.getLocalizer().getMessage("lblCompanionFollowedGame"),
-                Forge.getLocalizer().getMessage("lblCompanionJoinGame"), null,
-                List.of(Forge.getLocalizer().getMessage("lblCompanionStopFollowing"),
-                        Forge.getLocalizer().getMessage("lblCompanionJoinAgain")), 1, choice -> {
-            if (choice == null) {
-                return;
-            }
-            if (choice == 0) {
-                try {
-                    game.stopFollowing(store);
-                } catch (UncheckedIOException e) {
-                    FOptionPane.showErrorDialog(Forge.getLocalizer().getMessage("lblCompanionStopFollowingFailed",
-                            e.getMessage()));
-                }
-            } else {
-                Forge.openScreen(new JoinGameScreen(store, game.saved().id(), game.code().orElse(null)));
+                FOptionPane.showErrorDialog(Forge.getLocalizer().getMessage("lblCompanionGameUnreadable",
+                        String.valueOf(file)));
             }
         });
     }
@@ -204,13 +183,14 @@ public class CompanionSetupScreen extends LaunchScreen {
 
     @Override
     protected void doLayoutAboveBtnStart(float startY, float width, float height) {
-        // Past games and Join game stay put above Start, side by side; the form above them scrolls
+        // Load game, Past games and Join game stay put above Start, side by side; the form above them scrolls
         float rowHeight = FTextField.getDefaultHeight();
-        float pastGamesY = height - rowHeight - PADDING;
-        float buttonWidth = (width - 3 * PADDING) / 2;
-        btnPastGames.setBounds(PADDING, pastGamesY, buttonWidth, rowHeight);
-        btnJoinGame.setBounds(btnPastGames.getRight() + PADDING, pastGamesY, buttonWidth, rowHeight);
-        form.setBounds(0, startY, width, pastGamesY - PADDING - startY);
+        float buttonsY = height - rowHeight - PADDING;
+        float buttonWidth = (width - 4 * PADDING) / 3;
+        btnLoadGame.setBounds(PADDING, buttonsY, buttonWidth, rowHeight);
+        btnPastGames.setBounds(btnLoadGame.getRight() + PADDING, buttonsY, buttonWidth, rowHeight);
+        btnJoinGame.setBounds(btnPastGames.getRight() + PADDING, buttonsY, buttonWidth, rowHeight);
+        form.setBounds(0, startY, width, buttonsY - PADDING - startY);
     }
 
     /** Lays out the form's rows in the scroll pane, and returns their height. */
@@ -358,6 +338,10 @@ public class CompanionSetupScreen extends LaunchScreen {
     }
 
     private void openGame(String id, CompanionSetup setup) {
+        if (ShareState.exists(store, id)) {
+            // a followed game: loading its state would write to the host's copy. Load game never asks for this.
+            throw new IllegalStateException("A followed game can't be opened as this device's own: " + id);
+        }
         CompanionTable table = new CompanionTable(id, setup, store);
         try {
             // check it here, where a bad save can be set aside, rather than in the starting game where it can't

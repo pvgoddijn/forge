@@ -1,6 +1,7 @@
 # Chapters
 - [What It Is](#what-it-is)
 - [What You Need](#what-you-need)
+- [Starting and Continuing Games](#starting-and-continuing-games)
 - [Hosting a Game](#hosting-a-game)
   - [Share the game](#share-the-game)
   - [The join code and QR code](#the-join-code-and-qr-code)
@@ -67,13 +68,29 @@ This page assumes you already know how to start and log a Companion game on one 
 
 ---
 
+# Starting and Continuing Games
+
+Opening Companion (**New Game**, then **Companion**) always shows the setup for a new game. It never jumps into a game you didn't finish.
+
+- **Load game** lists the games you haven't finished, the most recently played first, each with when it was last played and its players. It's greyed out while there are none.
+  - Tap one of your own games and pick **Continue** to carry on where you left off, or **End game** (and confirm) to finish it: it then goes to **Past games**.
+  - A game you joined from another phone is marked **followed from another device**. Tap it for **Join again** (back into the shared game) or **Stop following** (it goes to **Past games**). It's never opened as your own game.
+- **Past games** lists the games that have ended, read-only.
+- **Join game** follows a game shared by another phone.
+
+You can have several unfinished games side by side. Starting a new game, or joining one, leaves the others as they are.
+
+<!-- screenshot: the Load game list with an own game and a followed game -->
+
+---
+
 # Hosting a Game
 
 The host is usually whoever started the Companion game. While no other phone is connected, the host logs exactly as in single-phone Companion, with or without a network.
 
 ## Share the game
 
-1. Start or resume a Companion game as usual.
+1. Start a new Companion game, or continue one from **Load game**.
 2. Open the game menu and pick **Share game…**.
 3. The **Share game** dialog opens with the join code.
 
@@ -142,7 +159,7 @@ Spectators are always read-only.
 
 # Joining a Game
 
-You can only follow one Companion game at a time. If your phone has its own unfinished Companion game, Forge asks you to end it before you join.
+Joining leaves your own unfinished Companion games as they are: they stay in **Load game**, and the game you join is listed there too, marked as followed.
 
 ## Scan or type the code
 
@@ -182,9 +199,9 @@ Pick **Leave** in the game menu. You get **You left the shared game.** If you he
 
 When the host ends the game, your phone leaves the match screen with **The host ended the game**. The game stays in **Past games** on your phone, read-only, with its final board and full history, just like a game you tracked yourself.
 
-Your phone keeps a complete copy of the game the whole time, saved as it changes. If Forge is closed or the phone restarts mid-game, opening Companion takes you straight back into the game.
+Your phone keeps a complete copy of the game the whole time, saved as it changes. If Forge is closed or the phone restarts mid-game, open Companion, tap **Load game**, then the game (marked as followed) and **Join again**.
 
-If your phone missed the end of the game (it was off when the host ended it, and the host has since left Companion), Companion offers **Stop following**. That moves the game to your past games.
+If your phone missed the end of the game (it was off when the host ended it, and the host has since left Companion), the game is still in **Load game**: tap it and pick **Stop following**. That moves the game to your past games.
 
 ---
 
@@ -269,11 +286,11 @@ While disconnected you can still look at the board and the history, but you can'
 
 ## Your phone restarted while the host was away
 
-If you open Companion and the host can't be reached, you see a **text summary** of the last saved board and the history, not the full board. Forge keeps trying in the background and opens the board as soon as it connects. **Stop following** ends the game on your phone and moves it to past games.
+If you go back into the game (**Load game**, then **Join again**) and the host can't be reached, you see a **text summary** of the last saved board and the history, not the full board. Forge keeps trying in the background and opens the board as soon as it connects. **Stop following** ends the game on your phone and moves it to past games.
 
 ## The host phone restarts
 
-If the host phone restarts or Forge is closed on it, reopen Companion on the host. The game resumes and is shared again with the same code, and the other phones reconnect by themselves.
+If the host phone restarts or Forge is closed on it, reopen Companion on the host, tap **Load game** and **Continue** the game. It's shared again with the same code, and the other phones reconnect by themselves.
 
 If Forge had to use a different port, the code changes; the host is told, and the others need the new code.
 
@@ -379,7 +396,7 @@ Sharing keeps the screen on, and the host also serves every phone (and maybe a h
 
 ## Can I use my phone for my own Companion game while following one?
 
-No. A phone has one active Companion game at a time. End your own game before joining, and leave or finish the shared one before starting your own.
+Yes, one at a time. A phone can have several unfinished Companion games, its own and followed ones; **Load game** lists them all. Joining a game doesn't end your own, and starting your own doesn't end the one you follow. Leave the shared game to continue yours, and **Join again** from **Load game** to go back.
 
 ---
 

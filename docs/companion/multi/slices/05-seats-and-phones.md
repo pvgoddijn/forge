@@ -5,7 +5,7 @@
 **Proves:** phones are tied to seats, the host sees and controls who's connected.
 
 ## Result
-After typing the code, a joining phone picks one of the free seats or "Watch". Its own seat is at the bottom of its board, highlighted, with turn order kept. The host's seat is never offered. The host's share dialog has a "Phones" list: each phone's name, its seat (or "watching"), and whether it's connected, with Remove. A removed phone is told so and keeps the game in its past games; it may join again with the code. A phone that already has its own unfinished Companion game is asked to end it before joining.
+After typing the code, a joining phone picks one of the free seats or "Watch". Its own seat is at the bottom of its board, highlighted, with turn order kept. The host's seat is never offered. The host's share dialog has a "Phones" list: each phone's name, its seat (or "watching"), and whether it's connected, with Remove. A removed phone is told so and keeps the game in its past games; it may join again with the code. A phone with its own unfinished Companion games joins without ending them: the followed copy is one more unfinished game in Load game (owner decision, 2026-11-09; see below).
 
 ## Acceptance criteria
 Delivered in full:
@@ -19,7 +19,9 @@ Completes:
 Spec assumptions it implements: **B3** (a removed phone may rejoin with the code), **B5** (a seated phone that leaves frees its seat; the seat's player stays in the game).
 
 ## Design for this slice
-Plan 2.1 (`MatchExtension`, `MatchController`), 2.2 (`CompanionDevice`, `CompanionShareHost`), 2.3 (`ShareDialog`, `JoinGameScreen`, `CompanionViewExtension`), 3.3 (`claim`, `roster`, `removed`), 4.1 (Joining, One active game per phone, Phones), N2, Q29.
+Plan 2.1 (`MatchExtension`, `MatchController`), 2.2 (`CompanionDevice`, `CompanionShareHost`), 2.3 (`ShareDialog`, `JoinGameScreen`, `CompanionViewExtension`), 3.3 (`claim`, `roster`, `removed`), 4.1 (Joining, Phones; its "One active game per phone" is replaced, see below), N2, Q29.
+
+**Owner decision, 2026-11-09: several unfinished games per phone.** Opening Companion always shows the new-game setup; it no longer jumps into an unfinished game. "Load game" (next to Past games and Join game) lists the unfinished games, own and followed, most recently played first (`ActiveGame.list`, `CompanionStore.listUnfinished`, which write nothing to a game). An own game offers Continue or End game; a followed one (`share.json`) is marked so and offers "Join again" or "Stop following", and is never opened as the phone's own. Starting a new game, or joining one, leaves the other unfinished games untouched. So this slice no longer asks a phone to end its own game before joining, and Q29's "one active game" applies per game, not per phone. Implemented on `feature/companion-load-game`, on top of slice 03.
 
 ### `forge-gui`, `forge.gamemodes.companion.share`
 - **`CompanionDevice`** (record, new): this install's random id and display name, in `companion/device.json`. Sent in `hello` as `device`; the name defaults to the device model and is editable in the join screen.
@@ -36,7 +38,7 @@ Plan 2.1 (`MatchExtension`, `MatchController`), 2.2 (`CompanionDevice`, `Compani
 - **`CompanionViewExtension`:** `bottomPlayer` = own seat, highlighted; spectators return the host's Me (N2).
 - **`JoinGameScreen`:** after `welcome`, a seat list (free seats, from the roster) plus "Watch". A refused claim shows the list again.
 - **`ShareDialog`:** a "Phones" section: device name, seat or "watching", connected, Remove (with a confirmation).
-- **`CompanionSetupScreen`:** "Join game" with an unfinished own game asks to end it first (`CompanionStore.loadActive`, `CompanionStore.java:352-376`; Q29). A followed copy (`share.json` role `joined`) counts as that game too.
+- **`CompanionSetupScreen`:** ~~"Join game" with an unfinished own game asks to end it first~~ dropped by the owner decision above (2026-11-09): Join game is always available, and the joined copy is listed in Load game beside the phone's own unfinished games. Joining the same game again keeps its one folder (`createWithId`), so it's never listed twice.
 
 - **Spectator warning:** the share dialog shows a warning when more devices are connected than the safe number measured in slice 01 (Results, [Phone] step 8). It is not a hard cap: more devices can still join (spec AC-104).
 
@@ -74,7 +76,7 @@ for n in host j1 j2 j3 j4 j5 j6; do mkdir -p /tmp/companion-$n && ln -sfn "$REPO
 5. Host: Remove j1. OK: j1 leaves the match screen with "The host removed this phone", the game is in j1's past games, read-only; the host's list no longer shows j1, and seat 3 is free again.
 6. j1: Join game with the same code. OK: j1 may join (B3); seat 3 is offered.
 7. Kill j2 (seat 2). OK: the host's list shows j2 as not connected. Restart j2. OK: it reconnects into seat 2 without a seat prompt.
-8. An instance with its own unfinished Companion game picks Join game. OK: it's asked to end that game first.
+8. An instance with its own unfinished Companion game picks Join game. OK: it joins without being asked to end that game; afterwards Load game lists both, the joined one marked as followed (owner decision, 2026-11-09).
 9. Host, a new unshared game: v1 behaviour (AC-114).
 
 **[Phone]** 1. Two phones (as slice 01): phone B claims a seat; it's at the bottom. Phone A removes it; phone B shows the notice and has the game in its past games.

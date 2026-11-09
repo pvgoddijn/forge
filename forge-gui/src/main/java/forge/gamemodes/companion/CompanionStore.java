@@ -44,7 +44,7 @@ import java.util.function.Function;
  * <li>{@code log.txt}: what happened, one {@link CompanionLogEntry} per line, as JSON. A line from a log written
  * before entries is plain text, and reads as a notice.</li>
  * </ul>
- * A folder with no {@code ended} file is the active game.
+ * A folder with no {@code ended} file is an unfinished game; there may be several ({@link #listUnfinished}).
  * <p>
  * A game followed from another phone (a shared game) has a folder under the host's game id ({@link #createWithId}),
  * and its log is copied in as the host wrote it ({@link #appendVerbatim}). A following store must never call
@@ -528,7 +528,7 @@ public class CompanionStore {
         return ended;
     }
 
-    /** Marks the game ended, so it's no longer the active game and Companion doesn't resume it. */
+    /** Marks the game ended, so it's one of the past games and no longer listed to continue. */
     public synchronized void end(String id) {
         writeWhole(new File(new File(dir, id), ENDED), "");
         Journal j = journal;
@@ -547,7 +547,7 @@ public class CompanionStore {
         return load(new File(dir, id)).setup();
     }
 
-    /** Moves a game that can't be loaded out of the way, so Companion doesn't keep trying to resume it. */
+    /** Moves a game that can't be loaded out of the way, so Companion doesn't keep listing it to continue. */
     public File setAside(String id) {
         File game = new File(dir, id);
         File aside = new File(dir, id + DAMAGED_SUFFIX);
@@ -781,43 +781,84 @@ public class CompanionStore {
         }
     }
 
-    /** The files the last {@link #loadActive()} couldn't read, for telling the operator. */
+    /** The files the last {@link #listUnfinished} (or {@link #loadActive}) couldn't read, for telling the operator. */
     public List<File> unreadableFiles() {
         return unreadable;
     }
 
-    /** The game that hasn't ended, most recently played first if a problem ever left more than one. */
-    public Optional<Saved> loadActive() {
-        unreadable = new ArrayList<>();
-        File[] games = dir.listFiles(f -> f.isDirectory() && !f.getName().endsWith(DAMAGED_SUFFIX)
-                && !new File(f, ENDED).exists());
-        if (games == null) {
-            return Optional.empty();
-        }
-        Arrays.sort(games, (a, b) -> Long.compare(lastPlayed(b), lastPlayed(a)));
-        for (File game : games) {
-            try {
-                return Optional.of(load(game));
-            } catch (JsonParseException | IllegalArgumentException | IllegalStateException
-                     | UnsupportedOperationException | ClassCastException | NullPointerException e) {
-                // A damaged game mustn't stop the mode from opening. Set it aside, for recovery by hand.
-                System.err.println("Setting aside damaged companion game " + game + ": " + e);
-                File aside = new File(dir, game.getName() + DAMAGED_SUFFIX);
-                unreadable.add(game.renameTo(aside) ? aside : game);
-            } catch (UncheckedIOException e) {
-                // May be temporary, so the folder stays where it is.
-                System.err.println("Can't read companion game " + game + ": " + e);
-                unreadable.add(game);
+    /**
+     * A game that hasn't ended, one of possibly several side by side: Companion lists them under "Load game" to
+     * continue or end. A game followed from another phone is one too, and is never continued as the phone's own.
+     *
+     * @param id         its folder
+     * @param setup      its seats and options
+     * @param lastPlayed when it last changed (a step, an undo, or a log entry), in milliseconds since the epoch
+     */
+    public record Unfinished(String id, CompanionSetup setup, long lastPlayed) {
+        /** The seats' names, in seat order. */
+        public List<String> seatNames() {
+            List<String> names = new ArrayList<>();
+            for (CompanionSetup.Seat seat : setup.seats()) {
+                names.add(seat.name());
             }
+            return names;
         }
-        return Optional.empty();
+
+        /** As a {@link Saved}, to start it. */
+        public Saved saved() {
+            return new Saved(id, setup);
+        }
     }
 
+    /**
+     * The games that haven't ended, most recently played first. Listing writes nothing to a game it lists. A game
+     * whose setup doesn't parse is damaged: it's set aside (renamed, its files untouched) for recovery by hand, so it
+     * doesn't stop the mode from opening. One that can't be read is left where it is, as that may be temporary. Both
+     * are left out and kept for {@link #unreadableFiles}.
+     */
+    public List<Unfinished> listUnfinished() {
+        List<File> skipped = new ArrayList<>();
+        List<Unfinished> games = new ArrayList<>();
+        File[] folders = dir.listFiles(f -> f.isDirectory() && !f.getName().endsWith(DAMAGED_SUFFIX)
+                && !new File(f, ENDED).exists());
+        if (folders != null) {
+            for (File game : folders) {
+                try {
+                    games.add(new Unfinished(game.getName(), load(game).setup(), lastPlayed(game)));
+                } catch (JsonParseException | IllegalArgumentException | IllegalStateException
+                         | UnsupportedOperationException | ClassCastException | NullPointerException e) {
+                    // A damaged game mustn't stop the mode from opening. Set it aside, for recovery by hand.
+                    System.err.println("Setting aside damaged companion game " + game + ": " + e);
+                    File aside = new File(dir, game.getName() + DAMAGED_SUFFIX);
+                    skipped.add(game.renameTo(aside) ? aside : game);
+                } catch (UncheckedIOException e) {
+                    // May be temporary, so the folder stays where it is.
+                    System.err.println("Can't read companion game " + game + ": " + e);
+                    skipped.add(game);
+                }
+            }
+        }
+        games.sort(Comparator.comparingLong(Unfinished::lastPlayed).reversed().thenComparing(Unfinished::id));
+        unreadable = skipped;
+        return games;
+    }
+
+    /** The most recently played game that hasn't ended, if any ({@link #listUnfinished}'s first). */
+    public Optional<Saved> loadActive() {
+        List<Unfinished> games = listUnfinished();
+        return games.isEmpty() ? Optional.empty() : Optional.of(games.get(0).saved());
+    }
+
+    /**
+     * When the game last changed: its newest step (a step written, or discarded by an undo, changes the folder's
+     * time), its log, or else its folder.
+     */
     private static long lastPlayed(File game) {
-        // a step written, or discarded by an undo, changes the folder's time
         File states = new File(game, STATES);
         File state = new File(game, STATE);
-        return states.isDirectory() ? states.lastModified() : state.exists() ? state.lastModified() : game.lastModified();
+        long played = states.isDirectory() ? states.lastModified() : state.exists() ? state.lastModified()
+                : game.lastModified();
+        return Math.max(played, new File(game, LOG).lastModified()); // 0 when there's no log
     }
 
     private static Saved load(File game) {
