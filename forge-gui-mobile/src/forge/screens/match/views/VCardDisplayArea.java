@@ -28,9 +28,12 @@ import forge.game.zone.ZoneType;
 import forge.gui.FThreads;
 import forge.gui.GuiBase;
 import forge.localinstance.properties.ForgePreferences.FPref;
+import forge.menu.FMenuItem;
+import forge.menu.FPopupMenu;
 import forge.model.FModel;
 import forge.screens.match.CardFlightOverlay;
 import forge.screens.match.MatchController;
+import forge.screens.match.MatchExtension;
 import forge.screens.match.MatchScreen;
 import forge.toolbox.FCardPanel;
 import forge.toolbox.FDisplayObject;
@@ -773,7 +776,7 @@ public abstract class VCardDisplayArea extends VDisplayArea implements ActivateH
                 //must invoke in game thread in case a dialog needs to be shown
                 ThreadUtil.invokeInGameThread(() -> {
                     if (GuiBase.getInterface().isRunningOnDesktop() && Forge.mouseButtonID == Input.Buttons.RIGHT) {
-                        FThreads.invokeInEdtLater(CardAreaPanel.this::showZoom);
+                        FThreads.invokeInEdtLater(() -> showMenuOrZoom(x, y));
                     } else if (!selectCard(false)) {
                         //if no cards in stack can be selected, just show zoom/details for card
                         if (!MatchController.instance.isSelecting())
@@ -825,10 +828,28 @@ public abstract class VCardDisplayArea extends VDisplayArea implements ActivateH
         public boolean longPress(float x, float y) {
             if (VCardDisplayArea.isDragGestureActive()) { return true; }
             if (renderedCardContains(x, y)) {
-                showZoom();
+                showMenuOrZoom(x, y);
                 return true;
             }
             return false;
+        }
+
+        /** The match extension's items for this card, then its zoom; just the zoom when there are none. */
+        private void showMenuOrZoom(float x, float y) {
+            MatchExtension extension = MatchController.getExtension();
+            List<FMenuItem> items = extension == null || displayArea == null
+                    ? List.of() : extension.cardMenuItems(getCard());
+            if (items.isEmpty()) {
+                showZoom();
+                return;
+            }
+            new FPopupMenu() {
+                @Override
+                protected void buildMenu() {
+                    items.forEach(this::addItem);
+                    addItem(new FMenuItem(Forge.getLocalizer().getMessage("lblZoomOrDetails"), e -> showZoom()));
+                }
+            }.show(this, x, y);
         }
 
         public void showZoom() {

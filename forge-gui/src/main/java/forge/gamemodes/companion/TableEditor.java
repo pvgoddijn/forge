@@ -14,6 +14,7 @@ import forge.game.ability.AbilityUtils;
 import forge.game.card.Card;
 import forge.game.card.CardFactory;
 import forge.game.card.CardUtil;
+import forge.game.card.CardZoneTable;
 import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
@@ -268,6 +269,147 @@ public final class TableEditor {
         }
         settle(game);
         return new Result(true, name + " is " + to.getName() + "'s, not " + from.getName() + "'s", seats, name, toSide);
+    }
+
+    /** The zones {@link #moveTo} moves a card to. */
+    public static final List<ZoneType> MOVE_ZONES = List.of(ZoneType.Hand, ZoneType.Battlefield, ZoneType.Graveyard,
+            ZoneType.Exile, ZoneType.Library, ZoneType.Command);
+
+    /**
+     * The operator's "Move…" (AC-22): {@code card} goes to {@code player}'s {@code zone} through the game's own zone
+     * change, so it's something that happened at the table: zone-change triggers fire ("when this dies"), replacement
+     * effects apply, and a commander's owner may be asked whether it goes to the Command zone instead.
+     * <ul>
+     * <li>To a Battlefield, {@code player} controls it. From another battlefield that's a control change
+     * ({@code setController}, then the engine's {@code controllerChangeZoneCorrection}), so it's summoning sick for
+     * them and control-change triggers fire; from anywhere else it's put onto that battlefield under their control,
+     * and when the engine refuses that (an instant or sorcery, rule 304.4) its controller stays who it was. Either way
+     * its owner stays the same.</li>
+     * <li>To any other zone, {@code player} owns it from then on, the way {@link #reassign} does: the card is theirs in
+     * that zone, and through a save and a resume. While it leaves a battlefield, its controller stays who it was, so a
+     * "when this dies" trigger is still theirs.</li>
+     * <li>A commander ({@link Card#isCommander}, a merged or melded one too) is never given another owner: the engine's
+     * commander rules ({@code IsCommander+YouOwn}) would make it the other player's commander. Moved to another
+     * player's zone other than a battlefield, it goes to its owner's zone of that kind instead, and the message says
+     * so. That's done rather than refused, as the operator is never refused what the table did (AC-39): the card is
+     * where the table put it as far as the engine's rules allow.</li>
+     * <li>A token moved off the battlefield to another zone ceases to exist at the next state-based check (rule
+     * 111.7); the message says so.</li>
+     * <li>The Library is its top. The Command zone takes any card, though it's meant for a commander.</li>
+     * </ul>
+     * A hand needs nothing more (AC-20, AC-21): only real cards are moved, so a card moved into a hand is a known card
+     * there, and one moved out of it leaves the hidden count as it was.
+     * <p>
+     * Refused, changing nothing: a zone not in {@link #MOVE_ZONES}; an unknown card (a placeholder has no name yet);
+     * an emblem or effect; a card on the stack (let it resolve, or undo the cast: moving a spell by hand would leave
+     * its ability on the stack); a card in no zone; and a move to where it already is.
+     *
+     * @return about the seats it concerns: for a move to a battlefield the seat it was with, for any other its owner
+     *         before the move; then {@code player} when that's someone else. When the move gave the card to
+     *         {@code player} (a new owner), {@code fromHand} is {@link CompanionLogEntry.FromHand#NONE}: nothing left
+     *         their hand for it, and the "wrong player" correction follows the card to them
+     *         ({@link CompanionLogEntry#addedInTurn}). Null when the owner stayed the same.
+     */
+    public static Result moveTo(Card card, Player player, ZoneType zone) {
+        Game game = player.getGame();
+        String name = card.getName();
+        Zone from = game.getZoneOf(card);
+        Player owner = card.getOwner();
+        Player fromSeat = zone != ZoneType.Battlefield ? owner
+                : from != null && from.getPlayer() != null ? from.getPlayer() : owner;
+        List<String> seats = fromSeat == player ? List.of(player.getName())
+                : List.of(fromSeat.getName(), player.getName());
+        String to = where(player, zone);
+        if (!MOVE_ZONES.contains(zone)) {
+            return new Result(false, name + " can't be moved to " + to, seats, name, null);
+        }
+        if (CompanionCards.isPlaceholder(card)) {
+            return new Result(false, "An unknown card can't be moved: nothing was changed", seats, null, null);
+        }
+        if (card.isImmutable()) {
+            return new Result(false, name + " is an emblem or effect: it can't be moved", seats, name, null);
+        }
+        if (from == null || !from.contains(card) || from.is(ZoneType.None)) {
+            return new Result(false, name + " isn't in the game any more: nothing was changed", seats, name, null);
+        }
+        if (from.is(ZoneType.Stack)) {
+            return new Result(false, name + " is still on the stack: move it once it has resolved, or undo the cast",
+                    seats, name, null);
+        }
+        // a commander stays its owner's: it goes to their zone, not another player's (the commander rules key on owner)
+        Player dest = zone != ZoneType.Battlefield && card.isCommander() ? owner : player;
+        String toDest = where(dest, zone);
+        String redirect = dest == player ? "" : " (a commander stays its owner's, so not " + to + ")";
+        if (from.is(zone) && from.getPlayer() == dest) {
+            return new Result(false, name + " is already in " + toDest + ": nothing was changed" + redirect, seats,
+                    name, null);
+        }
+
+        String was = where(from.getPlayer() != null ? from.getPlayer() : owner, from.getZoneType());
+        boolean tokenLeaves = card.isToken() && from.is(ZoneType.Battlefield) && zone != ZoneType.Battlefield;
+        // as an effect moves a card: the table remembers the battlefield before the move, so a trigger that looks back
+        // in time ("when this dies") sees the card that left
+        CardZoneTable moves = new CardZoneTable(game.copyLastStateBattlefield(), game.copyLastStateGraveyard());
+        Map<AbilityKey, Object> params = AbilityKey.newMap();
+        AbilityKey.addCardZoneTableParams(params, moves);
+        Card moved;
+        if (zone == ZoneType.Battlefield) {
+            if (from.is(ZoneType.Battlefield)) {
+                card.setController(player, game.getNextTimestamp());
+                game.getAction().controllerChangeZoneCorrection(card);
+                moved = card;
+            } else {
+                // the engine puts it onto the battlefield of its controller; when it refuses (an instant or a
+                // sorcery, rule 304.4) the card stays where it was, and under who it was
+                Player controller = card.getController();
+                card.setController(player, game.getNextTimestamp());
+                moved = game.getAction().moveToPlay(card, player, null, params);
+                if (from.contains(card)) {
+                    if (controller == owner) {
+                        card.clearControllers();
+                    } else {
+                        card.setController(controller, game.getNextTimestamp());
+                    }
+                }
+            }
+        } else {
+            if (owner != dest) {
+                if (card.isInPlay()) {
+                    // keeps who controls it now for its last known information, which its owner would otherwise be
+                    card.setController(card.getController(), game.getNextTimestamp());
+                }
+                card.setOwner(dest); // the engine sends a card to its owner's zone
+            }
+            moved = game.getAction().moveTo(zone, card, 0, null, params);
+            if (from.contains(card)) {
+                card.setOwner(owner); // it didn't move (something stopped it): it isn't theirs either
+            }
+        }
+        moves.triggerChangesZoneAll(game, null);
+        settle(game);
+
+        Zone now = moved == null ? null : game.getZoneOf(moved);
+        if (now == null || from.contains(moved)) {
+            return new Result(false, name + " couldn't be moved to " + to + ": something on the table stopped it",
+                    seats, name, null);
+        }
+        // the card is player's now when it wasn't before: the "wrong player" correction follows it there
+        CompanionLogEntry.FromHand newOwner = owner != player && moved.getOwner() == player
+                ? CompanionLogEntry.FromHand.NONE : null;
+        if (!now.is(zone) || now.getPlayer() != dest) {
+            Player nowSeat = now.getPlayer() != null ? now.getPlayer() : moved.getOwner();
+            return new Result(true, name + " was moved from " + was + ", but went to " + where(nowSeat,
+                    now.getZoneType()) + " instead of " + toDest + redirect, seats, name, newOwner);
+        }
+        String ceases = tokenLeaves ? ", where it ceases to exist: it's a token" : "";
+        return new Result(true, name + " was moved from " + was + " to " + toDest + ceases + redirect, seats, name,
+                newOwner);
+    }
+
+    /** A zone for the operator to read: "Bo's Battlefield", "the top of Bo's Library". */
+    private static String where(Player player, ZoneType zone) {
+        String seat = player.getName() + "'s " + zone.name();
+        return zone == ZoneType.Library ? "the top of " + seat : seat;
     }
 
     /** What left a hand for a card from it (AC-19/AC-20): the known copy, else an unknown card, else nothing. */
