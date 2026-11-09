@@ -29,6 +29,7 @@ import forge.util.ThreadUtil;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * What a tracked game adds to the match screen: the table's actions in the game menu, "Move…" on a card's menu, a
@@ -165,7 +166,7 @@ class CompanionMatchExtension implements MatchExtension {
     }
 
     private void showHistory() {
-        List<String> seats = table.setup().seats().stream().map(CompanionSetup.Seat::name).toList();
+        List<String> seats = table.setup().seats().stream().map(CompanionSetup.Seat::name).collect(Collectors.toList()); // not Stream.toList (Android < 14)
         Forge.openScreen(new CompanionHistoryScreen(table.logAtPrompt(), seats));
     }
 
@@ -202,7 +203,7 @@ class CompanionMatchExtension implements MatchExtension {
             if (chosen == null || chosen.isEmpty()) {
                 return;
             }
-            List<Integer> ids = chosen.stream().map(CardView::getId).toList();
+            List<Integer> ids = chosen.stream().map(CardView::getId).collect(Collectors.toList()); // not Stream.toList (Android < 14)
             table.submit(game -> TableEditor.readyCreatures(game, ids));
         });
     }

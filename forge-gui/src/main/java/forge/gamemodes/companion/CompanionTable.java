@@ -35,6 +35,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * One tracked game while it runs: the operator's pending actions, and saving after each one.
@@ -1121,7 +1122,7 @@ public class CompanionTable {
         if (phase == null || active == null || !phase.isBefore(PhaseType.COMBAT_BEGIN)) {
             return List.of();
         }
-        return TableEditor.sickCreatures(active).stream().map(Card::getId).toList();
+        return TableEditor.sickCreatures(active).stream().map(Card::getId).collect(Collectors.toList()); // not Stream.toList: Android < 14 lacks it, D8 does not backport it
     }
 
     /**
