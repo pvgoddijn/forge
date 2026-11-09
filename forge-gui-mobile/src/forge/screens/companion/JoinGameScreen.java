@@ -82,7 +82,7 @@ public class JoinGameScreen extends FScreen {
 
     private void join() {
         Optional<JoinCode> code = JoinCode.parse(txtCode.getText());
-        if (code.isEmpty()) {
+        if (!code.isPresent()) {
             showStatus(Forge.getLocalizer().getMessage("lblCompanionNotACode"));
             return;
         }

@@ -17,6 +17,7 @@ import forge.toolbox.FOptionPane;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * The match screen of a game shared by another device and joined here (AC-107, AC-108): read-only. The game menu has
@@ -120,7 +121,9 @@ final class CompanionViewExtension implements MatchExtension {
         List<String> seats;
         try {
             log = store.loadLog(game);
-            seats = store.loadSetup(game).seats().stream().map(CompanionSetup.Seat::name).toList();
+            // not Stream.toList: Android has it from API 34 only, and D8 doesn't backport it
+            seats = store.loadSetup(game).seats().stream().map(CompanionSetup.Seat::name)
+                    .collect(Collectors.toList());
         } catch (RuntimeException e) {
             FOptionPane.showErrorDialog(Forge.getLocalizer().getMessage("lblCompanionHistoryUnreadable",
                     String.valueOf(e.getMessage())));

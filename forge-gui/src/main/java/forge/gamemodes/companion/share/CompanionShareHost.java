@@ -376,6 +376,10 @@ public final class CompanionShareHost implements IHasForgeLog {
         /**
          * On the share's stop: sends what the subscription still has queued, then closes the connection once it's
          * written. Returns the connection's close. Any thread.
+         *
+         * <p>Known edge: a phone mid-join, welcomed but whose want hasn't come yet, gets nothing here, as its drain
+         * sends nothing before the wanted steps; so it's closed without the game's {@code end}, even when the end was
+         * just written. Its copy stays unended, and its next join finds the share gone; slice 04's rejoin covers it.
          */
         ChannelFuture finish() {
             ChannelHandlerContext ctx = context;

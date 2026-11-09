@@ -269,9 +269,10 @@ From M1 on, the roster carries each seated phone's addresses and its **takeover 
 - **Not touched by this stack:** `forge-game`, desktop Swing, `FServerManager`, `ServerGameLobby`, the lobby screens.
 
 **Changes outside Companion** (what the maintainers are told about, after the real-table beta test, slice 15):
-- Net play (`forge/gamemodes/net/**`): `FGameClient` hooks (extra inbound handler, backoff, `markSeated`), `ProtocolGuiGame.attachMidGame`, `GameClientHandler.resetTracker`, the `GameEventForwarder` flush on the game thread, `RemoteClient.getReplyPool` made public.
+- Net play (`forge/gamemodes/net/**`): `FGameClient` hooks (extra inbound handler, backoff, `markSeated`), `ProtocolGuiGame.attachMidGame`, `FGameClient.resetTracker` (protected, final) and `GameClientHandler.resetTracker` (slice 03: drop the tracker's stale card views once a full state is applied), the `GameEventForwarder` flush on the game thread, `RemoteClient.getReplyPool` made public.
 - Mobile match screen: `MatchExtension` hooks and the `MatchController` changes (`getExtension`, `bottomPlayer`, `actsWithoutLocalOperator`, overlay null check).
 - `forge-game`, from the Paid button (branch `feature/companion-skip-payment`, under this stack, not this stack's own change): two null checks for mana that comes from no ability, as Paid spends it. `MagicStack.undo` skips `clearUndoStack` for a paying mana with no mana ability, and `GameSnapshot.copyMana` skips `setSourceCard` when the copied mana has no mana ability.
+- `forge-game`, this stack's own (slice 03), approved by the owner 2026-11-09: `Tracker.removeAll(TrackableType)`, 5 lines, additive (forgets every object of one type), used only by `CompanionClient` through `FGameClient.resetTracker`.
 
 ## 6. Traceability and verification
 

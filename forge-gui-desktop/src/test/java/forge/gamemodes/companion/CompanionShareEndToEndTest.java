@@ -38,6 +38,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
@@ -683,9 +685,82 @@ public class CompanionShareEndToEndTest extends AITest {
             assertFalse(sameSteps(table.store(), phone, "t"));
             assertEquals(joinAgain(table, host, code, phone), new int[] { 1 }, "the step whose hash differs");
             assertTrue(sameSteps(table.store(), phone, "t"), "the step came again: the copy is the host's");
+
+            // the host undoes while the phone is away, with no action after: the welcome's latest step drops the
+            // phone's step 4 (the catch-up's UNDO is up to the welcome's seq, so it doesn't)
+            assertEquals(phone.latestStep("t"), 4);
+            undo(table, game);
+            assertEquals(table.store().latestStep("t"), 3);
+            assertEquals(joinAgain(table, host, code, phone), new int[0], "it holds every step the host has");
+            assertEquals(phone.latestStep("t"), 3, "the step undone is gone from the phone");
+            assertFalse(phone.stepText("t", 4).isPresent());
+            assertTrue(sameCopy(table.store(), phone, "t"), "the copy is the host's");
         } finally {
             if (first != null) {
                 first.close();
+            }
+            host.stop();
+        }
+    }
+
+    /**
+     * Steps first (plan 3.3): a host write between the welcome and the phone's want would wake the phone's drain,
+     * which sends nothing until the wanted steps went. The phone holds its want back while the host acts.
+     */
+    @Test(timeOut = 120_000)
+    public void aHostWriteBeforeThePhonesWantComesAfterTheWantedSteps() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        CompanionStore hostStore = table.store();
+        addCard(table, game, "Grizzly Bears");
+
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionStore phone = tempStore();
+        List<String> written = new CopyOnWriteArrayList<>();
+        CountDownLatch welcomed = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompanionClient client = null;
+        try {
+            host.start();
+            JoinCode code = host.codeAt((Inet4Address) InetAddress.getByName("127.0.0.1"));
+            client = new CompanionClient("Joiner", new HeadlessNetworkGuiGame(), code, phone) {
+                @Override
+                protected void beforeWant(String game) {
+                    welcomed.countDown();
+                    try {
+                        release.await(WAIT_MS, TimeUnit.MILLISECONDS); // the test lets it go
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            };
+            client.addCopyListener(new CompanionClient.CopyListener() {
+                @Override
+                public void stepWritten(String game, int n) {
+                    written.add("step " + n);
+                }
+
+                @Override
+                public void written(String game, long fromSeq, long toSeq) {
+                    written.add("entries");
+                }
+            });
+            client.connect();
+            assertTrue(welcomed.await(WAIT_MS, TimeUnit.MILLISECONDS), "the welcome");
+
+            addCard(table, game, "Forest"); // the host acts while the phone's want is held back
+            Thread.sleep(500); // time for a drain that didn't wait for the steps to send the entries
+            release.countDown();
+
+            CompanionClient joined = client;
+            await(() -> joined.epoch() >= 1, table::runSystemOps, "the attach");
+            await(() -> sameCopy(hostStore, phone, "t"), () -> { }, "the phone's log and steps are the host's");
+            assertEquals(written.subList(0, 2), List.of("step 0", "step 1"),
+                    "the wanted steps came before any entry: " + written);
+        } finally {
+            release.countDown();
+            if (client != null) {
+                client.close();
             }
             host.stop();
         }

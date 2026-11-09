@@ -429,12 +429,20 @@ public class CompanionClient extends FGameClient {
         int[] wanted = wantedSteps(store, game, welcome.latestStep(), welcome.stepIndex());
         ShareMessages.Want want = new ShareMessages.Want(wanted);
         netLog.info("[Companion] {} of {}", want, game);
+        beforeWant(game);
         channel.writeAndFlush(want);
         for (CopyListener listener : copyListeners) {
             listener.wanted(game, wanted.clone());
         }
         welcomedTo = game;
     }
+
+    /**
+     * A test's hook: runs on the copy's thread once the want for {@code game} is known, just before it's sent, so a
+     * test can hold it back while the host writes (the host sends nothing of its journal before the wanted steps).
+     * Does nothing here.
+     */
+    protected void beforeWant(String game) { }
 
     /**
      * The catch-up rule for steps (plan 3.3): drops the steps of {@code game} past the host's latest

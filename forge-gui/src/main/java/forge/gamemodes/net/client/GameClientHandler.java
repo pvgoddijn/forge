@@ -161,6 +161,12 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
      * has applied everything before it, {@link #decodeArgs}). In one step it drops every card view and registers again
      * those of the board the GUI now shows, which are the full state's, so the tracker is never empty in between and
      * the next delta resolves its ids against the current board. Nothing to do before the first game view.
+     * <p>
+     * Known race, not fixed: the tracker isn't thread-safe, and the IO thread still touches it while the reset runs on
+     * the GUI thread: the frame decoder resolves ids against it, and {@link #beforeCall} registers each incoming call's
+     * objects before it is queued. A message read during the reset can so meet a half-cleared tracker, or change it
+     * under the reset's iteration. The window is one GUI-thread task right after a full state, as net play's own
+     * IO-thread registration already has with the GUI thread's {@code copyChangedProps}.
      */
     protected void resetTracker() {
         final Tracker current = tracker;

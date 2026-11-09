@@ -314,7 +314,7 @@ public class CompanionStore {
      */
     public synchronized Optional<String> stepText(String id, int n) {
         Optional<byte[]> bytes = readBytes(stepFile(id, n));
-        if (bytes.isEmpty() && n == 0) {
+        if (!bytes.isPresent() && n == 0) {
             bytes = readBytes(new File(new File(dir, id), STATE));
         }
         return bytes.map(b -> new String(b, StandardCharsets.UTF_8));
