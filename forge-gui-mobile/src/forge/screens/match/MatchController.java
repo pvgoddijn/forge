@@ -287,7 +287,8 @@ public class MatchController extends NetworkGuiGame {
     @Override
     public void showPromptMessage(final PlayerView player, final String message, final CardView card) {
         cancelAwaitNextInput();
-        view.getPrompt(player).setMessage(message, card);
+        String note = getExtension() == null ? null : getExtension().promptNote(player);
+        view.getPrompt(player).setMessage(note == null ? message : message + "\n" + note, card);
     }
 
     @Override
@@ -892,6 +893,11 @@ public class MatchController extends NetworkGuiGame {
     /** The current match's extension, or null, as when another game, such as a network game, is shown. */
     public static MatchExtension getExtension() {
         return extension != null && hostedMatch.getGameView() == instance.getGameView() ? extension : null;
+    }
+
+    /** Whether the current match offers Forge's Concede: any match, unless its extension says no. */
+    public static boolean offersConcede() {
+        return getExtension() == null || getExtension().offersConcede();
     }
 
     /** Call after {@link #hostMatch()}, before the match starts: the match screen is built with it. */

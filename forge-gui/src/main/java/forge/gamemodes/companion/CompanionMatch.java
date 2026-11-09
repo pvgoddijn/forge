@@ -32,7 +32,7 @@ public final class CompanionMatch {
             players.add(rp);
             guis.put(rp, gui);
         }
-        match.setStartGameHook(() -> CompanionGameState.of(table.latestState()).applyNow(match.getGame()));
+        match.setStartGameHook(() -> table.startFromLatest(match.getGame()));
 
         GameRules rules = new GameRules(GameType.Constructed);
         rules.setGamesPerMatch(1);

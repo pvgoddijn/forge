@@ -9,13 +9,17 @@ import com.google.gson.JsonParser;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -23,9 +27,13 @@ import java.util.UUID;
  * Keeps each tracked game in its own folder, {@code <id>/}:
  * <ul>
  * <li>{@code setup.json}: the seats, written once when the game starts;</li>
- * <li>{@code state.txt}: the latest settled state, in Forge's game-state format, replaced whole on each save so a
- * crash leaves either the old state or the new one;</li>
- * <li>{@code log.txt}: what the operator did, one line each.</li>
+ * <li>{@code states/<n>.txt}: the settled state after step {@code n}, in Forge's game-state format, one file per
+ * step for undo. Each is written whole then renamed into place, so a crash leaves either the old file or the new one.
+ * The highest step is the current state. Every step is kept, so undo always reaches step 0, the game's start;</li>
+ * <li>{@code state.txt}: a game saved before there were steps has its one state here. It reads as step 0, and becomes
+ * {@code states/0.txt} at the next save;</li>
+ * <li>{@code log.txt}: what happened, one {@link CompanionLogEntry} per line, as JSON. A line from a log written
+ * before entries is plain text, and reads as a notice.</li>
  * </ul>
  * A folder with no {@code ended} file is the active game.
  * <p>
@@ -35,6 +43,10 @@ import java.util.UUID;
 public class CompanionStore {
     private static final String SETUP = "setup.json";
     private static final String STATE = "state.txt";
+    private static final String STATES = "states";
+    private static final String STEP_SUFFIX = ".txt";
+    /** {@link #latestStep} of a game that has no saved state yet. */
+    public static final int NO_STEP = -1;
     private static final String LOG = "log.txt";
     private static final String ENDED = "ended";
     private static final String DAMAGED_SUFFIX = ".damaged";
@@ -43,6 +55,8 @@ public class CompanionStore {
     public record Saved(String id, CompanionSetup setup) { }
 
     private final File dir;
+    /** The last seq written to each game's log, read from the log at a game's first append. */
+    private final Map<String, Long> lastSeq = new HashMap<>();
     private List<File> unreadable = new ArrayList<>();
 
     public CompanionStore(File dir) {
@@ -65,14 +79,115 @@ public class CompanionStore {
         writeWhole(new File(new File(dir, id), SETUP), toJson(setup));
     }
 
-    public void saveState(String id, String state) {
-        writeWhole(new File(new File(dir, id), STATE), state);
+    /** Saves {@code state} as the next step, and returns its number: 0 for the game's first save. */
+    public int saveState(String id, String state) {
+        int step = latestStep(id) + 1;
+        saveState(id, step, state);
+        return step;
+    }
+
+    /**
+     * Saves {@code state} as step {@code step}, replacing any step {@code step} there is, and drops every later step:
+     * after an undo to {@code step - 1}, the next action's state is step {@code step} again.
+     */
+    public void saveState(String id, int step, String state) {
+        if (step < 0) {
+            throw new IllegalArgumentException("No step " + step);
+        }
+        migrate(id);
+        // the later steps go first: a crash in between then leaves the steps up to step - 1, a state that existed
+        discardAfter(id, step);
+        writeWhole(stepFile(id, step), state);
+    }
+
+    /**
+     * Deletes every step after {@code step}, so {@code step} is the current state again, for an undo. The highest step
+     * goes first, so a crash part way leaves a state that existed.
+     */
+    public void discardAfter(String id, int step) {
+        List<Integer> steps = steps(id);
+        for (int i = steps.size() - 1; i >= 0 && steps.get(i) > step; i--) {
+            delete(stepFile(id, steps.get(i)));
+        }
+        if (step < 0) {
+            delete(new File(new File(dir, id), STATE)); // a slice 0 game's step 0
+        }
+    }
+
+    /** The game's current step: the highest saved, 0 for a game saved before steps, or {@link #NO_STEP}. */
+    public int latestStep(String id) {
+        List<Integer> steps = steps(id);
+        if (!steps.isEmpty()) {
+            return steps.get(steps.size() - 1);
+        }
+        return new File(new File(dir, id), STATE).exists() ? 0 : NO_STEP;
     }
 
     /** The game's latest saved state, or none if it never got to its first save. */
     public Optional<List<String>> loadState(String id) {
-        File state = new File(new File(dir, id), STATE);
-        return state.exists() ? Optional.of(Arrays.asList(read(state).split("\n"))) : Optional.empty();
+        int step = latestStep(id);
+        return step == NO_STEP ? Optional.empty() : loadStep(id, step);
+    }
+
+    /** The state saved as step {@code step}, or none if that step isn't on disk (never saved, or discarded). */
+    public Optional<List<String>> loadStep(String id, int step) {
+        File file = stepFile(id, step);
+        if (!file.exists() && step == 0) {
+            file = new File(new File(dir, id), STATE);
+        }
+        return file.exists() ? Optional.of(Arrays.asList(read(file).split("\n"))) : Optional.empty();
+    }
+
+    private File statesDir(String id) {
+        return new File(new File(dir, id), STATES);
+    }
+
+    private File stepFile(String id, int step) {
+        return new File(statesDir(id), step + STEP_SUFFIX);
+    }
+
+    /** The steps on disk, lowest first. Side files from an interrupted write aren't steps. */
+    private List<Integer> steps(String id) {
+        String[] names = statesDir(id).list();
+        List<Integer> steps = new ArrayList<>();
+        if (names == null) {
+            return steps;
+        }
+        for (String name : names) {
+            if (name.endsWith(STEP_SUFFIX) && name.length() > STEP_SUFFIX.length()) {
+                String number = name.substring(0, name.length() - STEP_SUFFIX.length());
+                if (number.chars().allMatch(c -> c >= '0' && c <= '9') && number.length() < 10) {
+                    steps.add(Integer.parseInt(number));
+                }
+            }
+        }
+        Collections.sort(steps);
+        return steps;
+    }
+
+    /**
+     * Creates the steps folder if needed, and moves a slice 0 game's {@code state.txt} in as step 0. A crash between the
+     * two leaves {@code state.txt}, still read as step 0, and the next save moves it.
+     */
+    private void migrate(String id) {
+        File states = statesDir(id);
+        if (!states.mkdirs() && !states.isDirectory()) {
+            throw new UncheckedIOException(new IOException("Can't create " + states));
+        }
+        File legacy = new File(new File(dir, id), STATE);
+        if (legacy.exists()) {
+            try {
+                Files.move(legacy.toPath(), stepFile(id, 0).toPath(), StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+    }
+
+    private static void delete(File file) {
+        if (!file.delete() && file.exists()) {
+            throw new UncheckedIOException(new IOException("Can't delete " + file));
+        }
     }
 
     /** Marks the game ended, so it's no longer the active game and Companion doesn't resume it. */
@@ -87,13 +202,69 @@ public class CompanionStore {
         return game.renameTo(aside) ? aside : game;
     }
 
-    /** Adds a line to the game's log. A log that can't be written doesn't stop the game. */
-    public void appendLog(String id, String line) {
+    /**
+     * Adds {@code entry} to the game's log, numbered after the last entry, and returns it as written. A log that can't
+     * be written doesn't stop the game: the entry is returned, unwritten. If a crash cut the last line short, the new
+     * entry starts on a line of its own, so only the cut line is lost.
+     */
+    public synchronized CompanionLogEntry appendLog(String id, CompanionLogEntry entry) {
         File log = new File(new File(dir, id), LOG);
-        try (FileOutputStream out = new FileOutputStream(log, true)) {
-            out.write((line.replace('\n', ' ') + "\n").getBytes(StandardCharsets.UTF_8));
-        } catch (IOException e) {
+        CompanionLogEntry numbered = entry;
+        try {
+            Long last = lastSeq.get(id);
+            numbered = entry.withSeq((last != null ? last : lastSeq(id)) + 1);
+            String line = numbered.toLine() + "\n";
+            if (endsCutShort(log)) {
+                line = "\n" + line;
+            }
+            try (FileOutputStream out = new FileOutputStream(log, true)) {
+                out.write(line.getBytes(StandardCharsets.UTF_8));
+            }
+            lastSeq.put(id, numbered.seq());
+        } catch (IOException | UncheckedIOException e) {
             System.err.println("Can't write companion log " + log + ": " + e);
+        }
+        return numbered;
+    }
+
+    /**
+     * The game's log, oldest first. Lines from before entries read as notices; a line that doesn't read, such as the
+     * last one cut short by a crash, is skipped. Empty when there is no log yet.
+     */
+    public List<CompanionLogEntry> loadLog(String id) {
+        File log = new File(new File(dir, id), LOG);
+        List<CompanionLogEntry> entries = new ArrayList<>();
+        if (!log.exists()) {
+            return entries;
+        }
+        long seq = 0;
+        for (String line : read(log).split("\n")) {
+            if (line.isBlank()) {
+                continue;
+            }
+            try {
+                CompanionLogEntry entry = CompanionLogEntry.fromLine(line, seq + 1);
+                entries.add(entry);
+                seq = Math.max(seq, entry.seq());
+            } catch (RuntimeException e) {
+                System.err.println("Skipping a companion log line that doesn't read, in " + log + ": " + e);
+            }
+        }
+        return entries;
+    }
+
+    private long lastSeq(String id) {
+        List<CompanionLogEntry> log = loadLog(id);
+        return log.stream().mapToLong(CompanionLogEntry::seq).max().orElse(0);
+    }
+
+    private static boolean endsCutShort(File log) throws IOException {
+        if (log.length() == 0) {
+            return false;
+        }
+        try (RandomAccessFile file = new RandomAccessFile(log, "r")) {
+            file.seek(file.length() - 1);
+            return file.read() != '\n';
         }
     }
 
@@ -130,8 +301,10 @@ public class CompanionStore {
     }
 
     private static long lastPlayed(File game) {
+        // a step written, or discarded by an undo, changes the folder's time
+        File states = new File(game, STATES);
         File state = new File(game, STATE);
-        return state.exists() ? state.lastModified() : game.lastModified();
+        return states.isDirectory() ? states.lastModified() : state.exists() ? state.lastModified() : game.lastModified();
     }
 
     private static Saved load(File game) {
