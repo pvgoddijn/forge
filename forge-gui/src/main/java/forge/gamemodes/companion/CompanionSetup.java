@@ -9,7 +9,7 @@ import java.util.List;
  * Who sits at the table, in seat order, and how the game starts. The first seat takes the first turn.
  *
  * @param seats       2 to 6 players in seat order; exactly one is Me
- * @param life        starting life for everyone
+ * @param life        starting life for everyone, at least 1
  * @param handSize    unknown cards each player starts with in hand
  * @param librarySize unknown cards each library starts with, for the engine to draw from
  * @param engineCombat whether combat is declared through the engine, so its damage and triggers resolve by the
@@ -33,10 +33,17 @@ public record CompanionSetup(List<Seat> seats, int life, int handSize, int libra
         if (seats.stream().filter(Seat::me).count() != 1) {
             throw new IllegalArgumentException("Exactly one player must be Me");
         }
+        if (life < 1) {
+            throw new IllegalArgumentException("Starting life must be at least 1");
+        }
     }
 
     public static CompanionSetup withDefaults(List<Seat> seats) {
         return new CompanionSetup(seats, DEFAULT_LIFE, DEFAULT_HAND, DEFAULT_LIBRARY, false);
+    }
+
+    public CompanionSetup withLife(int life) {
+        return new CompanionSetup(seats, life, handSize, librarySize, engineCombat);
     }
 
     public CompanionSetup withEngineCombat(boolean on) {

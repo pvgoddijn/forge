@@ -1,5 +1,6 @@
 package forge.screens.match;
 
+import forge.game.player.PlayerView;
 import forge.menu.FDropDownMenu;
 
 /**
@@ -35,5 +36,22 @@ public interface MatchExtension {
 
     /** Runs the main action, on the UI thread. */
     default void runPromptAction() {
+    }
+
+    /**
+     * Handles a tap on a player's life total, on the UI thread.
+     *
+     * @return true if the mode handled the tap, so the usual player selection is skipped
+     */
+    default boolean tapLife(PlayerView player) {
+        return false;
+    }
+
+    /**
+     * Whether the match screen closes as soon as the game is over, without the results screen. Asked on the UI thread
+     * when the game is over; a mode that ends the game itself to leave the match says yes.
+     */
+    default boolean leavesWhenGameOver() {
+        return false;
     }
 }

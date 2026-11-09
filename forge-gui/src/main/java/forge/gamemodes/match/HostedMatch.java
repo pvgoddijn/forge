@@ -388,6 +388,9 @@ public class HostedMatch {
 
         game = null;
 
+        // seats sharing one device share its GUI, which ends the game once: a second call on the mobile GUI would
+        // also close the screen behind the match
+        final Set<IGuiGame> endedGuis = Collections.newSetFromMap(new IdentityHashMap<>());
         for (final PlayerControllerHuman humanController : humanControllers) {
             if (humanController.getGui() instanceof forge.gamemodes.net.ProtocolGuiGame ngg) {
                 GameEventForwarder fwd = ngg.getForwarder();
@@ -402,7 +405,8 @@ public class HostedMatch {
             humanController.getYieldController().clearAutoYields();
 
             //conceded
-            if (humanCount > 0 || !GuiBase.getInterface().isLibgdxPort() || !isMatchOver) {
+            if ((humanCount > 0 || !GuiBase.getInterface().isLibgdxPort() || !isMatchOver)
+                    && endedGuis.add(humanController.getGui())) {
                 humanController.getGui().afterGameEnd();
             }
             humanController.getGui().updateDayTime(null);

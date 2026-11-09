@@ -31,6 +31,22 @@ public class CompanionGameState extends GameState {
     /** Applies this state right away. Call on the game thread, before the main loop or between priority prompts. */
     public void applyNow(Game game) {
         applyGameOnThread(game);
+        for (Player player : game.getPlayers()) {
+            clearLifeThisTurn(player);
+        }
+    }
+
+    /**
+     * Forge sets each player's life from a state by a gain or a loss, which counts toward this turn's tallies: a
+     * table starting at 40 would have gained 20 already, and "the first time you gain life each turn" wouldn't fire.
+     * A save doesn't hold the tallies, so zero is the honest value. On a resume mid-turn that loses what was really
+     * gained or lost earlier in that turn.
+     */
+    private static void clearLifeThisTurn(Player player) {
+        player.setLifeGainedThisTurn(0);
+        player.setLifeGainedTimesThisTurn(0);
+        player.setLifeLostThisTurn(0);
+        player.addLifeGainedByTeamThisTurn(-player.getLifeGainedByTeamThisTurn());
     }
 
     @Override

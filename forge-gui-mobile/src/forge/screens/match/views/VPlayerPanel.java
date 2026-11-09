@@ -28,6 +28,7 @@ import forge.menu.FPopupMenu;
 import forge.localinstance.properties.ForgePreferences.FPref;
 import forge.model.FModel;
 import forge.screens.match.MatchController;
+import forge.screens.match.MatchExtension;
 import forge.screens.match.MatchScreen;
 import forge.toolbox.FCardPanel;
 import forge.toolbox.FContainer;
@@ -1669,6 +1670,10 @@ public class VPlayerPanel extends FContainer {
 
         @Override
         public boolean tap(float x, float y, int count) {
+            MatchExtension extension = MatchController.getExtension();
+            if (extension != null && extension.tapLife(player)) {
+                return true;
+            }
             MatchController.instance.getGameController().selectPlayer(player, null); //treat tapping on life the same as tapping on the avatar
             return true;
         }

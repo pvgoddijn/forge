@@ -224,9 +224,8 @@ public class CardSearchDialog extends FDialog {
         boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
         TableEditor.Mode mode = PUT.equals(cbMode.getSelectedItem()) ? TableEditor.Mode.PUT_ONTO_BATTLEFIELD : TableEditor.Mode.CAST;
         hide();
-        // by name, which setup keeps unique: a player's place in the game's list changes if anyone leaves the game
-        table.submit(game -> TableEditor.addCard(game.getPlayers().stream()
-                .filter(p -> p.getName().equals(player)).findFirst().orElseThrow(), name, fromHand, mode));
+        // an op the table can park: the active player's sorcery waits for its main phase (AC-42)
+        table.submit(new CompanionTable.AddCard(player, name, fromHand, mode));
     }
 
     @Override
