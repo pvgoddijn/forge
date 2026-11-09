@@ -17,13 +17,16 @@ Cards land in the right zone by default and can be moved anywhere. Hand counts a
 - **AC-22** THE SYSTEM SHALL let the operator move any card between any two zones of any players (for example when control changes), and change any player's hidden hand count by ±1 (for example draw or discard).
 - **AC-23** WHEN viewing the game THE SYSTEM SHALL show, for every player at once: name, life, the hidden hand count, the known cards in hand, and the Battlefield. Graveyard, Exile and Command SHALL be reachable with one tap. (Life appears in slice 3.)
 
-## Build
-- **Domain:** add `CardMoved` and `HandCountChanged` actions. Put the rules in the replay in `CompanionGame`. Zones: Hand, Battlefield, Graveyard, Exile, Command.
-- **Screens:** from/to zone choice in the add dialog, a move menu on tapping a card, ±1 hand controls, and zone views on `CompanionGameScreen`.
-- Use the card's type from `CardDb` for the AC-18 default.
+## Build (redone on the rules engine, 2026-11-03)
+The engine holds the zones, so most of this slice is operator ops on `TableEditor` and the placeholder rules (`plan.md` decisions 3 and 4).
+- `TableEditor`: `moveTo(card, player, zone)` for any card to any zone of any player; `handPlusOne`/`handMinusOne` (add or remove a placeholder, never below 0). A card added "from Hand" removes a placeholder unless that player's hand holds the real card (AC-19, AC-20). A move to Hand makes the real card a known card (AC-21).
+- Add dialog: from/to zones with the AC-18 defaults from the card's type, plus "cast" or "put onto the battlefield".
+- Tapping a card on `MatchScreen` during the operator's prompt offers "Move…". Tapping an avatar offers hand ±1, using Forge's own chooser.
+- `CompanionPlayerController`: when an effect would reveal, discard, mill or search a placeholder, ask the operator to name the card. If they skip, it stays unknown.
+- Seat name in prompt titles (AC-35), if slice 0 shows the existing titles confuse.
 
 ## Tests (CI)
-Replay rules: default destination per card type; hidden count reduced and clamped at 0; a known card leaves without changing the count; a move to Hand creates a known card; a move between players.
+Through the real main loop: default destination per card type; hidden count down by one and clamped at 0; a known card leaves without changing the count; a move to Hand creates a known card; a move between players; a discard of a placeholder asks for a name.
 
 ## Oracle
 On the dev build with 3 players:
@@ -33,6 +36,7 @@ On the dev build with 3 players:
 4. With a hand count of 0, add a card: count stays 0.
 5. Move a card to player 2's Battlefield: it shows there.
 6. Restart: everything is the same.
+6a. Cast Mind Rot at player 2 (two hidden cards): the operator is asked to name the two discards, or skip.
 7. 📱 With 6 players, all AC-23 information fits or is one tap away.
 
 ## Out of scope

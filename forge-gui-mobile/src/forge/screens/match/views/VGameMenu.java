@@ -27,6 +27,9 @@ public class VGameMenu extends FDropDownMenu {
                     forge.gamemodes.net.client.ReplayPlayer.stopFor(MatchController.instance, true)));
             return;
         }
+        if (MatchController.getGameMenuExtension() != null) {
+            MatchController.getGameMenuExtension().accept(this);
+        }
         addItem(new FMenuItem(MatchController.instance.getConcedeCaption(), FSkinImage.CONCEDE, e ->
                 ThreadUtil.invokeInGameThread(MatchController.instance::concede)
         ));

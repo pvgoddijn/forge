@@ -875,7 +875,30 @@ public class MatchController extends NetworkGuiGame {
 
     public static HostedMatch hostMatch() {
         hostedMatch = new HostedMatch();
+        gameMenuExtension = null; // belongs to one match, so a new match starts without it
         return hostedMatch;
+    }
+
+    /** Extra items a mode adds to the game menu for the current match, or null. */
+    private static java.util.function.Consumer<forge.menu.FDropDownMenu> gameMenuExtension;
+
+    /**
+     * True while one person answers for every local player, as a scorekeeper does, rather than players sharing a
+     * device: only such a match has extra menu items.
+     */
+    public static boolean isSingleOperator() {
+        return getGameMenuExtension() != null;
+    }
+
+    /** The current match's extra menu items, or null, as when another game, such as a network game, is shown. */
+    public static java.util.function.Consumer<forge.menu.FDropDownMenu> getGameMenuExtension() {
+        return gameMenuExtension != null && hostedMatch.getGameView() == instance.getGameView()
+                ? gameMenuExtension : null;
+    }
+
+    /** Call after {@link #hostMatch()}: the current match's game menu gets these items first. */
+    public static void setGameMenuExtension(java.util.function.Consumer<forge.menu.FDropDownMenu> extension) {
+        gameMenuExtension = extension;
     }
 
     public static HostedMatch getHostedMatch() {
