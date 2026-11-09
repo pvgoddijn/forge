@@ -28,8 +28,8 @@ Plan 2.1 (`CompanionStore`, `GameClientHandler`), 3.2 (epoch), 3.3 (catch-up rul
 - **`CompanionShareHost`:** after `welcome`, wait for `want`; send the wanted steps **first**, then the entries after `have.seq` (02), then live. Steps first means a phone cut off halfway never holds entries that point at a step it doesn't have.
 - **`CompanionClient`:**
   - **Catch-up rule** (plan 3.3): after `welcome`, `discardAfter(hostLatest)` for steps past the host's latest; compare the step index with `stepHashes`, and send `want` for steps it lacks **and steps whose hash differs**. (Cutting back the log with `truncateLogAfter` only happens after a takeover: M3.)
-  - Each `step` → `writeStep`, checked against its sha256. An `UNDO` entry applied in order runs `discardAfter(entry.step)`, as on the host.
-  - On `epoch` (after every full view send): `resetTracker()`.
+  - Each `step` → `writeStep`, checked against its sha256. An `UNDO` entry runs `discardAfter(entry.step)` before it's appended, as on the host, **only when its seq is after the welcome's latest seq**: an older `UNDO` (in the catch-up) is already reflected in the welcome's step index, and applying it would delete steps the host saved after it.
+  - On `epoch` (after every full view send): `resetTracker()`, which runs once that full view is applied (see Results).
 - Still: the following store never calls `loadState` (02).
 
 ### Protocol involved
@@ -67,3 +67,18 @@ With `H=/tmp/companion-host/user/companion/<id>` and `J=/tmp/companion-join/user
 6. Host, a new unshared game: v1 behaviour (AC-114).
 
 **[Phone]** 1. Two phones (as slice 01): play 10+ actions with undos, then end. OK: the joined phone's past game shows the same final boards as the host's.
+
+## Results
+Built in two chunks on `feature/companion-multi-03-steps`: A (store, journal, messages, `GameClientHandler.resetTracker`) and B (protocol wiring and the end-to-end tests).
+
+**Protocol as built.** The host sends `welcome`, then waits for `want` (`CompanionShareHost.WANT_SECONDS`, 15 s, as the admission; the phone's own wait for the game after the welcome is 30 s) and closes a phone that doesn't send one. On `want`, on the phone's event loop: the wanted steps, read from disk then (`Subscription.steps`, not under the journal's lock), then the drain (catch-up and anything live so far), then the attach. A drain sends nothing until the steps went, so a live item between `welcome` and `want` waits behind them. The phone computes `want` on its copy thread after making the folder: `discardAfter(hostLatest)`, then every step of the index it lacks or holds with another hash; an empty `want` when it holds them all. A phone whose welcome fails (a bad game id) sends no `want` and is let go by the host's timeout.
+
+**`resetTracker` timing (check first 4).** The host sends `epoch` right after a full state (`setGameView`) on the same connection. On the phone the IO thread reads them in that order: the protocol handler registers the full state's cards in the tracker and queues its apply on the GUI thread, then `epoch` reaches the data handler, which queues the reset on the GUI thread behind it. The reset drops every card view and registers again those of the board the GUI now shows (the full state's), in one GUI-thread task, so the tracker is never empty between the two and the board is never shown against an empty tracker. A later delta's args are decoded only once the GUI thread has run everything queued before it (`GameClientHandler.decodeArgs`), so they resolve against the reset tracker. Not covered: the IO thread's frame decoder also reads the tracker, as it did before this slice, unsynchronised with the GUI thread.
+
+**Tests** (`CompanionShareEndToEndTest`, real localhost sockets):
+- `aPhoneJoiningAfterUndosGetsAnIdenticalCopy` (was `...IdenticalLog`): a host with an undo in its log; the joined phone's log and `states/` are byte-identical (and `stepHashes` equal), a fresh phone wants every step, and the steps are written before the first entries. The catch-up's old `UNDO` doesn't cut the later steps. Then a live add, a live undo and an add after it: identical after each.
+- `aPhoneJoiningAgainWantsOnlyTheStepsItLacksOrHoldsWrong`: rejoin holding everything sends an empty `want`; after two host actions it wants exactly those two steps; after `states/1.txt` is edited on the phone it wants step 1, and the copy is identical again.
+- `aClientJoinedMidGameFollowsTheHostAndChangesNothing`: after an undo's epoch, the phone's tracker knows every new card id and none of the old ones.
+- Mutation checks, each caught by the test meant for it: applying every `UNDO` regardless of seq; sending entries before steps; wanting only missing steps (ignoring hashes); no `resetTracker` on epoch.
+
+**For the owner to run by hand:** the Oracle steps above (two instances, and the two-phone run), and check first 3, the big join: time a fresh join of a game with a few hundred steps and note the bytes (all wanted steps are read and sent in one go on the phone's event loop, and count towards the phone's 30 s wait for the game). Check first 2 (a v1 game with only `state.txt` sends it as step 0) is covered by chunk A's store tests, not end to end.

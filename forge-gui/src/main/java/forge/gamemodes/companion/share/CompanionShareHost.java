@@ -58,10 +58,13 @@ import java.util.concurrent.atomic.AtomicInteger;
  * game or the UI: the attach and detach go to the game loop through {@link CompanionTable#runSystem}.
  *
  * <p>The data stream (plan 3.3): while shared, the table's store feeds a {@link ShareJournal}. A phone admitted
- * {@link ShareJournal#subscribe subscribes} with the {@code have} of its hello and gets, in this order, the welcome
- * (setup and latest seq), its catch-up, then the attach, and then each item the store writes, live, in write order.
- * Each phone's data is sent from its connection's event loop: the store's wakeup only schedules a drain there, so the
- * game thread never waits for a phone.
+ * {@link ShareJournal#subscribe subscribes} with the {@code have} of its hello and gets the welcome (setup, latest seq,
+ * latest step and step index). It answers {@link ShareMessages.Want} with the steps it lacks, and gets, in this order,
+ * those steps, its catch-up of entries, then the attach, and then each item the store writes, live, in write order.
+ * Steps first, so a phone cut off part way never holds entries that point at a step it doesn't have. A phone that
+ * doesn't answer within {@link #WANT_SECONDS} is let go. Each phone's data is sent from its connection's event loop:
+ * the store's wakeup only schedules a drain there, and a drain sends nothing before the wanted steps went, so the game
+ * thread never waits for a phone and the order holds.
  */
 public final class CompanionShareHost implements IHasForgeLog {
     /** The Companion port, one above net play's 36743; the next free one up to {@link #LAST_PORT} if it's taken. */
@@ -71,6 +74,11 @@ public final class CompanionShareHost implements IHasForgeLog {
     static final int READER_IDLE_SECONDS = 15;
     /** A connection that hasn't been admitted by then is closed. */
     static final int ADMISSION_SECONDS = 15;
+    /**
+     * A phone welcomed that hasn't said which steps it wants by then is closed. As long as the admission: well within
+     * the phone's own wait for the game after the welcome ({@code CompanionClient.ATTACH_SECONDS}).
+     */
+    static final int WANT_SECONDS = ADMISSION_SECONDS;
     private static final int MAX_FRAME_BYTES = 9766 * 1024; // as net play's
     /** How long {@link #stop} waits for what the phones are still owed (such as the end) to be sent. */
     static final int STOP_FLUSH_MILLIS = 1000;
@@ -247,6 +255,10 @@ public final class CompanionShareHost implements IHasForgeLog {
         /** This phone's place in the journal, once admitted; closed when the connection closes. */
         private volatile ShareJournal.Subscription data;
         private volatile ChannelHandlerContext context;
+        /** From the welcome to the phone's want. The event loop only. */
+        private boolean awaitingWant;
+        /** Whether the wanted steps went: nothing of the journal is drained before. The event loop only. */
+        private boolean stepsSent;
 
         Admission(NetworkByteTracker bytes) {
             this.bytes = bytes;
@@ -278,6 +290,8 @@ public final class CompanionShareHost implements IHasForgeLog {
                 loggedIn = true;
             } else if (msg instanceof ShareMessages.Hello hello) {
                 admit(ctx, hello);
+            } else if (msg instanceof ShareMessages.Want want) {
+                sendWanted(ctx, want);
             } else if (peer != null && (msg instanceof GuiGameEvent || msg instanceof ReplyEvent)) {
                 super.channelRead(ctx, msg); // the phone's screen calls and replies
             } else {
@@ -316,8 +330,36 @@ public final class CompanionShareHost implements IHasForgeLog {
             admitted.add(this);
             client.send(new ShareMessages.Welcome(table.id(), subscription.setup(), subscription.latestSeq(),
                     subscription.latestStep(), subscription.stepIndex()));
-            drain(); // the catch-up, before the view: on this event loop, so ahead of any live item's drain
-            joined.attach();
+            awaitingWant = true;
+            ctx.executor().schedule(() -> {
+                if (awaitingWant && ctx.channel().isActive()) {
+                    netLog.warn("[Companion] Closing {}: no want within {} s of the welcome",
+                            ctx.channel().remoteAddress(), WANT_SECONDS);
+                    ctx.close();
+                }
+            }, WANT_SECONDS, TimeUnit.SECONDS);
+        }
+
+        /**
+         * The phone's want: the steps it asked for, read from the store now, then its catch-up, then the attach. All
+         * on this event loop, so ahead of any live item's drain; and not under the journal's lock, as the steps are
+         * read from disk ({@link ShareJournal.Subscription#steps}).
+         */
+        private void sendWanted(ChannelHandlerContext ctx, ShareMessages.Want want) {
+            ShareJournal.Subscription subscription = data;
+            if (!awaitingWant || subscription == null) {
+                netLog.info("[Companion] Dropping {} from {}: not waiting for one", want,
+                        ctx.channel().remoteAddress());
+                return;
+            }
+            awaitingWant = false;
+            netLog.info("[Companion] {} from {}", want, client.getUsername());
+            for (ShareMessages.Step step : subscription.steps(want.steps())) {
+                client.send(step);
+            }
+            stepsSent = true;
+            drain(); // the catch-up, before the view
+            peer.attach();
             netLog.info("[Companion] {} joined {} from {}", client.getUsername(), table.id(),
                     ctx.channel().remoteAddress());
         }
@@ -349,10 +391,13 @@ public final class CompanionShareHost implements IHasForgeLog {
             return ctx.channel().closeFuture();
         }
 
-        /** Sends this phone what its subscription has queued, oldest first. The connection's event loop. */
+        /**
+         * Sends this phone what its subscription has queued, oldest first; nothing before its wanted steps went. The
+         * connection's event loop.
+         */
         private void drain() {
             ShareJournal.Subscription subscription = data;
-            if (subscription == null) {
+            if (subscription == null || !stepsSent) {
                 return;
             }
             for (NetEvent message : subscription.drain()) {

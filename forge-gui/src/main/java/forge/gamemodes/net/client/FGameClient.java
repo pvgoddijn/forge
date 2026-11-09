@@ -174,6 +174,18 @@ public class FGameClient implements IToServer, IHasForgeLog {
         return null;
     }
 
+    /**
+     * Drops the stale card views of the connection {@code channel}'s tracker, once the full state just read from it is
+     * applied (see {@code GameClientHandler.resetTracker}): for a mode that knows when the host renumbered the board.
+     * On the channel's thread, right after that full state was read.
+     */
+    protected final void resetTracker(final Channel channel) {
+        final GameClientHandler handler = channel.pipeline().get(GameClientHandler.class);
+        if (handler != null) {
+            handler.resetTracker();
+        }
+    }
+
     /** How long the client waits for anything from the server before it counts the connection as lost. */
     protected int readerIdleSeconds() {
         return READER_IDLE_SECONDS;

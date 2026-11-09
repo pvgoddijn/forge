@@ -14,6 +14,9 @@ import forge.gamemodes.companion.share.ShareState;
 import forge.gamemodes.match.GameLobby;
 import forge.gamemodes.net.ChatMessage;
 import forge.gamemodes.net.client.ClientGameLobby;
+import forge.gui.FThreads;
+import forge.trackable.TrackableTypes;
+import forge.trackable.Tracker;
 import forge.interfaces.IDeviceAdapter;
 import forge.interfaces.IGameController;
 import forge.interfaces.ILobbyListener;
@@ -95,6 +98,34 @@ public class CompanionShareEndToEndTest extends AITest {
         return Arrays.equals(logBytes(host, game), logBytes(phone, game));
     }
 
+    /** Every file of the game's {@code states/}, by name, with its bytes as text (empty for no folder). */
+    private static Map<String, String> stateFiles(CompanionStore store, String game) {
+        Map<String, String> files = new TreeMap<>();
+        File[] all = new File(store.gameDir(game), "states").listFiles();
+        if (all == null) {
+            return files;
+        }
+        for (File f : all) {
+            try {
+                files.put(f.getName(), Arrays.toString(Files.readAllBytes(f.toPath())));
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+        return files;
+    }
+
+    /** The phone's steps are the host's: the same step numbers and hashes, and {@code states/} byte for byte. */
+    private static boolean sameSteps(CompanionStore host, CompanionStore phone, String game) {
+        return host.stepHashes(game).equals(phone.stepHashes(game))
+                && stateFiles(host, game).equals(stateFiles(phone, game));
+    }
+
+    /** The phone's copy is the host's: its log, and its steps. */
+    private static boolean sameCopy(CompanionStore host, CompanionStore phone, String game) {
+        return sameLog(host, phone, game) && sameSteps(host, phone, game);
+    }
+
     /** A table with a running three-player game, its start saved, at its first prompt. */
     private CompanionTable startedTable(Game game) {
         return startedTable(game, "t");
@@ -173,6 +204,33 @@ public class CompanionShareEndToEndTest extends AITest {
             }
         }
         return board;
+    }
+
+    /** The ids of every card in every player's zones. */
+    private static Set<Integer> cardIds(GameView view) {
+        Set<Integer> ids = new TreeSet<>();
+        for (PlayerView player : view.getPlayers()) {
+            for (ZoneType zone : ZoneType.values()) {
+                if (player.getCards(zone) != null) {
+                    player.getCards(zone).forEach(c -> ids.add(c.getId()));
+                }
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * Whether the joined view's tracker knows every card of {@code current} and none of {@code stale}: read on the GUI
+     * thread, which applies the view and resets the tracker.
+     */
+    private static boolean trackerHolds(HeadlessNetworkGuiGame view, Set<Integer> current, Set<Integer> stale) {
+        AtomicBoolean holds = new AtomicBoolean();
+        FThreads.invokeInEdtAndWait(() -> {
+            Tracker tracker = view.getGameView().getTracker();
+            holds.set(current.stream().allMatch(id -> tracker.hasObj(TrackableTypes.CardViewType, id))
+                    && stale.stream().noneMatch(id -> tracker.hasObj(TrackableTypes.CardViewType, id)));
+        });
+        return holds.get();
     }
 
     private static boolean onBattlefield(GameView view, String name) {
@@ -288,6 +346,7 @@ public class CompanionShareEndToEndTest extends AITest {
 
             // the host undoes, which renumbers every card: the client gets the whole board again, and the epoch
             Map<String, String> beforeUndo = board(game.getView());
+            Set<Integer> idsBeforeUndo = cardIds(game.getView());
             table.undo();
             assertTrue(table.runPending(game));
             flushViews(table);
@@ -297,6 +356,12 @@ public class CompanionShareEndToEndTest extends AITest {
             await(() -> board(view.getGameView()).equals(board(game.getView())), () -> { },
                     "the joined board is the host's after the undo");
             assertFalse(onBattlefield(view.getGameView(), "Llanowar Elves"));
+            // the epoch reset the tracker once the undo's view was applied: it knows the new ids, and none of the old
+            Set<Integer> idsAfterUndo = cardIds(game.getView());
+            Set<Integer> stale = new TreeSet<>(idsBeforeUndo);
+            stale.removeAll(idsAfterUndo);
+            assertFalse(stale.isEmpty(), "the undo left old ids behind");
+            await(() -> trackerHolds(view, idsAfterUndo, stale), () -> { }, "the tracker holding only the new ids");
 
             // and the deltas after it resolve against the new ids
             act(table, game, new CompanionTable.AddCard(ann.getName(), "Llanowar Elves", false,
@@ -339,9 +404,13 @@ public class CompanionShareEndToEndTest extends AITest {
         }
     }
 
-    /** AC-105, the log: a phone joining after undos gets the host's log byte for byte, each entry live, the end. */
+    /**
+     * AC-105: a phone joining after undos gets the host's log and steps byte for byte, the steps first; then each entry
+     * and step live, a live undo cutting its steps back as the host's; and the end. The catch-up has an undo older than
+     * the welcome, which mustn't cut the steps saved after it (they're in the welcome's step index).
+     */
     @Test(timeOut = 120_000)
-    public void aPhoneJoiningAfterUndosGetsAnIdenticalLog() throws Exception {
+    public void aPhoneJoiningAfterUndosGetsAnIdenticalCopy() throws Exception {
         Game game = initAndCreateThreePlayerGame();
         CompanionTable table = startedTable(game);
         CompanionStore hostStore = table.store();
@@ -352,10 +421,13 @@ public class CompanionShareEndToEndTest extends AITest {
         addCard(table, game, "Mountain");
         assertTrue(hostStore.loadLog("t").stream().anyMatch(e -> e.kind() == CompanionLogEntry.Kind.UNDO),
                 "the host's log has an undo in it");
+        assertEquals(hostStore.latestStep("t"), 3, "start, bears, (elves undone) forest, mountain");
 
         CompanionShareHost host = new CompanionShareHost(table);
         CompanionStore phone = tempStore();
         List<String> ended = new CopyOnWriteArrayList<>();
+        List<String> written = new CopyOnWriteArrayList<>();
+        List<int[]> wants = new CopyOnWriteArrayList<>();
         CompanionClient client = null;
         try {
             host.start();
@@ -367,12 +439,32 @@ public class CompanionShareEndToEndTest extends AITest {
                 public void ended(String game) {
                     ended.add(game);
                 }
+
+                @Override
+                public void wanted(String game, int[] steps) {
+                    wants.add(steps);
+                }
+
+                @Override
+                public void stepWritten(String game, int n) {
+                    written.add("step " + n);
+                }
+
+                @Override
+                public void written(String game, long fromSeq, long toSeq) {
+                    written.add("entries");
+                }
             });
             client.connect();
             CompanionClient joined = client;
             await(() -> joined.epoch() >= 1 && view.isOpenViewCalled(), table::runSystemOps, "the attach");
-            await(() -> sameLog(hostStore, phone, "t"), () -> { }, "the phone's log is the host's");
+            await(() -> sameCopy(hostStore, phone, "t"), () -> { }, "the phone's log and steps are the host's");
             assertTrue(logBytes(phone, "t").length > 0, "the phone has the history");
+            assertEquals(phone.latestStep("t"), 3, "the old undo in the catch-up cut none of the later steps");
+            assertEquals(wants.size(), 1);
+            assertEquals(wants.get(0), new int[] { 0, 1, 2, 3 }, "a fresh phone wants every step");
+            assertEquals(written.subList(0, 5), List.of("step 0", "step 1", "step 2", "step 3", "entries"),
+                    "the steps came before the entries");
             assertEquals(phone.gameDir("t").getParentFile().list(), new String[] { "t" },
                     "the phone's only folder has the host's game id");
             ShareState state = ShareState.read(phone, "t").orElseThrow();
@@ -380,18 +472,34 @@ public class CompanionShareEndToEndTest extends AITest {
             assertEquals(state.code(), code, "the host's address, port and token, to join again");
             assertEquals(phone.loadSetup("t"), table.setup(), "the host's setup");
 
-            // an entry after the join comes live
+            // an entry and its step after the join come live
             addCard(table, game, "Island");
             flushViews(table);
             long latest = hostStore.loadLogLines("t").size();
             await(() -> joined.heldSeq() == latest, () -> { }, "the entry after the join");
-            assertTrue(sameLog(hostStore, phone, "t"), "the logs are the same after a live entry");
+            await(() -> sameCopy(hostStore, phone, "t"), () -> { }, "the copies are the same after a live entry");
+            assertEquals(phone.latestStep("t"), 4);
+
+            // a live undo cuts the phone's steps back as the host's, and the next action's step replaces the one undone
+            String undoneStep = phone.stepText("t", 4).orElseThrow();
+            undo(table, game);
+            long afterUndo = hostStore.loadLogLines("t").size();
+            await(() -> joined.heldSeq() == afterUndo, () -> { }, "the live undo");
+            await(() -> sameCopy(hostStore, phone, "t"), () -> { }, "the copies are the same after a live undo");
+            assertEquals(phone.latestStep("t"), 3, "the undone step is gone from the phone");
+            addCard(table, game, "Plains");
+            flushViews(table);
+            long afterAdd = hostStore.loadLogLines("t").size();
+            await(() -> joined.heldSeq() == afterAdd, () -> { }, "the action after the live undo");
+            await(() -> sameCopy(hostStore, phone, "t"), () -> { }, "the copies are the same after the next action");
+            assertEquals(phone.latestStep("t"), 4);
+            assertFalse(phone.stepText("t", 4).orElseThrow().equals(undoneStep), "step 4 is the new action's");
 
             // the host ends the game: the phone's copy is ended too
             hostStore.end("t");
             await(() -> phone.isEnded("t"), () -> { }, "the end on the phone");
             assertEquals(ended, List.of("t"), "the listener heard of the end once it was written");
-            assertTrue(sameLog(hostStore, phone, "t"), "the logs are the same at the end");
+            assertTrue(sameCopy(hostStore, phone, "t"), "the copies are the same at the end");
             assertFalse(phone.loadActive().isPresent(), "an ended copy isn't the phone's active game");
         } finally {
             if (client != null) {
@@ -510,6 +618,74 @@ public class CompanionShareEndToEndTest extends AITest {
             }
             if (again != null) {
                 again.close();
+            }
+            host.stop();
+        }
+    }
+
+    /** Joins {@code phone} again to the game {@code "t"} it follows, and returns the steps its want named. */
+    private static int[] joinAgain(CompanionTable table, CompanionShareHost host, JoinCode code, CompanionStore phone)
+            throws InterruptedException {
+        List<int[]> wants = new CopyOnWriteArrayList<>();
+        CompanionClient again = new CompanionClient("Joiner", new HeadlessNetworkGuiGame(), code, phone);
+        try {
+            again.addCopyListener(new CompanionClient.CopyListener() {
+                @Override
+                public void wanted(String game, int[] steps) {
+                    wants.add(steps);
+                }
+            });
+            again.followAgain("t");
+            again.connect();
+            await(() -> again.epoch() >= 1, table::runSystemOps, "the attach");
+            await(() -> sameCopy(table.store(), phone, "t"), () -> { }, "the copy is the host's again");
+            assertEquals(wants.size(), 1, "one want");
+            return wants.get(0);
+        } finally {
+            again.close();
+            await(() -> host.peerCount() == 0, table::runSystemOps, "the host seeing the phone go");
+        }
+    }
+
+    /**
+     * A phone joining again wants only the steps it lacks: none when it holds them all, the new ones after the host
+     * went on, and a step whose file changed on the phone, which comes again and makes the copy the host's.
+     */
+    @Test(timeOut = 120_000)
+    public void aPhoneJoiningAgainWantsOnlyTheStepsItLacksOrHoldsWrong() throws Exception {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionTable table = startedTable(game);
+        addCard(table, game, "Grizzly Bears");
+        addCard(table, game, "Forest");
+
+        CompanionShareHost host = new CompanionShareHost(table);
+        CompanionStore phone = tempStore();
+        CompanionClient first = null;
+        try {
+            host.start();
+            JoinCode code = host.codeAt((Inet4Address) InetAddress.getByName("127.0.0.1"));
+            first = new CompanionClient("Joiner", new HeadlessNetworkGuiGame(), code, phone);
+            first.connect();
+            CompanionClient joined = first;
+            await(() -> joined.epoch() >= 1, table::runSystemOps, "the first attach");
+            await(() -> sameCopy(table.store(), phone, "t"), () -> { }, "the first copy");
+            first.close();
+            await(() -> host.peerCount() == 0, table::runSystemOps, "the host seeing the phone go");
+
+            assertEquals(joinAgain(table, host, code, phone), new int[0], "it holds every step");
+
+            addCard(table, game, "Island");
+            addCard(table, game, "Mountain");
+            assertEquals(joinAgain(table, host, code, phone), new int[] { 3, 4 }, "only the steps saved since");
+
+            File step1 = new File(new File(phone.gameDir("t"), "states"), "1.txt");
+            Files.writeString(step1.toPath(), Files.readString(step1.toPath()) + "tampered\n");
+            assertFalse(sameSteps(table.store(), phone, "t"));
+            assertEquals(joinAgain(table, host, code, phone), new int[] { 1 }, "the step whose hash differs");
+            assertTrue(sameSteps(table.store(), phone, "t"), "the step came again: the copy is the host's");
+        } finally {
+            if (first != null) {
+                first.close();
             }
             host.stop();
         }

@@ -147,6 +147,14 @@ public class CompanionStore {
         public boolean isGap() {
             return line == null;
         }
+
+        /**
+         * The entry this line holds, read as the log is ({@code CompanionLogEntry.fromLine}); none for a gap. Throws a
+         * runtime exception for a line that starts as JSON but doesn't read.
+         */
+        public Optional<CompanionLogEntry> read() {
+            return isGap() ? Optional.empty() : Optional.of(CompanionLogEntry.fromLine(line, seq));
+        }
     }
 
     private final File dir;

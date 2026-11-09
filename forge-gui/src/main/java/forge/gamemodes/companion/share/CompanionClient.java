@@ -1,5 +1,6 @@
 package forge.gamemodes.companion.share;
 
+import forge.gamemodes.companion.CompanionLogEntry;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionStore.Verbatim;
@@ -21,7 +22,10 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.socket.nio.NioSocketChannel;
 
 import java.nio.channels.SocketChannel;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -50,11 +54,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>The data stream (plan 3.3): the client keeps a copy of the followed game in its own {@link CompanionStore}, in a
  * folder under the host's game id, byte for byte as the host's log. On the welcome it makes the folder and writes
- * {@link ShareState} ({@code share.json}); then each {@link ShareMessages.Entries} and {@link ShareMessages.Gap} is
- * appended ({@link CompanionStore#appendVerbatim}), each {@link ShareMessages.Setup} saved, and
- * {@link ShareMessages.End} marks the game ended. All of it is written on one thread of its own, in the order it came,
- * and nothing else is done with it: the {@link CopyListener}s hear of it once it's on disk. Each hello says which game
- * the phone holds and the seq of its last entry, so the host sends only what's missing.
+ * {@link ShareState} ({@code share.json}), drops its steps past the host's latest, and answers
+ * {@link ShareMessages.Want} with the steps of the welcome's index it lacks or holds with another hash. Each
+ * {@link ShareMessages.Step} is written once its hash checks ({@link CompanionStore#writeStep}); each
+ * {@link ShareMessages.Entries} and {@link ShareMessages.Gap} is appended ({@link CompanionStore#appendVerbatim}), an
+ * {@code UNDO} entry after the welcome's latest seq dropping the steps it took back as the host did; each
+ * {@link ShareMessages.Setup} is saved, and {@link ShareMessages.End} marks the game ended. All of it is written on one
+ * thread of its own, in the order it came, and nothing else is done with it: the {@link CopyListener}s hear of it once
+ * it's on disk. Each hello says which game the phone holds and the seq of its last entry, so the host sends only
+ * what's missing. The copy never calls {@link CompanionStore#loadState}, which would write to it.
+ *
+ * <p>On each {@link ShareMessages.Epoch} (after every full view the host sends) the tracker's stale card views go:
+ * see {@link FGameClient#resetTracker} for why that runs only once the full view is applied.
  */
 public class CompanionClient extends FGameClient {
     static final int HEARTBEAT_SECONDS = 5;
@@ -94,6 +105,12 @@ public class CompanionClient extends FGameClient {
         /** The host ended the game: it's marked ended in the store, and nothing of it follows. */
         default void ended(String game) { }
 
+        /** The copy asked the host for the steps {@code steps} of {@code game} (none: it holds them all). */
+        default void wanted(String game, int[] steps) { }
+
+        /** The host's step {@code n} of {@code game} was written. */
+        default void stepWritten(String game, int n) { }
+
         /** What the host sent couldn't be written: the copy is behind, or doesn't match the host's. */
         default void failed(String game, RuntimeException e) { }
     }
@@ -112,6 +129,11 @@ public class CompanionClient extends FGameClient {
     private volatile String followed;
     /** The seq of the last entry of {@link #followed} written: the hello's {@code have}. */
     private volatile long heldSeq = ShareMessages.Hello.NOTHING;
+    /**
+     * The host's latest seq at this connection's welcome. An {@code UNDO} entry up to it is already reflected in the
+     * welcome's step index, so only those after it drop steps. The copy's thread only.
+     */
+    private long welcomeSeq = Long.MAX_VALUE;
 
     /** Joins with no device adapter (desktop, tests), keeping the copy of the game in {@code store}. */
     public CompanionClient(String username, IGuiGame gui, JoinCode code, CompanionStore store) {
@@ -331,7 +353,8 @@ public class CompanionClient extends FGameClient {
         public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
             if (msg instanceof ShareMessages.Welcome welcome) {
                 netLog.info("[Companion] {}", welcome);
-                copy(() -> follow(welcome)); // sets welcomedTo once the id is checked and the copy made
+                Channel channel = ctx.channel();
+                copy(() -> follow(welcome, channel)); // sets welcomedTo once the id is checked and the copy made
                 if (!viewArrived) {
                     ctx.executor().schedule(() -> {
                         if (!viewArrived && ctx.channel().isActive()) {
@@ -342,6 +365,8 @@ public class CompanionClient extends FGameClient {
                         }
                     }, ATTACH_SECONDS, TimeUnit.SECONDS);
                 }
+            } else if (msg instanceof ShareMessages.Step step) {
+                copy(() -> writeStep(step));
             } else if (msg instanceof ShareMessages.Entries entries) {
                 copy(() -> append(entries.items()));
             } else if (msg instanceof ShareMessages.Gap gap) {
@@ -351,6 +376,9 @@ public class CompanionClient extends FGameClient {
             } else if (msg instanceof ShareMessages.End) {
                 copy(CompanionClient.this::end);
             } else if (msg instanceof ShareMessages.Epoch e) {
+                // the host sends it right after a full view, on the same connection: that view was read just before
+                // on this thread, and its apply is queued on the GUI thread, which the reset waits behind
+                resetTracker(ctx.channel());
                 epoch = e.n();
                 netLog.info("[Companion] {}", e);
             } else {
@@ -382,11 +410,12 @@ public class CompanionClient extends FGameClient {
     }
 
     /**
-     * The welcome: the folder of the host's game, its share state and its setup; then {@link #welcomedTo}. An id that
-     * isn't a {@link CompanionStore#isGameId game id} (it came from the network) is refused before anything is written
-     * or remembered, and the copy listeners hear it {@code failed}. The copy's thread.
+     * The welcome: the folder of the host's game, its share state and its setup; the steps it wants, said on
+     * {@code channel}; then {@link #welcomedTo}. An id that isn't a {@link CompanionStore#isGameId game id} (it came
+     * from the network) is refused before anything is written or remembered, and the copy listeners hear it
+     * {@code failed}; no want is sent, so the host lets the phone go. The copy's thread.
      */
-    private void follow(ShareMessages.Welcome welcome) {
+    private void follow(ShareMessages.Welcome welcome, Channel channel) {
         String game = welcome.game();
         if (!CompanionStore.isGameId(game)) {
             throw new IllegalArgumentException("The host sent a game id that isn't one: " + LogSafe.forDisplay(
@@ -396,7 +425,44 @@ public class CompanionClient extends FGameClient {
         if (!game.equals(followed)) {
             followAgain(game); // a folder from an earlier join keeps its log: count what it holds
         }
+        welcomeSeq = welcome.latestSeq();
+        int[] wanted = wantedSteps(store, game, welcome.latestStep(), welcome.stepIndex());
+        ShareMessages.Want want = new ShareMessages.Want(wanted);
+        netLog.info("[Companion] {} of {}", want, game);
+        channel.writeAndFlush(want);
+        for (CopyListener listener : copyListeners) {
+            listener.wanted(game, wanted.clone());
+        }
         welcomedTo = game;
+    }
+
+    /**
+     * The catch-up rule for steps (plan 3.3): drops the steps of {@code game} past the host's latest
+     * {@code hostLatest}, and returns the steps of the host's {@code index} that {@code store} lacks or holds with
+     * another sha256, lowest first.
+     */
+    static int[] wantedSteps(CompanionStore store, String game, int hostLatest, Map<Integer, String> index) {
+        store.discardAfter(game, hostLatest);
+        Map<Integer, String> held = store.stepHashes(game);
+        List<Integer> wanted = new ArrayList<>();
+        for (Map.Entry<Integer, String> step : new TreeMap<>(index).entrySet()) {
+            if (!step.getValue().equals(held.get(step.getKey()))) {
+                wanted.add(step.getKey());
+            }
+        }
+        return wanted.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** The copy's thread. A step whose text doesn't have its hash isn't written. */
+    private void writeStep(ShareMessages.Step step) {
+        String game = following();
+        if (!step.intact()) {
+            throw new IllegalStateException("Step " + step.n() + " of " + game + " came damaged: not written");
+        }
+        store.writeStep(game, step.n(), step.text());
+        for (CopyListener listener : copyListeners) {
+            listener.stepWritten(game, step.n());
+        }
     }
 
     /**
@@ -410,15 +476,49 @@ public class CompanionClient extends FGameClient {
         store.createWithId(game, setup);
     }
 
-    /** The copy's thread. */
+    /**
+     * The copy's thread. An {@code UNDO} entry after the welcome's latest seq drops the steps after the one it went
+     * back to, before it's appended, as the host did ({@code CompanionTable}: files first, then the log). One up to it
+     * doesn't: the welcome's step index already has what it took back, and steps saved since (applying it would
+     * delete steps the host still holds).
+     */
     private void append(List<Verbatim> items) {
         String game = following();
-        store.appendVerbatim(game, items);
+        int from = 0;
+        for (int i = 0; i < items.size(); i++) {
+            int undoneTo = undoneTo(items.get(i));
+            if (undoneTo != NOT_AN_UNDO) {
+                if (i > from) {
+                    store.appendVerbatim(game, items.subList(from, i));
+                }
+                store.discardAfter(game, undoneTo);
+                from = i;
+            }
+        }
+        store.appendVerbatim(game, items.subList(from, items.size()));
         long to = items.get(items.size() - 1).seq();
         heldSeq = Math.max(heldSeq, to);
         for (CopyListener listener : copyListeners) {
             listener.written(game, items.get(0).seq(), to);
         }
+    }
+
+    private static final int NOT_AN_UNDO = Integer.MIN_VALUE;
+
+    /** The step an {@code UNDO} entry after the welcome went back to, else {@link #NOT_AN_UNDO}. The copy's thread. */
+    private int undoneTo(Verbatim item) {
+        if (item.seq() <= welcomeSeq) {
+            return NOT_AN_UNDO;
+        }
+        CompanionLogEntry entry;
+        try {
+            entry = item.read().orElse(null);
+        } catch (RuntimeException e) {
+            // appended as the host wrote it all the same; an entry that doesn't read takes nothing back
+            netLog.warn("[Companion] Entry {} of {} doesn't read: {}", item.seq(), followed, e.toString());
+            return NOT_AN_UNDO;
+        }
+        return entry != null && entry.kind() == CompanionLogEntry.Kind.UNDO ? entry.step() : NOT_AN_UNDO;
     }
 
     /** The copy's thread. */

@@ -152,15 +152,43 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
     }
 
     /**
-     * Drops the card views the tracker holds. The tracker keeps every {@link CardView} it has been sent, and once the
-     * host renumbers the board (an undo or resume sends a full state with new card ids) those are stale. Call it on
-     * the channel's thread, after the full state the host sent has been applied, so the board is never shown with an
-     * empty tracker: the next full state registers its cards again ({@link #beforeCall}). Nothing to do before the
-     * first game view.
+     * Drops the stale card views the tracker holds. The tracker keeps every {@link CardView} it has been sent, and once
+     * the host renumbers the board (an undo or resume sends a full state with new card ids) the old ones are stale.
+     * Call it on the channel's thread right after a full state ({@code setGameView}) was read from that channel.
+     * <p>
+     * The work is queued on the GUI thread, which applies each call in the order it was read: so it runs after that
+     * full state was applied, and before any later call is (a later delta's args are decoded only once the GUI thread
+     * has applied everything before it, {@link #decodeArgs}). In one step it drops every card view and registers again
+     * those of the board the GUI now shows, which are the full state's, so the tracker is never empty in between and
+     * the next delta resolves its ids against the current board. Nothing to do before the first game view.
      */
     protected void resetTracker() {
-        if (tracker != null) {
-            tracker.removeAll(TrackableTypes.CardViewType);
+        final Tracker current = tracker;
+        if (current == null) {
+            return;
+        }
+        FThreads.invokeInEdtNowOrLater(() -> {
+            final GameView shown = gui.getGameView();
+            if (shown != null) {
+                keepOnlyCardsOf(current, shown);
+            }
+        });
+    }
+
+    /** Drops every card view {@code tracker} holds, then registers those {@code shown} reaches. */
+    static void keepOnlyCardsOf(final Tracker tracker, final GameView shown) {
+        tracker.removeAll(TrackableTypes.CardViewType);
+        shown.updateObjLookup();
+        // the players and stack items stay registered, so updateObjLookup doesn't walk into them: walk their cards
+        if (shown.getPlayers() != null) {
+            for (PlayerView player : shown.getPlayers()) {
+                player.updateObjLookup();
+            }
+        }
+        if (shown.getStack() != null) {
+            for (TrackableObject item : shown.getStack()) {
+                item.updateObjLookup();
+            }
         }
     }
 
