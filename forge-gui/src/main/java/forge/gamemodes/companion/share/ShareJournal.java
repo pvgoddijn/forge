@@ -7,11 +7,17 @@ import forge.gamemodes.companion.CompanionStore.Verbatim;
 import forge.gamemodes.net.event.NetEvent;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
 /**
  * A shared game's data as the host's phones get it (plan 3.3): every seq of its log, each an entry exactly as written
- * or a {@link Verbatim#gap gap} for a seq used up with nothing written, then its latest setup, and whether it ended.
+ * or a {@link Verbatim#gap gap} for a seq used up with nothing written, its steps, then its latest setup, and whether
+ * it ended.
  * The host's store tells it of each write ({@link CompanionStore.Journal}), in write order, on the thread that writes.
  * It is {@link #rebuild rebuilt} from the store when sharing starts: a seq missing on disk becomes a gap, as does a seq
  * a later entry skips over.
@@ -19,6 +25,13 @@ import java.util.List;
  * A phone that joins {@link #subscribe subscribes}: it gets the catch-up from the last seq it holds, then every later
  * item live, in write order, each once, however the threads that write and send interleave. With no subscriber the
  * journal only fills memory, and the store writes exactly what it would unshared (AC-114).
+ * <p>
+ * <b>Steps.</b> The journal holds each step's sha256, not its text. A step saved goes to the subscribers live, as a
+ * {@link ShareMessages.Step} in write order with the entries. Steps discarded send nothing: on the host they're
+ * always followed by the {@code UNDO} entry that discards them ({@code CompanionTable}), and a phone applying that entry
+ * runs {@code discardAfter(entry.step)} as the host did. A phone that joins gets the step index in its
+ * {@link Subscription} (taken with the entries' catch-up), and the steps it wants are read from the store at send time
+ * ({@link Subscription#steps}); see there why that's safe.
  */
 public final class ShareJournal implements CompanionStore.Journal {
     /** The most log lines one {@link ShareMessages.Entries} carries, so a long catch-up goes in bounded frames. */
@@ -28,13 +41,18 @@ public final class ShareJournal implements CompanionStore.Journal {
     private static final Object END = new Object();
 
     private final String gameId;
+    /** Where wanted steps are read from. */
+    private final CompanionStore store;
     /** Seq {@code i + 1} at index {@code i}: an entry, or a gap. Guarded by {@code this}, as is everything below. */
     private final List<Verbatim> log = new ArrayList<>();
     private CompanionSetup setup;
     private boolean ended;
+    /** The sha256 of every step the store holds, by step number. */
+    private final TreeMap<Integer, String> steps = new TreeMap<>();
     private final List<Subscription> subscribers = new ArrayList<>();
 
-    private ShareJournal(String gameId, CompanionSetup setup) {
+    private ShareJournal(CompanionStore store, String gameId, CompanionSetup setup) {
+        this.store = store;
         this.gameId = gameId;
         this.setup = setup;
     }
@@ -49,14 +67,17 @@ public final class ShareJournal implements CompanionStore.Journal {
 
     /**
      * The journal of {@code gameId} as {@code store} has it on disk: its log lines with a gap for each seq missing, its
-     * setup, and its end. Not installed: the store tells it of nothing ({@link #install} does both).
+     * steps' hashes (a game saved before steps has its {@code state.txt} as step 0), its setup, and its end. Not
+     * installed: the store tells it of nothing ({@link #install} does both).
      */
     public static ShareJournal rebuild(CompanionStore store, String gameId) {
-        ShareJournal journal = new ShareJournal(gameId, store.loadSetup(gameId));
+        ShareJournal journal = new ShareJournal(store, gameId, store.loadSetup(gameId));
+        Map<Integer, String> hashes = store.stepHashes(gameId);
         synchronized (journal) {
             for (Verbatim line : store.loadLogLines(gameId)) {
                 journal.add(line);
             }
+            journal.steps.putAll(hashes);
             journal.ended = store.isEnded(gameId);
         }
         return journal;
@@ -77,6 +98,16 @@ public final class ShareJournal implements CompanionStore.Journal {
         return ended;
     }
 
+    /** The latest step the store holds, or {@link CompanionStore#NO_STEP}. */
+    public synchronized int latestStep() {
+        return steps.isEmpty() ? CompanionStore.NO_STEP : steps.lastKey();
+    }
+
+    /** Every step the store holds, with its sha256, lowest first. */
+    public synchronized SortedMap<Integer, String> stepIndex() {
+        return Collections.unmodifiableSortedMap(new TreeMap<>(steps));
+    }
+
     /**
      * What a phone holding the entries up to {@code have} lacks: every entry after it as {@link ShareMessages.Entries}
      * and every gap as {@link ShareMessages.Gap}, in seq order, then {@link ShareMessages.End} if the game has ended.
@@ -93,14 +124,15 @@ public final class ShareJournal implements CompanionStore.Journal {
     /**
      * Starts sending this journal to a phone that holds the entries up to {@code have} ({@link ShareMessages.Hello#have}).
      * Its first {@link Subscription#drain} gives {@link #catchUp(long)} as it was at this moment, and later drains every
-     * item written since, in write order: nothing is lost or given twice between the two.
+     * item written since, in write order: nothing is lost or given twice between the two. Its
+     * {@link Subscription#stepIndex} is the steps at that same moment, and steps saved later come in the drains.
      *
      * @param wakeup run after each item queued for this subscriber (not for the catch-up), on the writing thread, while
      *               the store holds its lock: it must not block, and should only arrange a {@link Subscription#drain}
      *               (on the peer's own thread or executor)
      */
     public synchronized Subscription subscribe(long have, Runnable wakeup) {
-        Subscription subscription = new Subscription(setup, log.size(), wakeup);
+        Subscription subscription = new Subscription(setup, log.size(), latestStep(), stepIndex(), wakeup);
         subscription.queue.addAll(catchUpItems(have));
         subscribers.add(subscription);
         return subscription;
@@ -110,13 +142,18 @@ public final class ShareJournal implements CompanionStore.Journal {
     public final class Subscription implements AutoCloseable {
         private final CompanionSetup setup;
         private final long latestSeq;
+        private final int latestStep;
+        private final SortedMap<Integer, String> stepIndex;
         private final Runnable wakeup;
         /** Entries, gaps, setups and {@link #END}, in write order. Guarded by the journal. */
         private final List<Object> queue = new ArrayList<>();
 
-        private Subscription(CompanionSetup setup, long latestSeq, Runnable wakeup) {
+        private Subscription(CompanionSetup setup, long latestSeq, int latestStep, SortedMap<Integer, String> stepIndex,
+                Runnable wakeup) {
             this.setup = setup;
             this.latestSeq = latestSeq;
+            this.latestStep = latestStep;
+            this.stepIndex = stepIndex;
             this.wakeup = wakeup;
         }
 
@@ -128,6 +165,41 @@ public final class ShareJournal implements CompanionStore.Journal {
         /** The latest seq when this subscription started: the catch-up ends there, for {@link ShareMessages.Welcome}. */
         public long latestSeq() {
             return latestSeq;
+        }
+
+        /** The latest step when this subscription started, for {@link ShareMessages.Welcome}. */
+        public int latestStep() {
+            return latestStep;
+        }
+
+        /** The steps and their sha256 when this subscription started, for {@link ShareMessages.Welcome}. */
+        public SortedMap<Integer, String> stepIndex() {
+            return stepIndex;
+        }
+
+        /**
+         * The steps {@code wanted} as they are on disk now, lowest first, each hashed as read; a step no longer on disk
+         * is left out. Reads the store, so it must not be called while holding the journal's lock (the lock order is
+         * store, then journal).
+         * <p>
+         * A step can be discarded or saved again between the index and this read. That's safe because the change is
+         * also queued for this subscriber, after the catch-up: a step discarded comes with its {@code UNDO} entry, a
+         * step saved again comes as a live {@link ShareMessages.Step}. So a step sent here, or left out, is at worst
+         * stale until the drains that follow, which put the phone where the host is. Each step sent carries the hash of
+         * the text it carries, so the phone's check never refuses a step for having changed on the host.
+         */
+        public List<ShareMessages.Step> steps(int... wanted) {
+            int[] sorted = wanted.clone();
+            Arrays.sort(sorted);
+            List<ShareMessages.Step> found = new ArrayList<>();
+            int last = Integer.MIN_VALUE;
+            for (int n : sorted) {
+                if (n != last && n >= 0) {
+                    store.stepText(gameId, n).ifPresent(text -> found.add(new ShareMessages.Step(n, text)));
+                }
+                last = n;
+            }
+            return found;
         }
 
         /**
@@ -184,6 +256,29 @@ public final class ShareJournal implements CompanionStore.Journal {
                 wake = publish(List.of(changed));
             }
             wake.forEach(Runnable::run);
+        }
+    }
+
+    @Override
+    public void stepSaved(String id, int n, String text) {
+        if (gameId.equals(id)) {
+            ShareMessages.Step step = new ShareMessages.Step(n, text); // hashed before taking the lock
+            List<Runnable> wake;
+            synchronized (this) {
+                steps.put(n, step.sha256());
+                wake = publish(List.of(step));
+            }
+            wake.forEach(Runnable::run);
+        }
+    }
+
+    @Override
+    public void stepsDiscarded(String id, int afterN) {
+        if (gameId.equals(id)) {
+            synchronized (this) {
+                // nothing to send: the UNDO entry that follows carries it
+                steps.tailMap(afterN, false).clear();
+            }
         }
     }
 
@@ -258,6 +353,8 @@ public final class ShareJournal implements CompanionStore.Journal {
                 messages.add(new ShareMessages.Gap(gap.seq()));
             } else if (item instanceof CompanionSetup changed) {
                 messages.add(new ShareMessages.Setup(changed));
+            } else if (item instanceof ShareMessages.Step step) {
+                messages.add(step);
             } else if (item == END) {
                 messages.add(new ShareMessages.End());
             }

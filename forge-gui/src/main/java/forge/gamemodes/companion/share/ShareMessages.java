@@ -7,12 +7,16 @@ import forge.gamemodes.net.event.NetEvent;
 import forge.util.LogSafe;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
 /**
  * Companion's data messages beside the view stream (plan 3.3): a joining phone's {@link Hello}, the host's
- * {@link Welcome}, the view {@link Epoch}, and the shared game's data, as its {@link ShareJournal} has it:
- * {@link Entries}, {@link Gap}, {@link Setup} and {@link End}. They are plain classes in a {@code forge.} package, so
+ * {@link Welcome}, the joined phone's {@link Want}, the view {@link Epoch}, and the shared game's data, as its
+ * {@link ShareJournal} has it: {@link Step}, {@link Entries}, {@link Gap}, {@link Setup} and {@link End}. They are plain classes in a {@code forge.} package, so
  * the wire's class filter takes them, with fixed {@code serialVersionUID}s, as both ends must agree on them. They carry
  * only strings, numbers and arrays of them: not records, whose serialization isn't dependable on Android, so a setup
  * travels as the JSON its {@code setup.json} has ({@link CompanionStore#toJson}).
@@ -66,15 +70,32 @@ public final class ShareMessages {
         private final String game;
         private final String setup;
         private final long latestSeq;
+        private final int latestStep;
+        /** The step index, as two arrays of the same length: step numbers, ascending, and their sha256. */
+        private final int[] steps;
+        private final String[] hashes;
 
         /**
-         * @param latestSeq the seq of the host's latest entry (0 for none) when the phone's catch-up was taken: the
-         *                  catch-up runs up to it, and live entries follow it
+         * @param latestSeq  the seq of the host's latest entry (0 for none) when the phone's catch-up was taken: the
+         *                   catch-up runs up to it, and live entries follow it
+         * @param latestStep the host's latest step then, or {@link CompanionStore#NO_STEP}
+         * @param stepIndex  every step the host held then, with its sha256 ({@link CompanionStore#stepHashes})
          */
-        public Welcome(String game, CompanionSetup setup, long latestSeq) {
+        public Welcome(String game, CompanionSetup setup, long latestSeq, int latestStep,
+                Map<Integer, String> stepIndex) {
             this.game = game;
             this.setup = CompanionStore.toJson(setup);
             this.latestSeq = latestSeq;
+            this.latestStep = latestStep;
+            Map<Integer, String> sorted = new TreeMap<>(stepIndex);
+            steps = new int[sorted.size()];
+            hashes = new String[sorted.size()];
+            int i = 0;
+            for (Map.Entry<Integer, String> step : sorted.entrySet()) {
+                steps[i] = step.getKey();
+                hashes[i] = step.getValue();
+                i++;
+            }
         }
 
         /** The shared game's id: its folder in the host's Companion store. */
@@ -91,9 +112,94 @@ public final class ShareMessages {
             return latestSeq;
         }
 
+        /** The host's latest step when the catch-up was taken, or {@link CompanionStore#NO_STEP}. */
+        public int latestStep() {
+            return latestStep;
+        }
+
+        /**
+         * The steps the host held when the catch-up was taken, each with its sha256, lowest first: the phone wants
+         * those it lacks or holds with another hash.
+         *
+         * @throws IllegalArgumentException when the two arrays a peer sent don't match
+         */
+        public SortedMap<Integer, String> stepIndex() {
+            if (steps == null || hashes == null || steps.length != hashes.length) {
+                throw new IllegalArgumentException("A step index that doesn't read");
+            }
+            SortedMap<Integer, String> index = new TreeMap<>();
+            for (int i = 0; i < steps.length; i++) {
+                index.put(steps[i], hashes[i]);
+            }
+            return index;
+        }
+
         @Override
         public String toString() {
-            return "Companion welcome to " + LogSafe.forLog(game) + ", latest seq " + latestSeq;
+            return "Companion welcome to " + LogSafe.forLog(game) + ", latest seq " + latestSeq + ", latest step "
+                    + latestStep + ", " + (steps == null ? 0 : steps.length) + " steps";
+        }
+    }
+
+    /** Joined phone to host, after {@link Welcome}: the steps it lacks or holds with another hash. */
+    public static final class Want implements NetEvent {
+        private static final long serialVersionUID = 1L;
+
+        private final int[] steps;
+
+        public Want(int... steps) {
+            this.steps = steps.clone();
+        }
+
+        /** The step numbers wanted; empty for none. */
+        public int[] steps() {
+            return steps == null ? new int[0] : steps.clone();
+        }
+
+        @Override
+        public String toString() {
+            return "Companion want steps " + Arrays.toString(steps);
+        }
+    }
+
+    /**
+     * Host to joined phone: the text of step {@code n} exactly as the host saved it, and its sha256, to write with
+     * {@link CompanionStore#writeStep} once the text is checked against it.
+     */
+    public static final class Step implements NetEvent {
+        private static final long serialVersionUID = 1L;
+
+        private final int n;
+        private final String sha256;
+        private final String text;
+
+        /** Step {@code n} with {@code text}, hashed here ({@link CompanionStore#sha256}). */
+        public Step(int n, String text) {
+            this.n = n;
+            this.text = text;
+            this.sha256 = CompanionStore.sha256(text);
+        }
+
+        public int n() {
+            return n;
+        }
+
+        public String sha256() {
+            return sha256;
+        }
+
+        public String text() {
+            return text;
+        }
+
+        /** Whether {@link #text} has the {@link #sha256} the host gave it: false for one damaged on the way. */
+        public boolean intact() {
+            return text != null && sha256 != null && sha256.equals(CompanionStore.sha256(text));
+        }
+
+        @Override
+        public String toString() {
+            return "Companion step " + n + " (" + (text == null ? 0 : text.length()) + " chars)";
         }
     }
 

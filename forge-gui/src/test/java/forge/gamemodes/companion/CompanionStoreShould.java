@@ -603,6 +603,16 @@ public class CompanionStoreShould {
         public void ended(String gameId) {
             events.add("end");
         }
+
+        @Override
+        public void stepSaved(String gameId, int n, String text) {
+            events.add("step " + n + " " + text);
+        }
+
+        @Override
+        public void stepsDiscarded(String gameId, int afterN) {
+            events.add("discard after " + afterN);
+        }
     }
 
     private static CompanionLogEntry notice(String text) {
@@ -621,6 +631,101 @@ public class CompanionStoreShould {
         phone.createWithId(id, CompanionSetup.withDefaults(List.of(
                 new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false))));
         return phone;
+    }
+
+    @Test
+    public void tellTheJournalOfEachStepSavedAndDiscardedInWriteOrder() {
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+
+        store.saveState(id, "s0");
+        store.appendLog(id, notice("one"));
+        store.saveState(id, "s1");
+        store.saveState(id, "s2");
+        store.discardAfter(id, 0);
+        store.appendLog(id, CompanionLogEntry.undo(0, List.of(1), 1, "Ann", "undo"));
+        store.discardAfter(id, 0); // nothing left to discard: not told
+        store.saveState(id, "s1b");
+        store.saveState(id, "s2b");
+        store.saveState(id, 1, "s1c"); // drops step 2 first
+
+        assertThat(journal.events).containsExactly("step 0 s0", "entry 1", "step 1 s1", "step 2 s2",
+                "discard after 0", "entry 2", "step 1 s1b", "step 2 s2b", "discard after 1", "step 1 s1c");
+    }
+
+    @Test
+    public void tellTheJournalWhenASlice0StateIsDiscarded() throws IOException {
+        Files.write(new File(new File(dir, id), "state.txt").toPath(), "turn=3".getBytes(StandardCharsets.UTF_8));
+        Recorder journal = new Recorder();
+        store.setJournal(journal);
+
+        store.discardAfter(id, CompanionStore.NO_STEP);
+
+        assertThat(journal.events).containsExactly("discard after -1");
+        assertThat(store.stepHashes(id)).isEmpty();
+    }
+
+    /** A host's step written into a following store: exactly its text, hashed as its bytes on disk. */
+    @Test
+    public void writeAStepVerbatimAndHashItsBytes() throws Exception {
+        CompanionStore phone = follower();
+        String zero = "turn=1\r\nlife=40 \u00e9\n";
+        String two = "turn=2";
+
+        phone.writeStep(id, 2, two);
+        phone.writeStep(id, 0, zero);
+        phone.writeStep(id, 2, two); // again: replaced, nothing else changes
+
+        File states = new File(phone.gameDir(id), "states");
+        byte[] onDisk = Files.readAllBytes(new File(states, "0.txt").toPath());
+        assertThat(onDisk).isEqualTo(zero.getBytes(StandardCharsets.UTF_8));
+        assertThat(states.list()).containsExactlyInAnyOrder("0.txt", "2.txt");
+        assertThat(phone.stepHashes(id)).containsExactly(
+                java.util.Map.entry(0, hex(java.security.MessageDigest.getInstance("SHA-256").digest(onDisk))),
+                java.util.Map.entry(2, CompanionStore.sha256(two)));
+        assertThat(phone.stepText(id, 0)).contains(zero);
+        assertThat(phone.stepText(id, 1)).isEmpty();
+        assertThat(phone.latestStep(id)).isEqualTo(2);
+    }
+
+    @Test
+    public void refuseAStepForAnIdOrNumberThatCantBe() throws IOException {
+        CompanionStore phone = follower();
+
+        assertThatThrownBy(() -> phone.writeStep("../x", 0, "s")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> phone.writeStep(id, -1, "s")).isInstanceOf(IllegalArgumentException.class);
+        assertThat(phone.stepHashes(id)).isEmpty();
+    }
+
+    /** Proves the "impossible" NoSuchAlgorithmException really is: SHA-256 is there, and gives the standard digest. */
+    @Test
+    public void hashWithSha256() {
+        assertThat(CompanionStore.sha256("abc"))
+                .isEqualTo("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    /** Check first 2: a game saved before steps has a step 0 that hashes and reads the same before and after its move. */
+    @Test
+    public void hashAndReadASlice0StateAsStepZeroBeforeAndAfterItMoves() throws IOException {
+        String text = "turn=3\nlife=20";
+        Files.write(new File(new File(dir, id), "state.txt").toPath(), text.getBytes(StandardCharsets.UTF_8));
+
+        assertThat(store.stepHashes(id)).containsExactly(java.util.Map.entry(0, CompanionStore.sha256(text)));
+        assertThat(store.stepText(id, 0)).contains(text);
+
+        store.saveState(id, "turn=4");
+
+        assertThat(store.stepHashes(id)).containsExactly(java.util.Map.entry(0, CompanionStore.sha256(text)),
+                java.util.Map.entry(1, CompanionStore.sha256("turn=4")));
+        assertThat(store.stepText(id, 0)).contains(text);
+    }
+
+    private static String hex(byte[] bytes) {
+        StringBuilder out = new StringBuilder();
+        for (byte b : bytes) {
+            out.append(String.format("%02x", b));
+        }
+        return out.toString();
     }
 
     @Test

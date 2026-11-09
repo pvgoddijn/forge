@@ -13,7 +13,10 @@ import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.channels.FileChannel;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
@@ -25,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -92,6 +96,20 @@ public class CompanionStore {
 
         /** The game was marked ended. */
         void ended(String id);
+
+        /**
+         * The state {@code text} was saved as step {@code n}, exactly these characters (written as UTF-8): after any
+         * {@link #stepsDiscarded} its save made. By default nothing is done.
+         */
+        default void stepSaved(String id, int n, String text) {
+        }
+
+        /**
+         * Every step after {@code afterN} was deleted ({@code afterN} below 0: every step). Told only when a step was
+         * there to delete. By default nothing is done.
+         */
+        default void stepsDiscarded(String id, int afterN) {
+        }
     }
 
     /**
@@ -224,7 +242,7 @@ public class CompanionStore {
     }
 
     /** Saves {@code state} as the next step, and returns its number: 0 for the game's first save. */
-    public int saveState(String id, String state) {
+    public synchronized int saveState(String id, String state) {
         int step = latestStep(id) + 1;
         saveState(id, step, state);
         return step;
@@ -232,9 +250,10 @@ public class CompanionStore {
 
     /**
      * Saves {@code state} as step {@code step}, replacing any step {@code step} there is, and drops every later step:
-     * after an undo to {@code step - 1}, the next action's state is step {@code step} again.
+     * after an undo to {@code step - 1}, the next action's state is step {@code step} again. The journal, if any, is
+     * told of the steps discarded, then of the step saved.
      */
-    public void saveState(String id, int step, String state) {
+    public synchronized void saveState(String id, int step, String state) {
         if (step < 0) {
             throw new IllegalArgumentException("No step " + step);
         }
@@ -242,24 +261,118 @@ public class CompanionStore {
         // the later steps go first: a crash in between then leaves the steps up to step - 1, a state that existed
         discardAfter(id, step);
         writeWhole(stepFile(id, step), state);
+        Journal j = journal;
+        if (j != null) {
+            j.stepSaved(id, step, state);
+        }
+    }
+
+    /**
+     * Writes the host's step {@code n} into this (following) store exactly as {@code text}, replacing any step {@code n}
+     * there is, whole or not at all ({@link #writeWhole}). Unlike {@link #saveState} it drops no later step: the host's
+     * {@code UNDO} entries do that ({@link #discardAfter}). The journal isn't told: the step is the host's.
+     *
+     * @throws IllegalArgumentException for an id that isn't {@link #isGameId a game id}, or a step below 0
+     */
+    public synchronized void writeStep(String id, int n, String text) {
+        if (!isGameId(id)) {
+            throw new IllegalArgumentException("Not a game id: " + id);
+        }
+        if (n < 0) {
+            throw new IllegalArgumentException("No step " + n);
+        }
+        migrate(id);
+        writeWhole(stepFile(id, n), text);
+    }
+
+    /**
+     * The sha256 of each step on disk, by step number, lowest first: of the file's bytes, as {@link #sha256} gives it
+     * for the text saved. A game saved before steps has its {@code state.txt} as step 0. Writes nothing.
+     */
+    public synchronized Map<Integer, String> stepHashes(String id) {
+        Map<Integer, String> hashes = new TreeMap<>();
+        for (int step : steps(id)) {
+            readBytes(stepFile(id, step)).ifPresent(bytes -> hashes.put(step, sha256(bytes)));
+        }
+        if (!hashes.containsKey(0)) {
+            readBytes(new File(new File(dir, id), STATE)).ifPresent(bytes -> hashes.put(0, sha256(bytes)));
+        }
+        return hashes;
+    }
+
+    /**
+     * The text of step {@code n} exactly as saved, or none if it isn't on disk: for sending a step to another phone. A
+     * game saved before steps has its {@code state.txt} as step 0. Writes nothing.
+     */
+    public synchronized Optional<String> stepText(String id, int n) {
+        Optional<byte[]> bytes = readBytes(stepFile(id, n));
+        if (bytes.isEmpty() && n == 0) {
+            bytes = readBytes(new File(new File(dir, id), STATE));
+        }
+        return bytes.map(b -> new String(b, StandardCharsets.UTF_8));
+    }
+
+    /** The sha256 of {@code text} written as UTF-8, in lower-case hex: how a step file is compared between phones. */
+    public static String sha256(String text) {
+        return sha256(text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String sha256(byte[] bytes) {
+        MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException e) {
+            // every Java platform has SHA-256 (CompanionStoreShould proves it here)
+            throw new IllegalStateException(e);
+        }
+        StringBuilder hex = new StringBuilder(64);
+        for (byte b : digest.digest(bytes)) {
+            hex.append(Character.forDigit((b >> 4) & 0xf, 16)).append(Character.forDigit(b & 0xf, 16));
+        }
+        return hex.toString();
+    }
+
+    /** The file's bytes, or none if it isn't there. */
+    private static Optional<byte[]> readBytes(File file) {
+        try {
+            return Optional.of(Files.readAllBytes(file.toPath()));
+        } catch (NoSuchFileException e) {
+            return Optional.empty();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /**
      * Deletes every step after {@code step}, so {@code step} is the current state again, for an undo. The highest step
-     * goes first, so a crash part way leaves a state that existed.
+     * goes first, so a crash part way leaves a state that existed. The journal, if any, is told of what was deleted,
+     * even when a delete fails part way: then of the steps after the lowest one deleted.
      */
-    public void discardAfter(String id, int step) {
+    public synchronized void discardAfter(String id, int step) {
         List<Integer> steps = steps(id);
-        for (int i = steps.size() - 1; i >= 0 && steps.get(i) > step; i--) {
-            delete(stepFile(id, steps.get(i)));
-        }
-        if (step < 0) {
-            delete(new File(new File(dir, id), STATE)); // a slice 0 game's step 0
+        int lowestDeleted = Integer.MAX_VALUE;
+        boolean done = false;
+        try {
+            for (int i = steps.size() - 1; i >= 0 && steps.get(i) > step; i--) {
+                delete(stepFile(id, steps.get(i)));
+                lowestDeleted = steps.get(i);
+            }
+            File legacy = new File(new File(dir, id), STATE);
+            if (step < 0 && legacy.exists()) {
+                delete(legacy); // a slice 0 game's step 0
+                lowestDeleted = 0;
+            }
+            done = true;
+        } finally {
+            Journal j = journal;
+            if (j != null && lowestDeleted != Integer.MAX_VALUE) {
+                j.stepsDiscarded(id, done ? step : lowestDeleted - 1);
+            }
         }
     }
 
     /** The game's current step: the highest saved, 0 for a game saved before steps, or {@link #NO_STEP}. */
-    public int latestStep(String id) {
+    public synchronized int latestStep(String id) {
         List<Integer> steps = steps(id);
         if (!steps.isEmpty()) {
             return steps.get(steps.size() - 1);

@@ -314,7 +314,8 @@ public final class CompanionShareHost implements IHasForgeLog {
             data = subscription;
             context = ctx;
             admitted.add(this);
-            client.send(new ShareMessages.Welcome(table.id(), subscription.setup(), subscription.latestSeq()));
+            client.send(new ShareMessages.Welcome(table.id(), subscription.setup(), subscription.latestSeq(),
+                    subscription.latestStep(), subscription.stepIndex()));
             drain(); // the catch-up, before the view: on this event loop, so ahead of any live item's drain
             joined.attach();
             netLog.info("[Companion] {} joined {} from {}", client.getUsername(), table.id(),

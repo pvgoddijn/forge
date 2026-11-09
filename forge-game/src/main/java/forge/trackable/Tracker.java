@@ -59,6 +59,11 @@ public class Tracker {
         objLookups.put(type, id, val);
     }
 
+    /** Forgets every object of {@code type} it holds, so the next ones registered are the only ones it knows. */
+    public void removeAll(TrackableType<?> type) {
+        objLookups.row(type).clear();
+    }
+
     public void unfreeze() {
         if (!isFrozen() || --freezeCounter > 0 || delayedPropChanges.isEmpty()) {
             return;

@@ -152,6 +152,19 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
     }
 
     /**
+     * Drops the card views the tracker holds. The tracker keeps every {@link CardView} it has been sent, and once the
+     * host renumbers the board (an undo or resume sends a full state with new card ids) those are stale. Call it on
+     * the channel's thread, after the full state the host sent has been applied, so the board is never shown with an
+     * empty tracker: the next full state registers its cards again ({@link #beforeCall}). Nothing to do before the
+     * first game view.
+     */
+    protected void resetTracker() {
+        if (tracker != null) {
+            tracker.removeAll(TrackableTypes.CardViewType);
+        }
+    }
+
+    /**
      * This method is used to recursively update the <b>tracker</b>
      * references on all objects and their props.
      *
