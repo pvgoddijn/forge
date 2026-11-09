@@ -64,7 +64,7 @@ This page assumes you already know how to start and log a Companion game on one 
 
 **A laptop as a big-screen spectator.** A laptop can join as a spectator or seat using Forge's mobile interface on desktop: run the Adventure Mode program in your Forge folder and pick the Classic Mobile UI (see [Play Adventure Mode on Desktop](User-Guide.md#play-adventure-mode-on-desktop)). It can't scan QR codes, so type the code instead.
 
-<!-- TODO verify: that a desktop release build of the mobile UI passes the compatibility check against Android phones of the same release (plan Risks: "Card database fingerprint differs between desktop dev and phone builds of one release"). -->
+<!-- Owner 2026-11-09: keep this tip. TODO verify: that a desktop release build of the mobile UI passes the compatibility check against Android phones of the same release (slice 07 must confirm; plan Risks: "Card database fingerprint differs between desktop dev and phone builds of one release"). -->
 
 ---
 
@@ -304,9 +304,11 @@ If the host phone runs out of battery or breaks, any **seated** phone can become
 2. Read the confirmation and confirm.
 3. Your phone continues the game from its own copy and shows a new join code. It shows the **Sharing a Companion game** notification, like any host.
 
+Any seated phone can take over, including one set to read-only.
+
 You don't need to wait for the old host to be gone. You can also use this to hand over hosting, for example when the host's battery is low: if the old host is still connected, it follows the new host by itself.
 
-<!-- TODO verify: whether a read-only seated phone may take over (spec AC-122 says "every seated phone"). -->
+<!-- Owner 2026-11-09: a read-only seated phone may take over (matches spec AC-122 "every seated phone"). -->
 
 **What's lost in a takeover.** The new host restarts from the last **settled** moment its copy has: a main phase with an empty stack. Anything not yet settled is lost:
 
@@ -357,7 +359,9 @@ Forge says **Couldn't reach the host at …. Check that both devices are on the 
 
 **Mobile data on a hotspot with no internet.** On a Wi-Fi or hotspot without internet, Android prefers mobile data. Forge sends the game over the Wi-Fi anyway, so you can leave mobile data on.
 
-<!-- TODO verify: whether turning mobile data off is worth suggesting as a last resort if a join still fails on a no-internet network (not in the sources; the plan relies on Forge binding to the Wi-Fi). -->
+If a join still fails on a Wi-Fi without internet, turn mobile data off on the joining phone as a last resort and try again.
+
+<!-- Owner 2026-11-09: suggest turning mobile data off as a last resort. -->
 
 ## "That isn't a join code"
 
