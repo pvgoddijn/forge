@@ -36,6 +36,21 @@ public final class CompanionMatch {
 
         GameRules rules = new GameRules(GameType.Constructed);
         rules.setGamesPerMatch(1);
+        addVariants(table.setup(), rules);
         match.startMatch(rules, null, players, guis, null);
+    }
+
+    /**
+     * With a commander at the table, the game is played under the Commander variant, so the engine's command-zone
+     * rules apply: a commander that went to a graveyard or exile may go to the Command zone (rule 903.9a), and its
+     * casts from there are counted for tax. Casting from the Command zone and the hand-or-library replacement (903.9b)
+     * come with the commander effect, which the state's {@code |IsCommander} makes on every load. Starting life, the
+     * decks and the opening hands still come from the setup and the state, not from the variant, so the decks stay
+     * empty. The table effect still stops a loss by 21 commander damage, which is out of scope (spec v1).
+     */
+    public static void addVariants(CompanionSetup setup, GameRules rules) {
+        if (setup.hasCommanders()) {
+            rules.addAppliedVariant(GameType.Commander);
+        }
     }
 }

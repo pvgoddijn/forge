@@ -3,16 +3,21 @@ package forge.gamemodes.companion;
 import forge.StaticData;
 import forge.card.CardRules;
 import forge.card.ICardFace;
+import forge.item.PaperCard;
 import org.apache.commons.text.similarity.LevenshteinDistance;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 
 /** Turns typed text into ranked card names. It tolerates typos, and every face of a card is its own name. */
 public class CardNameMatcher {
@@ -70,6 +75,124 @@ public class CardNameMatcher {
                 .thenComparingInt(s -> s.card().length())
                 .thenComparing(Suggestion::card));
         return new ArrayList<>(matches.subList(0, Math.min(limit, matches.size())));
+    }
+
+    /**
+     * The best matches that are cards passing {@code filter}, best first. A name that isn't in Forge's card database,
+     * such as a token's, never passes. A null filter keeps every match, as {@link #match(String, int)} does.
+     */
+    public List<Suggestion> matchWhere(String text, int limit, Predicate<PaperCard> filter) {
+        return matchWhere(text, limit, filter, Set.of());
+    }
+
+    /**
+     * The best matches, with the {@code preferred} names, such as a player's deck, ranked above the rest (AC-12).
+     * The rule: a name matching the text exactly comes first, as it was typed or read in full; then the preferred
+     * matches, best first; then every other match, best first. Only names that pass the matcher's own cut-off are
+     * matches at all, so a preferred name never comes up for text it doesn't match, and the preferred names never
+     * hide a match outside them. A name of a split card ("Fire // Ice") prefers each of its faces.
+     */
+    public List<Suggestion> match(String text, int limit, Set<String> preferred) {
+        return matchWhere(text, limit, null, preferred);
+    }
+
+    /** {@link #match(String, int, Set)}, keeping only cards passing {@code filter}, as {@link #matchWhere} does. */
+    public List<Suggestion> matchWhere(String text, int limit, Predicate<PaperCard> filter, Set<String> preferred) {
+        List<Suggestion> all = match(text, Integer.MAX_VALUE);
+        if (!preferred.isEmpty()) {
+            all = preferredFirst(all, preferred);
+        }
+        List<Suggestion> kept = new ArrayList<>();
+        for (Suggestion suggestion : all) {
+            if (kept.size() >= limit) {
+                break;
+            }
+            if (passes(suggestion.card(), filter)) {
+                kept.add(suggestion);
+            }
+        }
+        return kept;
+    }
+
+    private static List<Suggestion> preferredFirst(List<Suggestion> matches, Set<String> preferred) {
+        Set<String> wanted = normalizedFaces(preferred);
+        List<Suggestion> exact = new ArrayList<>();
+        List<Suggestion> first = new ArrayList<>();
+        List<Suggestion> rest = new ArrayList<>();
+        for (Suggestion suggestion : matches) {
+            if (suggestion.confidence() == 1) {
+                exact.add(suggestion);
+            } else if (wanted.contains(normalize(suggestion.card()))) {
+                first.add(suggestion);
+            } else {
+                rest.add(suggestion);
+            }
+        }
+        exact.addAll(first);
+        exact.addAll(rest);
+        return exact;
+    }
+
+    /**
+     * After a confident photo read (AC-12): the reader's names and the matches for the text it read, in one list
+     * without repeats. An exact match for the text read comes first, then the reader's own first name, which the
+     * dialog chooses; then the {@code preferred} names, the reader's before the matcher's; then the others, the
+     * reader's before the matcher's. So a deck card the reader ranked low, or missed, still comes up near the top, but
+     * a fuzzy deck match never takes the confident name's place, and nothing either of them found is dropped.
+     *
+     * @param readerNames the reader's names from a confident read, best first
+     * @param matches     {@link #match} for the text read
+     * @param preferred   the names to rank first, such as the target player's deck; empty for none
+     */
+    public static List<String> mergeReading(List<String> readerNames, List<Suggestion> matches,
+                                            Set<String> preferred) {
+        Set<String> wanted = normalizedFaces(preferred);
+        Set<String> exact = new LinkedHashSet<>();
+        List<String> matched = new ArrayList<>();
+        for (Suggestion suggestion : matches) {
+            if (suggestion.confidence() == 1) {
+                exact.add(suggestion.card());
+            } else {
+                matched.add(suggestion.card());
+            }
+        }
+        Set<String> merged = new LinkedHashSet<>(exact);
+        if (!readerNames.isEmpty()) {
+            merged.add(readerNames.get(0));
+        }
+        for (boolean deckPass : new boolean[] {true, false}) {
+            for (List<String> source : List.of(readerNames, matched)) {
+                for (String name : source) {
+                    if (wanted.contains(normalize(name)) == deckPass) {
+                        merged.add(name);
+                    }
+                }
+            }
+        }
+        return new ArrayList<>(merged);
+    }
+
+    /** Each name normalized, and each face of a split card's name ("Fire // Ice") as well. */
+    private static Set<String> normalizedFaces(Set<String> names) {
+        Set<String> faces = new HashSet<>();
+        for (String name : names) {
+            faces.add(normalize(name));
+            if (name.contains("//")) {
+                for (String face : name.split("//")) {
+                    faces.add(normalize(face));
+                }
+            }
+        }
+        return faces;
+    }
+
+    /** Whether {@code name} is a card in Forge's database that passes {@code filter}; always, for a null filter. */
+    public static boolean passes(String name, Predicate<PaperCard> filter) {
+        if (filter == null) {
+            return true;
+        }
+        PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
+        return card != null && filter.test(card);
     }
 
     /** Exact, then start of the name, start of a later word, anywhere in the name, and last the typo-tolerant forms. */

@@ -23,7 +23,8 @@ import java.util.List;
  * without anyone tapping through them.</li>
  * <li>The operator's queued actions run here, on the game loop thread (see {@link CompanionTable}).</li>
  * <li>Nobody mulligans or is held to one land a turn: the table did those already. Nobody attacks through the engine
- * either, unless the operator turned combat on for the game or for this turn, or a creature must attack.</li>
+ * either, unless the operator turned combat on for the game or for this turn, or a creature must attack; and never
+ * in a turn that a turn skip (AC-45) passes, unless a creature must attack.</li>
  * </ul>
  */
 public class CompanionPlayerController extends PlayerControllerHuman {
@@ -134,26 +135,40 @@ public class CompanionPlayerController extends PlayerControllerHuman {
 
     @Override
     public void declareAttackers(Player attackingPlayer, Combat combat) {
-        if (table.engineCombat(getGame().getPhaseHandler().getTurn())) {
+        int turn = getGame().getPhaseHandler().getTurn();
+        // A turn skip (AC-45) runs the turns before the seat it moves to: their fights are over, and the operator sets
+        // their outcome by hand, so no engine combat there even with "Combat every turn" on.
+        String skippingTo = table.skippingTo(getGame());
+        if (skippingTo == null && table.engineCombat(turn)) {
             // The operator chose to run this combat through the engine, so End Turn doesn't skip the declaration
             // the way it would in a match: it stops here and asks.
             getYieldController().applyInterrupt();
             // the operator declares for this seat; each defending seat is then asked for blocks in the same way,
             // and damage, lifelink and combat triggers resolve by the rules (spec AC-41)
-            super.declareAttackers(attackingPlayer, combat);
+            declareAttackersOnPrompt(attackingPlayer, combat);
             return;
         }
         if (!CombatUtil.validateAttackers(combat)) {
             // A creature must attack (goad, "attacks each combat if able"). Declaring nobody isn't legal, and the
             // engine would ask again forever. So this combat goes through the engine like one turned on for the
             // turn: attack and block prompts, stops for tricks, damage by the rules. The operator is told why, so
-            // they don't also set life for it by hand.
-            table.setEngineCombatForTurn(getGame().getPhaseHandler().getTurn(), true);
-            table.tell("A creature must attack this turn, so this combat runs in the game: declare the attack. "
-                    + "Blocks and damage are done by the game too, so don't also set life for it.");
-            super.declareAttackers(attackingPlayer, combat);
+            // they don't also set life for it by hand. In a skipped turn the skip stops here for the declaration,
+            // and carries on after the combat: its stops are passed like every other while the skip waits.
+            table.setEngineCombatForTurn(turn, true);
+            table.tell(skippingTo == null
+                    ? "A creature must attack this turn, so this combat runs in the game: declare the attack. "
+                            + "Blocks and damage are done by the game too, so don't also set life for it."
+                    : "A creature must attack in " + attackingPlayer.getName() + "'s turn, so the move to "
+                            + skippingTo + "'s turn stops at this combat: declare the attack. Blocks and damage are "
+                            + "done by the game too, so don't also set life for it. Then the move carries on.");
+            declareAttackersOnPrompt(attackingPlayer, combat);
         }
         // otherwise combat happens at the table, and the operator records its outcome (spec Q21)
+    }
+
+    /** Forge's attack prompt, where the operator declares for this seat. A test answers it in place of a screen. */
+    void declareAttackersOnPrompt(Player attackingPlayer, Combat combat) {
+        super.declareAttackers(attackingPlayer, combat);
     }
 
     /**

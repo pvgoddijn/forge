@@ -1,66 +1,71 @@
 package forge.screens.companion;
 
-import com.badlogic.gdx.utils.Align;
-import forge.Graphics;
-import forge.assets.FSkinColor;
-import forge.assets.FSkinFont;
+import forge.StaticData;
 import forge.game.GameView;
 import forge.game.player.PlayerView;
-import forge.gamemodes.companion.CardCamera;
-import forge.gamemodes.companion.CardCameras;
-import forge.gamemodes.companion.CardNameMatcher;
-import forge.gamemodes.companion.CardNameReader;
-import forge.gui.FThreads;
-import forge.toolbox.FOptionPane;
+import forge.gamemodes.companion.CommanderLegality;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionTable;
+import forge.gamemodes.companion.DeckListNames;
+import forge.gamemodes.companion.SeatOffer;
 import forge.gamemodes.companion.TableEditor;
+import forge.item.PaperCard;
 import forge.toolbox.FComboBox;
-import forge.toolbox.FDialog;
-import forge.toolbox.FList;
+import forge.toolbox.FOptionPane;
 import forge.toolbox.FTextField;
-import forge.util.Utils;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Adds a card by photo, falling back to typing. {@link #addByPhoto} opens the camera first and shows this dialog only
- * with what the photo gave; {@link #addByName} opens it to type. Typing: type, tap a match, check the player and how it was played, confirm. The game then does what
- * the card does. Text that matches nothing can still be added as typed, which is how emblems get in, as Forge has no
- * list of them.
+ * Adds a card by photo, falling back to typing: a {@link CardPicker} for any card, with the player and how it was
+ * played above the search. {@link #addByPhoto} opens the camera first and shows this dialog only with what the photo
+ * gave; {@link #addByName} opens it to type. Typing: type, tap a match, check the player and how it was played,
+ * confirm. The game then does what the card does. Text that matches nothing can still be added as typed, which is how
+ * emblems get in, as Forge has no list of them.
+ * <p>
+ * With Commander mode on, a card from hand outside the target's commanders' colour identity isn't added (AC-43): for
+ * the active player it offers to move the turn ahead to the first player it fits (AC-45), otherwise it's refused
+ * (AC-46), each with Retake (Edit for a typed card) and Cancel ({@link CommanderLegality#checkAdd}). Such cards show
+ * greyed in the list, but stay in it.
+ * <p>
+ * The target player's deck, when one was loaded, ranks first, typed or photographed (AC-12); matches from the whole
+ * card database still follow. Choosing another player ranks the list again for that player's deck.
  */
-public class CardSearchDialog extends FDialog {
-    private static final float PADDING = Utils.scale(5);
-    private static final float ITEM_HEIGHT = Utils.scale(26);
-    private static final int MAX_MATCHES = 30;
+public class CardSearchDialog extends CardPicker {
     private static final String FROM_HAND = "From hand";
     private static final String FROM_ELSEWHERE = "From elsewhere";
     private static final String CAST = "Cast it";
     private static final String PUT = "Put onto battlefield";
     private static final String SHOW_ALL = "Show all players";
-    private static CardNameMatcher matcher; // built once, on first use: it indexes every card name
 
     private final CompanionTable table;
+    private final GameView gameView; // may be null
     private final FComboBox<String> cbPlayer = add(new FComboBox<>());
     private final FComboBox<String> cbFrom = add(new FComboBox<>());
     private final FComboBox<String> cbMode = add(new FComboBox<>());
-    private final FTextField txtSearch = add(new FTextField());
-    private final FList<CardNameMatcher.Suggestion> lstMatches = add(new FList<>());
     private final List<String> allPlayers = new ArrayList<>();
     private final String activePlayer; // the default target (AC-17)
-    private String selectedCard; // a name from the database; null while the text is only what was typed
-    private boolean photographing; // a photo is being taken or read; UI thread only
+    private String playerBeforeShowAll; // what "show all" keeps chosen
+    private final Map<String, Set<String>> decks = new HashMap<>(); // seat name to its deck's card names
+    private final Map<String, Boolean> greyed = new HashMap<>(); // card name to greyed, for greyedFor
+    private String greyedFor; // the target the greyed cache is for
+    private String selectedCard; // the card chosen in the list; null while none is
 
     /** @param gameView the running game, for the active player, who is the default target (AC-17); may be null */
-    public CardSearchDialog(CompanionTable table0, GameView gameView) {
-        super("Add card", canPhotograph() ? 3 : 2);
+    public CardSearchDialog(CompanionTable table0, GameView gameView0) {
+        super("Add card", "Add", null);
         table = table0;
+        gameView = gameView0;
 
         for (CompanionSetup.Seat seat : table.setup().gameOrder()) {
             allPlayers.add(seat.name());
         }
-        PlayerView active = gameView == null ? null : gameView.getPlayerTurn();
+        PlayerView active = gameView0 == null ? null : gameView0.getPlayerTurn();
         activePlayer = active != null && allPlayers.contains(active.getName()) ? active.getName() : allPlayers.get(0);
         cbPlayer.setItems(allPlayers, activePlayer);
         cbPlayer.setDropDownChangeHandler(e -> {
@@ -68,221 +73,186 @@ public class CardSearchDialog extends FDialog {
                 cbPlayer.setItems(allPlayers, playerBeforeShowAll);
             } else {
                 playerBeforeShowAll = cbPlayer.getSelectedItem();
+                rerank(); // another player's deck (AC-12)
             }
         });
         playerBeforeShowAll = activePlayer;
         cbFrom.setItems(List.of(FROM_HAND, FROM_ELSEWHERE), FROM_HAND);
+        cbFrom.setDropDownChangeHandler(e -> offerPlayers()); // only a card from hand is narrowed
         cbMode.setItems(List.of(CAST, PUT), CAST);
-
-        txtSearch.setGhostText("Card or token name");
-        txtSearch.setLiveChangeEvents(true);
-        txtSearch.setChangedHandler(e -> updateMatches());
-
-        lstMatches.setListItemRenderer(new FList.ListItemRenderer<>() {
-            @Override
-            public float getItemHeight() {
-                return ITEM_HEIGHT;
-            }
-
-            @Override
-            public boolean tap(Integer index, CardNameMatcher.Suggestion value, float x, float y, int count) {
-                txtSearch.setText(value.card());
-                select(value.card());
-                return true;
-            }
-
-            @Override
-            public void drawValue(Graphics g, Integer index, CardNameMatcher.Suggestion value, FSkinFont font,
-                    FSkinColor foreColor, FSkinColor backColor, boolean pressed, float x, float y, float w, float h) {
-                g.drawText(value.card(), font, foreColor, x, y, w, h, false, Align.left, true);
-            }
-        });
-
-        initButton(0, "Add as typed", e -> addCard());
-        initButton(1, "Cancel", e -> hide());
-        if (canPhotograph()) {
-            initButton(2, "Photo", e -> photograph());
-        }
     }
 
     /**
-     * Photographs a card first and shows the dialog only once there is a photo: filled in with the read, so a confident
-     * one takes one tap to add (AC-8), or with the text read to finish by typing (AC-11). No photo, as when the camera
-     * is closed or refused, opens it empty to type. A device without a camera opens it to type straight away.
+     * Photographs a card first and shows the dialog only once there is a photo (see {@link CardPicker#pickByPhoto}).
+     * A device without a camera opens it to type straight away.
      */
     public static void addByPhoto(CompanionTable table, GameView gameView) {
-        CardSearchDialog dialog = new CardSearchDialog(table, gameView);
-        if (!canPhotograph()) {
-            dialog.show();
-            return;
-        }
-        dialog.photograph();
+        new CardSearchDialog(table, gameView).pickByPhoto();
     }
 
     /** Opens the dialog to type a name, without the camera: for tokens and emblems, which have no card to photograph. */
     public static void addByName(CompanionTable table, GameView gameView) {
-        new CardSearchDialog(table, gameView).show();
+        new CardSearchDialog(table, gameView).pickByName();
     }
 
-    /** Whether this device can photograph a card and read its name (slice 1). Not on iOS, which has no reader. */
-    private static boolean canPhotograph() {
-        CardCamera camera = CardCameras.get();
-        return camera != null && camera.canPhotograph() && camera.reader() != null;
-    }
-
-    /**
-     * Takes a photo and reads it off the UI thread (AC-6, AC-7). A confident read lists the best card and its
-     * alternatives here, the best already chosen, so it takes one tap to add (AC-8). Otherwise the text read is left in
-     * the search box, to finish by typing (AC-11). No photo, as when the camera is refused, leaves the search as it was.
-     */
-    private void photograph() {
-        if (photographing) {
-            return; // one photo at a time: a second one would overwrite the first one's suggestions
-        }
-        photographing = true;
-        CardCamera camera = CardCameras.get();
-        CardNameReader reader = camera.reader();
-        camera.photograph(photo -> {
-            if (photo == null) {
-                FThreads.invokeInEdtLater(() -> {
-                    photographing = false;
-                    showIfHidden(); // the camera was the first step: without a photo, type instead
-                });
-                return;
-            }
-            FThreads.invokeInEdtLater(() -> {
-                showIfHidden();
-                getButton(2).setText("Reading...");
-            });
-            FThreads.invokeInBackgroundThread(() -> {
-                CardNameReader.Reading reading;
-                try {
-                    reading = reader.read(photo);
-                } catch (Throwable e) {
-                    // Not only exceptions: native OCR that won't load, or running out of memory, throws errors. On
-                    // this bare thread an uncaught one would end the app mid-game.
-                    e.printStackTrace();
-                    reading = CardNameReader.Reading.NOTHING;
-                }
-                CardNameReader.Reading read = reading;
-                FThreads.invokeInEdtLater(() -> showReading(read));
-            });
-        });
-    }
-
-    private boolean everShown; // false until the first photo comes back, so a hidden dialog wasn't closed by the operator
-
-    private void showIfHidden() {
-        if (!everShown) {
-            everShown = true;
-            show();
-        }
-    }
-
-    private void showReading(CardNameReader.Reading reading) {
-        photographing = false;
-        getButton(2).setText("Photo");
-        if (!isVisible()) {
-            return; // the operator moved on while it was reading
-        }
-        if (reading.confident() && !reading.cards().isEmpty()) {
-            List<CardNameMatcher.Suggestion> suggestions = new ArrayList<>();
-            for (String card : reading.cards()) {
-                suggestions.add(new CardNameMatcher.Suggestion(card, 1));
-            }
-            txtSearch.setText(reading.cards().get(0));
-            lstMatches.setListData(suggestions);
-            lstMatches.setScrollTop(0);
-            lstMatches.revalidate();
-            select(reading.cards().get(0));
-            return;
-        }
-        txtSearch.setText(reading.textRead());
-        updateMatches();
-        if (reading.textRead().isEmpty()) {
-            FOptionPane.showMessageDialog("The card's name couldn't be read. Try another photo, or type the name.");
-        }
-    }
-
-    private void updateMatches() {
-        if (matcher == null) {
-            matcher = CardNameMatcher.fromStaticData();
-        }
-        List<CardNameMatcher.Suggestion> matches = matcher.match(txtSearch.getText(), MAX_MATCHES);
-        lstMatches.setListData(matches);
-        lstMatches.setScrollTop(0);
-        lstMatches.revalidate();
-        if (!matches.isEmpty() && matches.get(0).confidence() == 1) {
-            select(matches.get(0).card()); // typed in full, so it needn't be tapped too
-        } else if (selectedCard != null) {
-            selectedCard = null;
-            getButton(0).setText("Add as typed");
-            offerPlayers(null);
-        }
-    }
-
-    private void select(String card) {
+    @Override
+    protected void onSelectionChanged(String card) {
         selectedCard = card;
-        getButton(0).setText("Add");
-        offerPlayers(card);
+        offerPlayers();
     }
 
-    private String playerBeforeShowAll; // what "show all" keeps chosen
-
     /**
-     * For an instant or a flash card, offers only the seats that could have cast it (item 11), as the latest prompt
-     * worked out on the game thread ({@link CompanionTable#couldHaveCast}), always with "show all", as the mana
-     * check is approximate and the operator must be able to pick anyone (AC-39); a single one is chosen for the
-     * operator. When nobody could have, or for any other card, every seat, as before (AC-39). The choice
+     * Offers the seats {@link CompanionTable#offerSeats} works out for the card chosen ({@link SeatOffer}): for an
+     * instant or a flash card from hand, only the seats that could have cast it (item 11), with Commander mode on
+     * only those whose commanders allow it, but always the active player; always with "show all" then, as the mana
+     * check is approximate and the operator must be able to pick anyone (AC-39). Otherwise every seat. The choice
      * already made stays when it's still offered; otherwise the active player if offered, else the first one.
      */
-    private void offerPlayers(String card) {
-        List<String> could = card == null ? List.of() : table.couldHaveCast(card);
-        boolean narrowed = !could.isEmpty() && could.size() < allPlayers.size();
-        // in the setup's order, and the setup's own Strings, as the combo box compares items by identity
-        List<String> offered = narrowed ? allPlayers.stream().filter(could::contains).toList() : allPlayers;
-        String current = cbPlayer.getSelectedItem();
-        String pick = offered.contains(current) ? current : offered.contains(activePlayer) ? activePlayer : offered.get(0);
-        List<String> items = new ArrayList<>(offered);
-        if (narrowed) {
+    private void offerPlayers() {
+        boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
+        SeatOffer offer = table.offerSeats(selectedCard, fromHand, activePlayer, target());
+        // the combo box compares items by identity: map back to the setup's own Strings
+        List<String> items = new ArrayList<>();
+        for (String seat : offer.seats()) {
+            items.add(allPlayers.get(allPlayers.indexOf(seat)));
+        }
+        String pick = allPlayers.get(allPlayers.indexOf(offer.preselected()));
+        if (offer.narrowed()) {
             items.add(SHOW_ALL);
         }
         cbPlayer.setItems(items, pick);
         playerBeforeShowAll = pick;
     }
 
-    private void addCard() {
-        String name = selectedCard != null ? selectedCard : txtSearch.getText().trim();
-        if (name.isEmpty()) {
-            return;
+    /** The deck of the player chosen, or of the one chosen before "show all"; none when no deck was loaded. */
+    @Override
+    protected Set<String> preferredCards() {
+        String target = target();
+        if (target == null) {
+            return Set.of();
         }
+        return decks.computeIfAbsent(target, seat -> table.setup().seats().stream()
+                .filter(s -> s.name().equals(seat))
+                .findFirst()
+                .map(s -> DeckListNames.cardNames(s.deckList()))
+                .orElse(Set.of()));
+    }
+
+    /**
+     * With Commander mode on, a card from hand that the target's commanders don't allow (AC-43), as {@link #picked}
+     * would refuse or move it. Asked for each row as it's drawn, so it follows the player and "from" chosen.
+     */
+    @Override
+    protected boolean isGreyed(String card) {
+        String target = target();
+        if (target == null || !table.setup().commanderMode() || !FROM_HAND.equals(cbFrom.getSelectedItem())) {
+            return false;
+        }
+        if (!target.equals(greyedFor)) {
+            greyed.clear();
+            greyedFor = target;
+        }
+        return greyed.computeIfAbsent(card, name -> {
+            PaperCard paper = StaticData.instance().getCommonCards().getUniqueByName(name);
+            return paper != null && !CommanderLegality.isLegal(paper,
+                    CommanderLegality.commanders(table.setup().commandersOf(target)));
+        });
+    }
+
+    /** The player chosen, or the one chosen before "show all" while that is showing. */
+    private String target() {
         String player = cbPlayer.getSelectedItem();
-        if (player == null || SHOW_ALL.equals(player)) {
-            return;
-        }
-        boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
-        TableEditor.Mode mode = PUT.equals(cbMode.getSelectedItem()) ? TableEditor.Mode.PUT_ONTO_BATTLEFIELD : TableEditor.Mode.CAST;
-        hide();
-        // an op the table can park: the active player's sorcery waits for its main phase (AC-42)
-        table.submit(new CompanionTable.AddCard(player, name, fromHand, mode));
+        return player == null || SHOW_ALL.equals(player) ? playerBeforeShowAll : player;
     }
 
     @Override
-    protected float layoutAndGetHeight(float width, float maxHeight) {
+    protected boolean canPick() {
+        String player = cbPlayer.getSelectedItem();
+        return player != null && !SHOW_ALL.equals(player);
+    }
+
+    @Override
+    protected void picked(String name) {
+        String player = cbPlayer.getSelectedItem();
+        boolean fromHand = FROM_HAND.equals(cbFrom.getSelectedItem());
+        TableEditor.Mode mode = PUT.equals(cbMode.getSelectedItem()) ? TableEditor.Mode.PUT_ONTO_BATTLEFIELD : TableEditor.Mode.CAST;
+        PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
+        // the setup read now, as Commander mode can be switched in the game menu; the turn from the view, on this thread
+        CommanderLegality.AddCheck check = CommanderLegality.checkAdd(card, name, fromHand, table.setup(), player,
+                activeSeat(), liveSeats());
+        switch (check.verdict()) {
+            case SKIP:
+                FOptionPane.showOptionDialog(check.message(), "Commander mode", null,
+                        List.of(check.moveLabel(), retakeLabel(), "Cancel"), 0, choice -> {
+                            if (choice == null) {
+                                return; // dismissed: as Cancel
+                            }
+                            if (choice == 0) {
+                                // the card goes to the seat moved to; nothing is parked before this (Check early)
+                                String seat = check.skip().seat();
+                                table.submit(new CompanionTable.AddCard(seat, name, true, mode, seat));
+                            } else if (choice == 1) {
+                                retakeOrEdit();
+                            }
+                        });
+                return;
+            case NO_SEAT:
+            case NOT_FOR_TARGET:
+                FOptionPane.showOptionDialog(check.message(), "Commander mode", null,
+                        List.of(retakeLabel(), "Cancel"), 0, choice -> {
+                            if (choice != null && choice == 0) {
+                                retakeOrEdit();
+                            }
+                        });
+                return;
+            default:
+                // an op the table can park: the active player's sorcery waits for its main phase (AC-42)
+                table.submit(new CompanionTable.AddCard(player, name, fromHand, mode));
+        }
+    }
+
+    /** The seat whose turn it is, by setup name, from the view; null when it isn't known. UI thread. */
+    private String activeSeat() {
+        PlayerView active = gameView == null ? null : gameView.getPlayerTurn();
+        return active == null ? null : active.getName();
+    }
+
+    /**
+     * The seats still in the game, by name, from the view: the game's players leave out those who lost, so a turn
+     * skip never moves to one of them. Every seat when there is no view. UI thread.
+     */
+    private Set<String> liveSeats() {
+        if (gameView == null) {
+            return new HashSet<>(allPlayers);
+        }
+        Set<String> live = new HashSet<>();
+        for (PlayerView p : gameView.getPlayers()) {
+            live.add(p.getName());
+        }
+        return live;
+    }
+
+    private String retakeLabel() {
+        return pickedFromPhoto() ? "Retake" : "Edit";
+    }
+
+    /** A new photo for a photographed card, the search again for a typed one; the player, from and mode stay. */
+    private void retakeOrEdit() {
+        if (pickedFromPhoto()) {
+            retake();
+        } else {
+            edit();
+        }
+    }
+
+    @Override
+    protected float layoutAboveSearch(float x, float y, float width) {
         float rowHeight = FTextField.getDefaultHeight();
-        float w = width - 2 * PADDING;
-        float y = PADDING;
-        cbPlayer.setBounds(PADDING, y, w, rowHeight);
+        cbPlayer.setBounds(x, y, width, rowHeight);
         y += rowHeight + PADDING;
-        float half = (w - PADDING) / 2;
-        cbFrom.setBounds(PADDING, y, half, rowHeight);
-        cbMode.setBounds(PADDING + half + PADDING, y, half, rowHeight);
-        y += rowHeight + PADDING;
-        txtSearch.setBounds(PADDING, y, w, rowHeight);
-        y += rowHeight + PADDING;
-        // tall enough that the drop-downs above, which open downward, stay on the screen
-        float listHeight = Math.min(maxHeight - y - PADDING, ITEM_HEIGHT * 7);
-        lstMatches.setBounds(PADDING, y, w, listHeight);
-        return y + listHeight + PADDING;
+        float half = (width - PADDING) / 2;
+        cbFrom.setBounds(x, y, half, rowHeight);
+        cbMode.setBounds(x + half + PADDING, y, half, rowHeight);
+        return y + rowHeight + PADDING;
     }
 }

@@ -3,6 +3,9 @@ package forge.gamemodes.companion;
 import org.testng.annotations.Test;
 
 import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,5 +77,97 @@ public class CardNameMatcherShould {
     @Test
     public void respectTheLimit() {
         assertThat(matcher.match("sol", 2)).hasSize(2);
+    }
+
+    private List<String> names(List<CardNameMatcher.Suggestion> suggestions) {
+        return suggestions.stream().map(CardNameMatcher.Suggestion::card).collect(Collectors.toList());
+    }
+
+    // The rule (AC-12): an exact match first; then the deck's matches, best first; then every other match, best first.
+    // Only names passing the matcher's own cut-off are matches, deck or not.
+
+    @Test
+    public void rankDeckCardsAboveCloserSpelledOtherCards() {
+        assertThat(names(matcher.match("sol", 5))).startsWith("Sol Ring", "Sol Talisman");
+
+        assertThat(names(matcher.match("sol", 5, Set.of("Solemn Simulacrum", "Sol Talisman"))))
+                .containsExactly("Sol Talisman", "Solemn Simulacrum", "Sol Ring", "Soldier Token");
+    }
+
+    @Test
+    public void stillOfferCardsOutsideTheDeck() {
+        assertThat(names(matcher.match("sol", 5, Set.of("Solemn Simulacrum")))).contains("Sol Ring", "Sol Talisman");
+    }
+
+    @Test
+    public void notOfferADeckCardTheTextDoesNotMatch() {
+        assertThat(names(matcher.match("sol", 10, Set.of("Lightning Bolt")))).doesNotContain("Lightning Bolt");
+        assertThat(matcher.match("zzzzzzzz", 5, Set.of("Sol Ring"))).isEmpty();
+    }
+
+    @Test
+    public void keepTheLimitWithADeck() {
+        assertThat(names(matcher.match("sol", 2, Set.of("Solemn Simulacrum"))))
+                .containsExactly("Solemn Simulacrum", "Sol Ring");
+    }
+
+    @Test
+    public void rankAnExactMatchAboveTheDeck() {
+        CardNameMatcher shocks = new CardNameMatcher(Arrays.asList("Shockwave", "Shock"));
+
+        assertThat(names(shocks.match("shock", 5, Set.of("Shockwave")))).containsExactly("Shock", "Shockwave");
+    }
+
+    @Test
+    public void rankAsBeforeWithoutADeck() {
+        assertThat(matcher.match("sol", 5, Set.of())).isEqualTo(matcher.match("sol", 5));
+    }
+
+    @Test
+    public void preferEachFaceOfASplitCardInTheDeck() {
+        CardNameMatcher ice = new CardNameMatcher(Arrays.asList("Ice Floe", "Thin Ice"));
+
+        assertThat(names(ice.match("ice", 5, Set.of("Fire // Thin Ice")))).containsExactly("Thin Ice", "Ice Floe");
+    }
+
+    @Test
+    public void mergeAReadingWithDeckCardsFirstAfterTheReadersConfidentName() {
+        List<String> reader = List.of("Lightning Bolt", "Lightning Helix", "Lightning Strike", "Lightning Greaves");
+        List<CardNameMatcher.Suggestion> matches = List.of(new CardNameMatcher.Suggestion("Lightning Bolt", 0.95),
+                new CardNameMatcher.Suggestion("Lightning Axe", 0.94),
+                new CardNameMatcher.Suggestion("Lightning Dragon", 0.93));
+
+        assertThat(CardNameMatcher.mergeReading(reader, matches, Set.of("Lightning Greaves", "Lightning Axe")))
+                .containsExactly("Lightning Bolt", "Lightning Greaves", "Lightning Axe", "Lightning Helix",
+                        "Lightning Strike", "Lightning Dragon");
+    }
+
+    /** A fuzzy match in the deck doesn't outrank, and so isn't chosen over, the name the reader is sure of. */
+    @Test
+    public void keepTheReadersConfidentNameAboveAFuzzyDeckMatch() {
+        List<CardNameMatcher.Suggestion> matches = List.of(new CardNameMatcher.Suggestion("Shivan Dragon", 0.9),
+                new CardNameMatcher.Suggestion("Shivan Wurm", 0.7));
+
+        assertThat(CardNameMatcher.mergeReading(List.of("Shivan Dragon", "Shiv's Embrace"), matches,
+                Set.of("Shivan Wurm"))).containsExactly("Shivan Dragon", "Shivan Wurm", "Shiv's Embrace");
+    }
+
+    @Test
+    public void mergeAReadingAsReadWithoutADeck() {
+        List<String> reader = List.of("Lightning Bolt", "Lightning Helix");
+        List<CardNameMatcher.Suggestion> matches = List.of(new CardNameMatcher.Suggestion("Lightning Axe", 0.9),
+                new CardNameMatcher.Suggestion("Lightning Bolt", 0.8));
+
+        assertThat(CardNameMatcher.mergeReading(reader, matches, Set.of()))
+                .containsExactly("Lightning Bolt", "Lightning Helix", "Lightning Axe");
+    }
+
+    @Test
+    public void mergeAnExactMatchForTheTextReadFirst() {
+        List<CardNameMatcher.Suggestion> matches = List.of(new CardNameMatcher.Suggestion("Shock", 1),
+                new CardNameMatcher.Suggestion("Shockwave", 0.9));
+
+        assertThat(CardNameMatcher.mergeReading(List.of("Shockwave"), matches, Set.of("Shockwave")))
+                .containsExactly("Shock", "Shockwave");
     }
 }

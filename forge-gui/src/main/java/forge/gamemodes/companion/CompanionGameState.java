@@ -2,17 +2,27 @@ package forge.gamemodes.companion;
 
 import forge.game.Game;
 import forge.game.GameState;
+import forge.game.card.Card;
 import forge.game.player.Player;
 import forge.game.zone.MagicStack;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Forge's game-state text, plus what Companion needs on load: the placeholders, which Forge's loader can't make, are
  * put back (see {@link PlaceholderText}), and every player gets the table effect back, as a game state doesn't save
- * effects.
+ * effects. It also holds what Forge's state doesn't: how often each commander was cast from the Command zone, the tax,
+ * one {@code p1commandercast=2|Krenko, Mob Boss} line per commander cast, put back on the player's commander of that
+ * name after a load (see {@link #applyGameOnThread}).
  */
 public class CompanionGameState extends GameState {
+    private static final String COMMANDER_CAST = "commandercast";
+
+    /** A commander's cast count from the Command zone, by the index of its owner in the game's players. */
+    private record CommanderCast(int player, String name, int count) { }
+
+    private final List<CommanderCast> commanderCasts = new ArrayList<>();
     private PlaceholderText placeholders;
 
     public static CompanionGameState of(List<String> lines) {
@@ -26,7 +36,46 @@ public class CompanionGameState extends GameState {
     public static String capture(Game game) {
         CompanionGameState state = new CompanionGameState();
         state.initFromGame(game);
+        List<Player> players = game.getPlayers();
+        for (int i = 0; i < players.size(); i++) {
+            Player player = players.get(i);
+            for (Card commander : player.getCommanders()) {
+                int count = player.getCommanderCast(commander);
+                if (count > 0) {
+                    state.commanderCasts.add(new CommanderCast(i, commander.getName(), count));
+                }
+            }
+        }
         return state.toString();
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder(super.toString());
+        for (CommanderCast cast : commanderCasts) {
+            sb.append('p').append(cast.player()).append(COMMANDER_CAST).append('=')
+                    .append(cast.count()).append('|').append(cast.name()).append('\n');
+        }
+        return sb.toString();
+    }
+
+    @Override
+    protected void parseLine(String line) {
+        int eq = line.indexOf('=');
+        String key = eq < 0 ? "" : line.substring(0, eq).trim().toLowerCase();
+        if (!key.startsWith("p") || !key.endsWith(COMMANDER_CAST)) {
+            super.parseLine(line);
+            return;
+        }
+        String value = line.substring(eq + 1);
+        int bar = value.indexOf('|');
+        try {
+            int player = Integer.parseInt(key.substring(1, key.length() - COMMANDER_CAST.length()));
+            int count = Integer.parseInt(value.substring(0, Math.max(bar, 0)).trim());
+            commanderCasts.add(new CommanderCast(player, value.substring(bar + 1).trim(), count));
+        } catch (NumberFormatException e) {
+            System.err.println("Unreadable commander cast count, skipped: " + line);
+        }
     }
 
     /**
@@ -79,6 +128,33 @@ public class CompanionGameState extends GameState {
         }
         for (Player player : game.getPlayers()) {
             CompanionCards.addTableEffect(game, player);
+        }
+        restoreCommanderCasts(game);
+    }
+
+    /**
+     * The engine keys the tax by card, and the load made new cards: what it counted is for cards no longer in the
+     * game (its commander damage too, which a state doesn't save either), so it goes, and each saved count is put on
+     * the player's commander of that name.
+     */
+    private void restoreCommanderCasts(Game game) {
+        List<Player> players = game.getPlayers();
+        for (Player player : players) {
+            player.resetCommanderStats();
+        }
+        for (CommanderCast cast : commanderCasts) {
+            if (cast.player() < 0 || cast.player() >= players.size()) {
+                continue;
+            }
+            Player player = players.get(cast.player());
+            for (Card commander : player.getCommanders()) {
+                if (commander.getName().equals(cast.name())) {
+                    for (int i = 0; i < cast.count(); i++) {
+                        player.incCommanderCast(commander);
+                    }
+                    break;
+                }
+            }
         }
     }
 }

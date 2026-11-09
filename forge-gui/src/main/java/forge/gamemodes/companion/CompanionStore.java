@@ -411,16 +411,21 @@ public class CompanionStore {
 
     static String toJson(CompanionSetup setup) {
         JsonObject json = new JsonObject();
-        json.addProperty("version", 2);
+        json.addProperty("version", 3);
         json.addProperty("life", setup.life());
         json.addProperty("hand", setup.handSize());
         json.addProperty("library", setup.librarySize());
         json.addProperty("combat", setup.engineCombat());
+        json.addProperty("commanderMode", setup.commanderMode());
         JsonArray seats = new JsonArray();
         for (CompanionSetup.Seat seat : setup.seats()) {
             JsonObject s = new JsonObject();
             s.addProperty("name", seat.name());
             s.addProperty("me", seat.me());
+            JsonArray commanders = new JsonArray();
+            seat.commanders().forEach(commanders::add);
+            s.add("commanders", commanders);
+            s.addProperty("deckList", seat.deckList());
             seats.add(s);
         }
         json.add("seats", seats);
@@ -432,10 +437,21 @@ public class CompanionStore {
         List<CompanionSetup.Seat> seats = new ArrayList<>();
         for (JsonElement element : json.getAsJsonArray("seats")) {
             JsonObject s = element.getAsJsonObject();
-            seats.add(new CompanionSetup.Seat(s.get("name").getAsString(), s.get("me").getAsBoolean()));
+            // a seat saved before version 3 has no commanders and no deck
+            List<String> commanders = new ArrayList<>();
+            if (s.has("commanders")) {
+                for (JsonElement commander : s.getAsJsonArray("commanders")) {
+                    commanders.add(commander.getAsString());
+                }
+            }
+            String deckList = s.has("deckList") ? s.get("deckList").getAsString() : "";
+            seats.add(new CompanionSetup.Seat(s.get("name").getAsString(), s.get("me").getAsBoolean(), commanders,
+                    deckList));
         }
         return new CompanionSetup(seats, json.get("life").getAsInt(), json.get("hand").getAsInt(),
                 json.get("library").getAsInt(),
-                json.has("combat") && json.get("combat").getAsBoolean()); // games saved before the option had it off
+                json.has("combat") && json.get("combat").getAsBoolean(), // games saved before the option had it off
+                // and before version 3 there were no commanders, so nothing to check a card against
+                json.has("commanderMode") && json.get("commanderMode").getAsBoolean());
     }
 }

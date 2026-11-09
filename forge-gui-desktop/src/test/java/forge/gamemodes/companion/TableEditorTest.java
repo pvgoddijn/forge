@@ -30,6 +30,8 @@ import static org.testng.Assert.assertTrue;
  * the engine can run headless; nothing in these cards asks for a choice.
  */
 public class TableEditorTest extends AITest {
+    /** A seat with no commander: its whole 100-card deck less the hand is in its library. */
+    private static final int NO_COMMANDER_LIBRARY = CompanionSetup.DEFAULT_LIBRARY + 1;
 
     private Game startTable() {
         Game game = initAndCreateThreePlayerGame();
@@ -57,7 +59,7 @@ public class TableEditorTest extends AITest {
         Game game = startTable();
         for (Player p : game.getPlayers()) {
             assertEquals(CompanionCards.hiddenInHand(p), 7);
-            assertEquals(p.getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY);
+            assertEquals(p.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
             assertEquals(p.getLife(), 40);
         }
     }
@@ -377,7 +379,7 @@ public class TableEditorTest extends AITest {
         assertTrue(TableEditor.addCard(p, "Elvish Visionary", true, TableEditor.Mode.CAST).done());
         resolveAll(game);
         assertEquals(CompanionCards.hiddenInHand(p), 7, "one card left the hand, one was drawn");
-        assertEquals(p.getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY - 1);
+        assertEquals(p.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY - 1);
     }
 
     @Test
@@ -416,7 +418,7 @@ public class TableEditorTest extends AITest {
         assertEquals(CompanionCards.hiddenInHand(q), 6);
         assertEquals(q.getLife(), 44);
         assertEquals(countCardsWithName(loaded, "Gray Merchant of Asphodel"), 1);
-        assertEquals(q.getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY);
+        assertEquals(q.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
         assertEquals(q.getCardsIn(ZoneType.Command).size(), 1, "the table effect, and only one");
     }
 
@@ -848,11 +850,14 @@ public class TableEditorTest extends AITest {
         final List<String> results = new ArrayList<>();
 
         Recorded() {
+            this(CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                    new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false))));
+        }
+
+        Recorded(CompanionSetup setup) {
             try {
                 java.io.File dir = java.nio.file.Files.createTempDirectory("companion").toFile();
                 assertTrue(new java.io.File(dir, "t").mkdir());
-                CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
-                        new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
                 store = new CompanionStore(dir);
                 table = new CompanionTable("t", setup, store);
             } catch (java.io.IOException e) {
@@ -1141,6 +1146,215 @@ public class TableEditorTest extends AITest {
         assertEquals(rec.results, List.of("Nobody isn't in the game: Divination wasn't added"));
     }
 
+    // ---- Turn skip (slice 6, AC-45) ----
+
+    /** Ann's card that is legal only for Cy: the add moves the turn ahead to Cy's (2 turns) and adds it there. */
+    private static CompanionTable.AddCard skipTo(Player player, String name) {
+        return new CompanionTable.AddCard(player.getName(), name, false, TableEditor.Mode.CAST, player.getName());
+    }
+
+    /** Moves the game to {@code phase} of {@code player}'s turn {@code turn}, as the loop would reach it. */
+    private static void moveTo(Game game, Player player, int turn, PhaseType phase) {
+        game.getPhaseHandler().devModeSet(phase, player, turn);
+    }
+
+    /**
+     * AC-45: a skip waits for Main 1 of the target seat's turn with an empty stack. The turn changes in between are
+     * the point of the skip, so unlike a parked sorcery it isn't cast on them.
+     */
+    @Test
+    public void aSkipWaitsForTheTargetSeatsMain1AndNotForATurnChange() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int turn = ph.getTurn();
+        Recorded rec = new Recorded();
+        rec.table.submit(skipTo(cy, "Llanowar Elves"));
+
+        assertTrue(rec.table.runPending(game));
+        assertTrue(rec.table.isParked(), "parked in Ann's Main 1, though a creature isn't otherwise held");
+        String waits = "Llanowar Elves waits for " + cy.getName() + "'s Main 1";
+        assertEquals(rec.notices, List.of(waits));
+        assertFalse(rec.table.parkedReady(game), "still Ann's turn");
+        assertEquals(rec.table.skippingTo(game), cy.getName(), "Ann's turn is skipped too, from here");
+        moveTo(game, PhaseType.END_OF_TURN);
+        assertFalse(rec.table.parkedReady(game), "Ann's end step");
+
+        moveTo(game, bo, turn + 1, PhaseType.UPKEEP);
+        assertFalse(rec.table.parkedReady(game), "Bo's turn: a turn change isn't a reason to cast it now");
+        assertEquals(rec.table.skippingTo(game), cy.getName());
+        moveTo(game, bo, turn + 1, PhaseType.MAIN1);
+        assertFalse(rec.table.parkedReady(game), "Bo's Main 1 isn't Cy's");
+        moveTo(game, bo, turn + 1, PhaseType.MAIN2);
+        assertFalse(rec.table.parkedReady(game), "nor is Bo's Main 2");
+
+        moveTo(game, cy, turn + 2, PhaseType.DRAW);
+        assertFalse(rec.table.parkedReady(game), "Cy's turn, before Main 1");
+        assertNull(rec.table.skippingTo(game), "Cy's turn isn't skipped");
+        moveTo(game, cy, turn + 2, PhaseType.MAIN1);
+        TableEditor.addCard(cy, "Opt", false, TableEditor.Mode.CAST);
+        assertFalse(rec.table.parkedReady(game), "something is on the stack");
+        resolveAll(game);
+        assertTrue(rec.table.parkedReady(game), "Cy's Main 1 with an empty stack");
+
+        rec.table.runParked(game);
+        assertFalse(rec.table.isParked());
+        assertEquals(castCount(game, "Llanowar Elves"), 1);
+        assertEquals(rec.results.get(rec.results.size() - 1), cy.getName() + " casts Llanowar Elves",
+                rec.results.toString());
+        assertEquals(rec.notices, List.of(waits), "no \"turn ended\" notice");
+    }
+
+    /** A skip to the seat whose turn it already is skips nothing: it's an ordinary add. */
+    @Test
+    public void aSkipToTheActiveSeatIsAnOrdinaryAdd() {
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        CompanionTable.AddCard add = skipTo(ann, "Llanowar Elves");
+        assertNull(add.turnNeeded(game));
+        assertNull(add.mainPhaseNeeded(game), "a creature isn't held for a main phase");
+        assertEquals(skipTo(ann, "Divination").mainPhaseNeeded(game), PhaseType.MAIN1,
+                "a sorcery still waits for this turn's Main 1 (AC-42)");
+        Recorded rec = new Recorded();
+        rec.table.submit(add);
+        rec.table.runPending(game);
+        assertFalse(rec.table.isParked());
+        assertEquals(castCount(game, "Llanowar Elves"), 1);
+    }
+
+    /** An undo while the skip waits goes back to before it, and drops it: it's never cast later. */
+    @Test
+    public void anUndoWhileASkipIsParkedDropsTheSkip() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int turn = ph.getTurn();
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        rec.table.submit(skipTo(cy, "Llanowar Elves"));
+        rec.table.runPending(game);
+        moveTo(game, bo, turn + 1, PhaseType.MAIN1);
+
+        undo(rec, game);
+        assertFalse(rec.table.isParked());
+        assertNull(rec.table.skippingTo(game));
+        assertEquals(ph.getPlayerTurn(), ann, "back to before the skip");
+        assertEquals(rec.notices.get(rec.notices.size() - 1),
+                "Undone: Llanowar Elves and anything after it wasn't added");
+        moveTo(game, cy, turn + 2, PhaseType.MAIN1);
+        assertFalse(rec.table.parkedReady(game), "nothing waits any more");
+        rec.table.runParked(game);
+        assertEquals(castCount(game, "Llanowar Elves"), 0);
+    }
+
+    /** "Check early": a second Add while a skip waits queues behind it, and both run in Cy's Main 1, in order. */
+    @Test
+    public void aSecondAddWhileASkipIsParkedQueuesBehindIt() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int turn = ph.getTurn();
+        Recorded rec = new Recorded();
+        rec.table.submit(skipTo(cy, "Llanowar Elves"));
+        rec.table.runPending(game);
+        rec.table.submit(cast(bo, "Opt"));
+
+        assertTrue(rec.table.runPending(game));
+        assertEquals(castCount(game, "Opt"), 0, "waits behind the skip");
+        assertEquals(rec.notices, List.of("Llanowar Elves waits for " + cy.getName() + "'s Main 1",
+                "Opt waits behind Llanowar Elves"));
+        moveTo(game, bo, turn + 1, PhaseType.MAIN1);
+        assertFalse(rec.table.parkedReady(game));
+
+        moveTo(game, cy, turn + 2, PhaseType.MAIN1);
+        assertTrue(rec.table.parkedReady(game));
+        rec.table.runParked(game);
+        assertFalse(rec.table.isParked());
+        assertEquals(rec.results, List.of(cy.getName() + " casts Llanowar Elves", bo.getName() + " casts Opt"),
+                "in submit order");
+    }
+
+    /**
+     * Slice 4's item 11 with Commander mode on: an instant from hand is offered to the seats whose mana could have
+     * cast it and whose commander's colour identity allows it, but the active seat is never taken out by the identity
+     *: an off-colour card for it must reach the turn-skip check. Any other card, a card from elsewhere, or a name
+     * not in the database isn't narrowed, so the active seat stays chosen.
+     */
+    @Test
+    public void commanderModeNarrowsTheOfferedSeatsByColourIdentity() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        List<Player> players = game.getPlayers();
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(1), "Island");
+        putIn(game, players.get(1), "Island");
+        String ann = players.get(0).getName();
+        String bo = players.get(1).getName();
+        String cy = players.get(2).getName();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat(ann, true, List.of("Krenko, Mob Boss"), ""),
+                new CompanionSetup.Seat(bo, false, List.of("Talrand, Sky Summoner"), ""),
+                new CompanionSetup.Seat(cy, false)));
+        CompanionTable on = new Recorded(setup).table;
+        CompanionTable off = new Recorded(setup.withCommanderMode(false)).table;
+        on.atPrompt(game);
+        off.atPrompt(game);
+
+        assertEquals(off.offerSeats("Counterspell", true, ann, ann).seats(), List.of(ann, bo), "the mana check alone");
+        assertEquals(on.offerSeats("Counterspell", true, bo, bo).seats(), List.of(bo),
+                "Krenko's red identity rules out Ann, who isn't active");
+        SeatOffer annActive = on.offerSeats("Counterspell", true, ann, ann);
+        assertEquals(annActive.seats(), List.of(ann, bo), "the active seat stays, for the turn skip to see it");
+        assertEquals(annActive.preselected(), ann);
+        SeatOffer elves = on.offerSeats("Llanowar Elves", true, ann, ann);
+        assertEquals(elves.seats(), List.of(ann, bo, cy), "a non-instant isn't narrowed by identity");
+        assertEquals(elves.preselected(), ann, "so the elves stay Ann's, and Add offers to move to Cy's turn");
+        assertEquals(CommanderLegality.checkAdd(card("Llanowar Elves"), "Llanowar Elves", true, setup,
+                elves.preselected(), ann, List.of(ann, bo, cy)).verdict(), CommanderLegality.Verdict.SKIP);
+        assertEquals(on.offerSeats("Counterspell", false, bo, bo).seats(), List.of(ann, bo, cy),
+                "from elsewhere isn't narrowed");
+        assertEquals(on.offerSeats("Not A Card Name", true, ann, ann).seats(), List.of(ann, bo, cy),
+                "a token name isn't narrowed");
+        assertFalse(on.offerSeats("Lightning Bolt", true, ann, ann).narrowed(),
+                "Ann has no red mana: nobody could have, so the dialog offers all");
+    }
+
+    /** Chunk 11: Commander mode switched in the game menu is read live by could-have-cast, and saved with the game. */
+    @Test
+    public void switchingCommanderModeIsReadLiveAndSaved() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        List<Player> players = game.getPlayers();
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(0), "Island");
+        putIn(game, players.get(2), "Island");
+        putIn(game, players.get(2), "Island");
+        String ann = players.get(0).getName();
+        String bo = players.get(1).getName();
+        String cy = players.get(2).getName();
+        Recorded rec = new Recorded(CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat(ann, true, List.of("Krenko, Mob Boss"), ""),
+                new CompanionSetup.Seat(bo, false, List.of("Talrand, Sky Summoner"), ""),
+                new CompanionSetup.Seat(cy, false))));
+        rec.store.saveSetup("t", rec.table.setup());
+        rec.table.atPrompt(game);
+        assertTrue(rec.table.commanderMode(), "on by default");
+        assertEquals(rec.table.offerSeats("Counterspell", true, bo, bo).seats(), List.of(cy), "Ann is off-colour");
+
+        rec.table.setCommanderMode(false);
+
+        assertFalse(rec.table.commanderMode());
+        assertEquals(rec.table.offerSeats("Counterspell", true, bo, bo).seats(), List.of(ann, cy),
+                "not narrowed by identity any more");
+        assertFalse(rec.store.loadActive().orElseThrow().setup().commanderMode(), "saved in setup.json");
+        assertEquals(rec.results, List.of(), "saved without a problem");
+    }
+
     /** Ends a run of the real main loop where the table would show the operator a priority prompt. */
     private static final class OperatorAsked extends RuntimeException {
         OperatorAsked() {
@@ -1218,7 +1432,7 @@ public class TableEditorTest extends AITest {
         }
 
         @Override
-        public void declareAttackers(Player attackingPlayer, Combat combat) {
+        void declareAttackersOnPrompt(Player attackingPlayer, Combat combat) {
             asked.add("attackers " + getPlayer().getName());
             assertTrue(table.engineCombat(getGame().getPhaseHandler().getTurn()), "the engine runs this combat");
             if (attacker != null) {
@@ -1381,6 +1595,124 @@ public class TableEditorTest extends AITest {
         assertEquals(ph.getPhase(), PhaseType.MAIN2);
         assertEquals(game.getStack().peekAbility().getHostCard().getName(), "Divination", "cast in Main 2");
         assertEquals(rec.notices, List.of("Divination waits for Main 2"));
+    }
+
+    /**
+     * AC-45 through the real loop: Ann's card legal only for Cy moves the turn ahead. Bo's turn runs (he draws) with
+     * nobody asked, the card is cast in Cy's Main 1, and the skipped turns' engine entries are under the step the
+     * skip's save writes. One undo there takes back the skip and the card together, to Ann's Main 1.
+     */
+    @Test
+    public void onTheGameLoopASkipRunsTheTurnsBetweenAndIsOneUndo() {
+        Game game = startTableInTurn2(PhaseType.MAIN1);
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player ann = ph.getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Player cy = game.getNextPlayerAfter(bo);
+        int boHand = bo.getCardsIn(ZoneType.Hand).size();
+        int cyHand = cy.getCardsIn(ZoneType.Hand).size();
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+        List<Integer> handsInCysTurn = new ArrayList<>();
+        int[] stepInCysTurn = {-1};
+        seatsFor(game, rec, asked, seat -> {
+            saveAsTheTableDoes(rec, game);
+            switch (asked.size()) {
+                case 1: // Ann's Main 1: move to Cy's turn and add it there
+                    rec.table.submit(skipTo(cy, "Llanowar Elves"));
+                    return seat.asTheTableDoes();
+                case 2: // Cy's Main 1, the Elves on the stack: pass, so they resolve
+                    assertEquals(ph.getPlayerTurn(), cy);
+                    assertEquals(game.getStack().peekAbility().getHostCard().getName(), "Llanowar Elves");
+                    handsInCysTurn.add(bo.getCardsIn(ZoneType.Hand).size());
+                    handsInCysTurn.add(cy.getCardsIn(ZoneType.Hand).size());
+                    return null;
+                case 3: // Cy's Main 1 with the Elves in play, saved: undo once
+                    stepInCysTurn[0] = rec.store.latestStep("t");
+                    rec.table.undo();
+                    return seat.asTheTableDoes();
+                default:
+                    throw new OperatorAsked();
+            }
+        });
+
+        runLoopUntilTheOperatorIsAsked(game);
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1", "priority MAIN1", "priority MAIN1"),
+                "Ann, Cy twice, then Ann after the undo; nobody in Bo's turn: " + asked);
+        assertEquals(handsInCysTurn, List.of(boHand + 1, cyHand + 1), "Bo's and Cy's draws happened");
+        assertEquals(stepInCysTurn[0], 1, "Ann's Main 1 was step 0; the skip and the card are step 1");
+        List<CompanionLogEntry> bosTurn = rec.store.loadLog("t").stream()
+                .filter(e -> e.kind() == CompanionLogEntry.Kind.ENGINE && e.turn() == 3).toList();
+        assertFalse(bosTurn.isEmpty(), "Bo's turn is in the history");
+        assertTrue(bosTurn.stream().allMatch(e -> e.step() == 1), "under the skip's step: " + bosTurn);
+
+        assertEquals(ph.getPlayerTurn(), ann, "one undo took back the skip and the card");
+        assertEquals(ph.getTurn(), 2);
+        assertEquals(ph.getPhase(), PhaseType.MAIN1);
+        assertEquals(named(cy, ZoneType.Battlefield, "Llanowar Elves").size(), 0);
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), boHand, "Bo's draw is back");
+        assertEquals(cy.getCardsIn(ZoneType.Hand).size(), cyHand);
+        assertEquals(rec.store.latestStep("t"), 0);
+        assertFalse(rec.table.isParked());
+    }
+
+    /** Runs the loop with a skip from Ann's Main 1 to Cy's turn, until Cy is asked in her Main 1. */
+    private void runASkipToCy(Game game, Recorded rec, List<String> asked, java.util.function.Consumer<List<LoopSeat>> setUp) {
+        forge.game.phase.PhaseHandler ph = game.getPhaseHandler();
+        Player cy = game.getNextPlayerAfter(game.getNextPlayerAfter(ph.getPlayerTurn()));
+        boolean[] submitted = {false};
+        List<LoopSeat> seats = seatsFor(game, rec, asked, seat -> {
+            if (!submitted[0]) {
+                submitted[0] = true;
+                rec.table.submit(skipTo(cy, "Llanowar Elves"));
+                return seat.asTheTableDoes();
+            }
+            throw new OperatorAsked();
+        });
+        setUp.accept(seats);
+        runLoopUntilTheOperatorIsAsked(game);
+        assertEquals(ph.getPlayerTurn(), cy, asked + " " + rec.notices);
+        assertEquals(game.getStack().peekAbility().getHostCard().getName(), "Llanowar Elves");
+    }
+
+    /** No engine combat in a skipped turn, even with "Combat every turn" on: Bo isn't asked to attack. */
+    @Test
+    public void onTheGameLoopASkippedTurnRunsNoEngineCombat() {
+        Game game = startTableInTurn2(PhaseType.MAIN1, "p1battlefield=Grizzly Bears");
+        Player bo = game.getNextPlayerAfter(game.getPhaseHandler().getPlayerTurn());
+        Recorded rec = new Recorded();
+        rec.table.setEngineCombat(true);
+        List<String> asked = new ArrayList<>();
+
+        runASkipToCy(game, rec, asked, seats -> { });
+
+        assertEquals(asked, List.of("priority MAIN1", "priority MAIN1"), "no attack in Bo's turn: " + asked);
+        assertEquals(bo.getCardsIn(ZoneType.Battlefield).size(), 1);
+    }
+
+    /**
+     * "Check early": a creature that must attack in a skipped turn. The skip stops at that combat with a notice, the
+     * operator declares it, blocks and damage are by the rules, and the skip carries on to Cy's Main 1.
+     */
+    @Test
+    public void onTheGameLoopAForcedAttackInASkippedTurnIsDeclaredAndTheSkipGoesOn() {
+        Game game = startTableInTurn2(PhaseType.MAIN1, "p1battlefield=Juggernaut");
+        Player bo = game.getNextPlayerAfter(game.getPhaseHandler().getPlayerTurn());
+        Player cy = game.getNextPlayerAfter(bo);
+        Recorded rec = new Recorded();
+        List<String> asked = new ArrayList<>();
+
+        runASkipToCy(game, rec, asked, seats -> seats.stream().filter(s -> s.getPlayer() == bo).findFirst()
+                .orElseThrow().attacker = named(bo, ZoneType.Battlefield, "Juggernaut").get(0));
+
+        assertEquals(asked, List.of("priority MAIN1", "attackers " + bo.getName(), "priority MAIN1"),
+                "Cy has no creature, so isn't asked to block: " + asked);
+        assertEquals(cy.getLife(), CompanionSetup.DEFAULT_LIFE - 5, "Juggernaut's damage was dealt");
+        assertTrue(rec.notices.contains("A creature must attack in " + bo.getName() + "'s turn, so the move to "
+                + cy.getName() + "'s turn stops at this "
+                + "combat: declare the attack. Blocks and damage are done by the game too, so don't also set life "
+                + "for it. Then the move carries on."), rec.notices.toString());
     }
 
     @Test
@@ -3080,7 +3412,8 @@ public class TableEditorTest extends AITest {
     }
 
     /**
-     * Under the table's rules (a Constructed game, so no rule 903.9a check), a commander moved to a graveyard stays
+     * Without the Commander variant (this test game's Constructed rules, so no rule 903.9a check; a Companion game
+     * with commanders has it, see {@link #aCommanderThatDiesIsOfferedTheCommandZone}), a commander moved to a graveyard stays
      * there and its owner isn't asked. Moved to a hand, the engine's command-zone replacement (903.9b) asks its owner,
      * and a yes puts it into the Command zone, which the message says.
      */
@@ -3240,5 +3573,364 @@ public class TableEditorTest extends AITest {
         assertTrue(engineEntries(log).size() > engineBefore, "the trigger's resolution is copied: " + log);
         assertTrue(CompanionHistory.of(log).rows().stream().anyMatch(r -> r.kind() == CompanionLogEntry.Kind.MOVE),
                 "the move is a history row");
+    }
+
+    // ---- Slice 6, chunks 3-5: commanders from the setup, the Commander variant, and casting from the Command zone ----
+
+    /** Seat order Ann (Me), Bo, Cy, so game order too: Bo has Krenko as his commander. */
+    private static CompanionSetup setupWithBosCommander() {
+        return CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                new CompanionSetup.Seat("Bo", false, List.of(KRENKO), ""), new CompanionSetup.Seat("Cy", false)));
+    }
+
+    /** A game as {@link CompanionMatch} makes it for {@code setup}: its variants, then the setup's starting state. */
+    private Game startCommanderTable(CompanionSetup setup) {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(setup, game.getRules());
+        CompanionGameState.of(setup.initialState()).applyNow(game);
+        return game;
+    }
+
+    /** Bo's Krenko is his commander, in his Command zone, and he may cast it from there. */
+    private void assertKrenkoIsBosCommanderInCommand(Game game, String when) {
+        Player bo = game.getPlayers().get(1);
+        List<Card> krenko = named(bo, ZoneType.Command, KRENKO);
+        assertEquals(krenko.size(), 1, when + ": Krenko is in Bo's Command zone");
+        assertTrue(krenko.get(0).isCommander(), when + ": and is a commander");
+        assertEquals(bo.getCommanders(), krenko, when + ": Bo's only commander");
+        assertTrue(mayCast(game, krenko.get(0), bo), when + ": Bo may cast it from there");
+        assertEquals(game.getCardsInGame().stream().filter(c -> c.getName().equals(KRENKO)).count(), 1L,
+                when + ": and there is only one");
+    }
+
+    @Test
+    public void aCommanderFromTheSetupStartsInCommandWithTheVariantAndTheLibraryLessIt() {
+        Game game = startCommanderTable(setupWithBosCommander());
+
+        assertTrue(game.getRules().hasAppliedVariant(forge.game.GameType.Commander), "a seat has a commander");
+        assertKrenkoIsBosCommanderInCommand(game, "at the start");
+        assertEquals(game.getPlayers().get(1).getCardsIn(ZoneType.Library).size(), CompanionSetup.DEFAULT_LIBRARY);
+        assertEquals(game.getPlayers().get(0).getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
+        assertEquals(CompanionCards.hiddenInHand(game.getPlayers().get(1)), CompanionSetup.DEFAULT_HAND);
+        assertEquals(game.getPlayers().get(1).getCardsIn(ZoneType.Command).size(), 3,
+                "the commander, the engine's commander effect, and the table effect");
+    }
+
+    @Test
+    public void withNoCommanderTheVariantIsntApplied() {
+        Game game = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                new CompanionSetup.Seat("Bo", false))), game.getRules());
+        assertFalse(game.getRules().hasAppliedVariant(forge.game.GameType.Commander));
+    }
+
+    /**
+     * Start with Commander mode off: Bo's deck names Krenko, but the game has no commander, no Commander variant and
+     * Krenko stays out of the Command zone; the deck list is kept for ranking.
+     */
+    @Test
+    public void withCommanderModeOffAtStartADecksCommandersArentAttached() {
+        String list = "Commander\n1 " + KRENKO + "\nDeck\n1 Mountain";
+        CompanionSetup off = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
+                new CompanionSetup.Seat("Bo", false, List.of(KRENKO), list), new CompanionSetup.Seat("Cy", false)))
+                .withCommanderMode(false).withoutCommanders();
+
+        assertFalse(off.hasCommanders());
+        assertEquals(off.seats().get(1).deckList(), list, "kept for ranking");
+        Game game = startCommanderTable(off);
+        Player bo = game.getPlayers().get(1);
+        assertFalse(game.getRules().hasAppliedVariant(forge.game.GameType.Commander));
+        assertEquals(bo.getCommanders(), List.of());
+        assertEquals(named(bo, ZoneType.Command, KRENKO), List.of());
+        assertEquals(bo.getCardsIn(ZoneType.Library).size(), NO_COMMANDER_LIBRARY);
+
+    }
+
+    /**
+     * Commander mode switched on in the game menu after a Start with it off doesn't pretend a commander exists: Bo's
+     * deck named Krenko, but the game has none, so a blue instant isn't narrowed away from him by identity.
+     */
+    @Test
+    public void commanderModeSwitchedOnLaterFindsNoCommanderToNarrowBy() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        List<Player> players = game.getPlayers();
+        for (Player player : players) {
+            putIn(game, player, "Island");
+            putIn(game, player, "Island");
+        }
+        String ann = players.get(0).getName();
+        String bo = players.get(1).getName();
+        String cy = players.get(2).getName();
+        Recorded rec = new Recorded(CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat(ann, true),
+                new CompanionSetup.Seat(bo, false, List.of(KRENKO), ""), new CompanionSetup.Seat(cy, false)))
+                .withCommanderMode(false).withoutCommanders());
+        rec.store.saveSetup("t", rec.table.setup());
+        rec.table.atPrompt(game);
+
+        rec.table.setCommanderMode(true);
+
+        assertTrue(rec.table.commanderMode());
+        assertEquals(rec.table.offerSeats("Counterspell", true, ann, ann).seats(), List.of(ann, bo, cy),
+                "no commander to narrow by");
+    }
+
+    @Test
+    public void aCommanderStaysACommanderInCommandAfterAGameStateRoundTrip() {
+        CompanionSetup setup = setupWithBosCommander();
+        Game game = startCommanderTable(setup);
+        String saved = CompanionGameState.capture(game);
+
+        Game loaded = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(setup, loaded.getRules());
+        CompanionGameState.of(List.of(saved.split("\n"))).applyNow(loaded);
+
+        assertKrenkoIsBosCommanderInCommand(loaded, "after a round trip");
+        assertEquals(loaded.getPlayers().get(1).getCardsIn(ZoneType.Command).size(), 3,
+                "one commander effect and one table effect, none left over");
+    }
+
+    /** Krenko is cast from the Command zone and resolves; one undo puts him back there, still a commander. */
+    @Test
+    public void aCommanderCastFromCommandIsBackThereAfterAnUndo() {
+        CompanionSetup setup = setupWithBosCommander();
+        Game game = startCommanderTable(setup);
+        Player bo = game.getPlayers().get(1);
+        Recorded rec = new Recorded();
+        rec.table.save(game); // step 0, the start
+        act(rec, game, g -> {
+            TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+            resolveAll(g);
+            return add;
+        });
+        assertEquals(named(bo, ZoneType.Battlefield, KRENKO).size(), 1, "cast and resolved");
+
+        undo(rec, game);
+
+        assertKrenkoIsBosCommanderInCommand(game, "after an undo");
+        assertEquals(named(bo, ZoneType.Battlefield, KRENKO), List.of());
+    }
+
+    /**
+     * "From hand" or not, Bo's commander is cast from his Command zone and the hand isn't touched. The cast is free,
+     * but the engine counts it as a cast from the Command zone, so the tax for the next one is 2.
+     */
+    @Test
+    public void addingACommanderCastsItFromCommandAndLeavesTheHand() {
+        Game game = startCommanderTable(setupWithBosCommander());
+        Player bo = game.getPlayers().get(1);
+        Card krenko = named(bo, ZoneType.Command, KRENKO).get(0);
+        int hand = bo.getCardsIn(ZoneType.Hand).size();
+
+        TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+
+        assertTrue(add.done(), add.message());
+        assertEquals(add.message(), bo.getName() + " casts " + KRENKO + " from the Command zone");
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.NONE, "nothing left the hand");
+        assertEquals(bo.getCardsIn(ZoneType.Hand).size(), hand, "the hand isn't touched");
+        assertEquals(CompanionCards.hiddenInHand(bo), CompanionSetup.DEFAULT_HAND);
+        assertEquals(game.getStack().size(), 1);
+        assertEquals(game.getStack().peekAbility().getHostCard(), krenko, "the commander itself, not a new card");
+        assertEquals(bo.getCommanderCast(krenko), 1, "counted for tax");
+        resolveAll(game);
+        assertEquals(named(bo, ZoneType.Battlefield, KRENKO), List.of(krenko));
+        assertTrue(krenko.isCommander());
+        assertEquals(named(bo, ZoneType.Command, KRENKO), List.of());
+    }
+
+    /** Another player's commander of the same name isn't theirs to cast: Ann's Krenko is a new card, from her hand. */
+    @Test
+    public void anotherPlayersCommanderIsntCastFromTheirCommandZone() {
+        Game game = startCommanderTable(setupWithBosCommander());
+        Player ann = game.getPlayers().get(0);
+        Player bo = game.getPlayers().get(1);
+
+        TableEditor.Result add = TableEditor.addCard(ann, KRENKO, true, TableEditor.Mode.CAST);
+
+        assertTrue(add.done(), add.message());
+        assertEquals(add.fromHand(), CompanionLogEntry.FromHand.PLACEHOLDER);
+        assertEquals(named(bo, ZoneType.Command, KRENKO).size(), 1, "Bo's commander stays where it is");
+        assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND - 1);
+    }
+
+    /**
+     * With the Commander variant, a commander that dies goes to its owner's graveyard, and the state-based check
+     * (rule 903.9a) offers its owner the Command zone; a yes puts it there, and it can be cast again, for 2 more.
+     */
+    @Test
+    public void aCommanderThatDiesIsOfferedTheCommandZone() {
+        Game game = startCommanderTable(setupWithBosCommander());
+        Player bo = game.getPlayers().get(1);
+        List<String> asked = new ArrayList<>();
+        bo.dangerouslySetController(new forge.ai.PlayerControllerAi(game, bo, bo.getLobbyPlayer()) {
+            @Override
+            public boolean confirmAction(forge.game.spellability.SpellAbility sa,
+                    forge.game.player.PlayerActionConfirmMode mode, String message, List<String> options,
+                    Card cardToShow, java.util.Map<String, Object> params) {
+                asked.add("action " + mode);
+                return true;
+            }
+        });
+        assertTrue(TableEditor.addCard(bo, KRENKO, false, TableEditor.Mode.CAST).done());
+        resolveAll(game);
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+
+        TableEditor.Result dies = TableEditor.moveTo(krenko, bo, ZoneType.Graveyard);
+        game.getAction().checkStateEffects(true);
+
+        assertTrue(dies.done(), dies.message());
+        assertEquals(asked, List.of("action " + forge.game.player.PlayerActionConfirmMode.ChangeZoneToAltDestination),
+                "Bo is asked whether it goes to the Command zone");
+        assertEquals(named(bo, ZoneType.Graveyard, KRENKO), List.of());
+        Card inCommand = named(bo, ZoneType.Command, KRENKO).get(0);
+        assertTrue(inCommand.isCommander());
+
+        TableEditor.Result again = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+
+        assertTrue(again.done(), "free, so the tax doesn't stop it: " + again.message());
+        assertEquals(bo.getCommanderCast(inCommand), 2, "the second cast from the Command zone");
+        assertEquals(CompanionCards.hiddenInHand(bo), CompanionSetup.DEFAULT_HAND);
+    }
+
+    /** Bo always takes the Command zone for his dying commander. */
+    private static void boTakesTheCommandZone(Game game) {
+        Player bo = game.getPlayers().get(1);
+        bo.dangerouslySetController(new forge.ai.PlayerControllerAi(game, bo, bo.getLobbyPlayer()) {
+            @Override
+            public boolean confirmAction(forge.game.spellability.SpellAbility sa,
+                    forge.game.player.PlayerActionConfirmMode mode, String message, List<String> options,
+                    Card cardToShow, java.util.Map<String, Object> params) {
+                return true;
+            }
+        });
+    }
+
+    /**
+     * On a table that saves: Bo casts Krenko (step 1), Krenko dies and goes back to the Command zone (step 2), and Bo
+     * casts him again (step 3), so the engine has counted 2 casts from the Command zone.
+     */
+    private static Recorded krenkoCastTwice(CompanionSetup setup, Game game) {
+        Player bo = game.getPlayers().get(1);
+        boTakesTheCommandZone(game);
+        Recorded rec = new Recorded(setup);
+        rec.table.save(game); // step 0, the start
+        act(rec, game, g -> {
+            TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+            resolveAll(g);
+            return add;
+        });
+        act(rec, game, g -> {
+            TableEditor.Result dies = TableEditor.moveTo(named(bo, ZoneType.Battlefield, KRENKO).get(0), bo,
+                    ZoneType.Graveyard);
+            g.getAction().checkStateEffects(true);
+            return dies;
+        });
+        act(rec, game, g -> {
+            TableEditor.Result add = TableEditor.addCard(bo, KRENKO, true, TableEditor.Mode.CAST);
+            resolveAll(g);
+            return add;
+        });
+        assertEquals(bo.getCommanderCast(named(bo, ZoneType.Battlefield, KRENKO).get(0)), 2, "cast twice");
+        return rec;
+    }
+
+    /** The tax is saved with the game: a relaunch on the store still counts Krenko's 2 casts. */
+    @Test
+    public void theCommanderTaxSurvivesAResume() {
+        CompanionSetup setup = setupWithBosCommander();
+        Recorded rec = krenkoCastTwice(setup, startCommanderTable(setup));
+
+        Recorded relaunched = new Recorded(rec);
+        Game loaded = initAndCreateThreePlayerGame();
+        CompanionMatch.addVariants(setup, loaded.getRules());
+        relaunched.table.startFromLatest(loaded);
+
+        Player bo = loaded.getPlayers().get(1);
+        Card krenko = named(bo, ZoneType.Battlefield, KRENKO).get(0);
+        assertTrue(krenko.isCommander());
+        assertEquals(bo.getCommanderCast(krenko), 2, "the tax after a resume");
+        assertEquals(bo.getTotalCommanderCast(), 2, "nothing counted twice");
+    }
+
+    /** An undo of the second cast puts Krenko back in the Command zone with 1 cast counted, not 0 or 2. */
+    @Test
+    public void anUndoOfACommanderCastTakesBackItsTax() {
+        CompanionSetup setup = setupWithBosCommander();
+        Game game = startCommanderTable(setup);
+        Recorded rec = krenkoCastTwice(setup, game);
+
+        undo(rec, game);
+
+        Player bo = game.getPlayers().get(1);
+        assertKrenkoIsBosCommanderInCommand(game, "after the undo");
+        assertEquals(bo.getCommanderCast(named(bo, ZoneType.Command, KRENKO).get(0)), 1, "the first cast only");
+        assertEquals(bo.getTotalCommanderCast(), 1, "the counts for the cards the load removed are gone");
+    }
+
+    /** The legality check looks the setup's commanders up by name, in Forge's card database (slice 6 chunk 3). */
+    @Test
+    public void theNextLegalSeatComesFromTheSetupsCommanders() {
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Alice", true, List.of(KRENKO), ""),
+                new CompanionSetup.Seat("Bob", false, List.of("Talrand, Sky Summoner"), ""),
+                new CompanionSetup.Seat("Carol", false, List.of("Marwyn, the Nurturer"), "")));
+        PaperCard elves = StaticData.instance().getCommonCards().getUniqueByName("Llanowar Elves");
+        PaperCard swords = StaticData.instance().getCommonCards().getUniqueByName("Swords to Plowshares");
+
+        List<String> all = List.of("Alice", "Bob", "Carol");
+        assertEquals(CommanderLegality.firstLegalSeatAfter(elves, setup, "Alice", all),
+                java.util.Optional.of(new CommanderLegality.SeatAhead("Carol", 2)));
+        assertEquals(CommanderLegality.firstLegalSeatAfter(swords, setup, "Alice", all), java.util.Optional.empty());
+    }
+
+    private static PaperCard card(String name) {
+        PaperCard card = StaticData.instance().getCommonCards().getUniqueByName(name);
+        assertTrue(card != null, name + " is in the card database");
+        return card;
+    }
+
+    /** The commander step offers only cards that can be a commander (slice 6 chunk 7, AC-44). */
+    @Test
+    public void onlyCommandersAreOfferedAsCommanders() {
+        assertTrue(CommanderLegality.canBeCommander(card(KRENKO)));
+        assertTrue(CommanderLegality.canBeCommander(card("Raised by Giants")), "Forge counts a Background");
+        assertFalse(CommanderLegality.canBeCommander(card("Llanowar Elves")));
+        assertFalse(CommanderLegality.canBeCommander(card("Sol Ring")));
+
+        List<String> offered = CardNameMatcher.fromStaticData()
+                .matchWhere("Krenko", 30, CommanderLegality::canBeCommander).stream()
+                .map(CardNameMatcher.Suggestion::card).toList();
+        assertTrue(offered.contains(KRENKO), offered.toString());
+        assertFalse(offered.contains("Krenko's Command"), offered.toString());
+        assertFalse(CardNameMatcher.passes("Goblin", CommanderLegality::canBeCommander), "a token never passes");
+        assertTrue(CardNameMatcher.passes("Goblin", null));
+    }
+
+    /** Which commanders can take a second one, and which cards can be it (slice 6 chunk 7, AC-44). */
+    @DataProvider
+    public Object[][] pairings() {
+        return new Object[][] {
+            {"Thrasios, Triton Hero", "Tymna the Weaver", "Krenko, Mob Boss"}, // partner
+            {"Pir, Imaginative Rascal", "Toothy, Imaginary Friend", "Tymna the Weaver"}, // partner with
+            {"Max, the Daredevil", "Chief Jim Hopper", "Tymna the Weaver"}, // friends forever
+            {"Wilson, Refined Grizzly", "Raised by Giants", "Tymna the Weaver"}, // choose a Background
+            {"Raised by Giants", "Wilson, Refined Grizzly", "Krenko, Mob Boss"}, // a Background first
+            {"The Sixth Doctor", "Graham O'Brien", "Tymna the Weaver"}, // a Doctor and doctor's companion
+        };
+    }
+
+    @Test(dataProvider = "pairings")
+    public void aPairableCommanderTakesOnlyItsOtherHalf(String first, String second, String notSecond) {
+        PaperCard commander = card(first);
+
+        assertTrue(CommanderLegality.canHaveSecondCommander(commander));
+        assertTrue(CommanderLegality.secondCommanderFor(commander).test(card(second)), second);
+        assertFalse(CommanderLegality.secondCommanderFor(commander).test(card(notSecond)), notSecond);
+        assertFalse(CommanderLegality.secondCommanderFor(commander).test(commander), "not itself");
+    }
+
+    @Test
+    public void aCommanderWithoutAPairingTakesNoSecond() {
+        assertFalse(CommanderLegality.canHaveSecondCommander(card(KRENKO)));
+        assertFalse(CommanderLegality.canHaveSecondCommander(card("Marwyn, the Nurturer")));
     }
 }
