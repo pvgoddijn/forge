@@ -95,7 +95,10 @@ final class GameClientHandler extends GameProtocolHandler<IGuiGame> implements I
             case setGameView:
                 if (args.length > 0 && args[0] instanceof GameView gameView) {
                     if (this.tracker == null) {
-                        this.tracker = new Tracker();
+                        // a mode whose reconnect sends the board afresh into the view still shown keeps that view's
+                        // tracker, so the new board's card views replace the old ones in it, as after an undo
+                        final GameView shown = client.keepsTrackerAcrossConnections() ? gui.getGameView() : null;
+                        this.tracker = shown != null && shown.getTracker() != null ? shown.getTracker() : new Tracker();
                         // Encoder uses the tracker to emit IdRef for client→server CardView args
                         // (presence check only — stale detection is server-only).
                         // Ephemerals absent from the tracker serialize as full objects in both directions.

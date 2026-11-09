@@ -31,7 +31,8 @@ public record ActiveGame(CompanionStore.Unfinished game, boolean followed, Optio
     }
 
     static ActiveGame of(CompanionStore store, CompanionStore.Unfinished game) {
-        if (!ShareState.exists(store, game.id())) {
+        if (!ShareState.isFollowed(store, game.id())) {
+            // never shared, or shared from here (hosting): this device's own
             return new ActiveGame(game, false, Optional.empty());
         }
         Optional<JoinCode> code;

@@ -55,6 +55,10 @@ public class FGameClient implements IToServer, IHasForgeLog {
     static final int READER_IDLE_SECONDS = 45;
     private static final int[] BACKOFF_SECONDS = {1, 5, 15, 45, 60};
     private static final int RESUME_WATCH_SECONDS = 5;
+    /** Netty's own default: how long one connect may take before it fails. */
+    static final int CONNECT_TIMEOUT_MILLIS = 30_000;
+    /** What {@link #reconnectDelayMillis} returns to give up. */
+    protected static final long GIVE_UP = -1;
     private final IGuiGame clientGui;
     private final String hostname;
     private final Integer port;
@@ -103,6 +107,7 @@ public class FGameClient implements IToServer, IHasForgeLog {
             final Bootstrap b = new Bootstrap()
              .group(group)
              .channelFactory(channelFactory())
+             .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeoutMillis())
              .handler(new ChannelInitializer<SocketChannel>() {
                 @Override
                 public void initChannel(final SocketChannel ch) throws Exception {
@@ -194,6 +199,54 @@ public class FGameClient implements IToServer, IHasForgeLog {
     /** How long the client may stay silent before it sends a heartbeat. */
     protected int heartbeatIntervalSeconds() {
         return HEARTBEAT_INTERVAL_SECONDS;
+    }
+
+    /** How long one connect, a reconnect attempt's included, may take before it fails. Netty's default, 30 s. */
+    protected int connectTimeoutMillis() {
+        return CONNECT_TIMEOUT_MILLIS;
+    }
+
+    /**
+     * The reconnect backoff: how long to wait before the reconnect attempt {@code attemptIndex} (0 for the first), in
+     * milliseconds, or {@link #GIVE_UP} to stop trying, which fails the reconnect. Net play waits 1, 5, 15, 45 and 60 s,
+     * then gives up; a mode may never give up.
+     */
+    protected long reconnectDelayMillis(final int attemptIndex) {
+        return attemptIndex < BACKOFF_SECONDS.length ? TimeUnit.SECONDS.toMillis(BACKOFF_SECONDS[attemptIndex]) : GIVE_UP;
+    }
+
+    /**
+     * Whether a new connection's first game view goes into the tracker of the view still shown, rather than a new
+     * tracker: for a mode whose server resends the whole board on each connection and that drops stale card views
+     * itself once it's applied ({@link #resetTracker}), so the board's card views stay in one tracker across a
+     * reconnect. False by default: net play keys a new tracker on each connection's first game view.
+     */
+    protected boolean keepsTrackerAcrossConnections() {
+        return false;
+    }
+
+    /**
+     * Counts this client as holding a seat, so a lost connection is reconnected, before any {@code openView} or lobby
+     * update said so: for a mode whose server admits it in its own way, or that resumes a game it held before.
+     */
+    protected final void markSeated() {
+        seated = true;
+    }
+
+    /**
+     * Starts the reconnect loop now, as a lost connection would, for a seated client ({@link #markSeated}) that isn't
+     * reconnecting yet: such as one whose first connect failed. Does nothing otherwise.
+     */
+    protected final void startReconnecting() {
+        onDisconnected();
+    }
+
+    /**
+     * Counts what a mode's server just sent on the newest connection as the answer to a reconnect attempt, as a
+     * resumed game view is for net play: the attempt succeeded. Does nothing when not reconnecting.
+     */
+    protected final void resumeAnswered() {
+        onResumeResponseReceived();
     }
 
     public void close() {
@@ -358,8 +411,14 @@ public class FGameClient implements IToServer, IHasForgeLog {
             channel.close();
         }
         channel = null;
-        notifyReconnectState(ReconnectState.RECONNECTING, 0, BACKOFF_SECONDS[0]);
+        notifyReconnectState(ReconnectState.RECONNECTING, 0, delaySeconds(0));
         scheduleAttempt(0);
+    }
+
+    /** The wait before attempt {@code attemptIndex} in whole seconds, rounded up, for the banner; 0 when giving up. */
+    private int delaySeconds(final int attemptIndex) {
+        final long millis = reconnectDelayMillis(attemptIndex);
+        return millis < 0 ? 0 : (int) ((millis + 999) / 1000);
     }
 
     public void beginShutdown() {
@@ -369,12 +428,13 @@ public class FGameClient implements IToServer, IHasForgeLog {
     }
 
     private void scheduleAttempt(final int attemptIndex) {
-        if (attemptIndex >= BACKOFF_SECONDS.length) {
+        final long delay = reconnectDelayMillis(attemptIndex);
+        if (delay < 0) {
             transitionToFailed();
             return;
         }
-        pendingAttempt = reconnectScheduler.schedule(() -> attemptReconnect(attemptIndex),
-                BACKOFF_SECONDS[attemptIndex], TimeUnit.SECONDS);
+        pendingAttempt = reconnectScheduler.schedule(() -> attemptReconnect(attemptIndex), delay,
+                TimeUnit.MILLISECONDS);
     }
 
     private void attemptReconnect(final int attemptIndex) {
@@ -383,8 +443,7 @@ public class FGameClient implements IToServer, IHasForgeLog {
                 return;
             }
         }
-        netLog.info("[Reconnect] Attempt {}/{} - connecting to {}:{}",
-                attemptIndex + 1, BACKOFF_SECONDS.length, hostname, port);
+        netLog.info("[Reconnect] Attempt {} - connecting to {}:{}", attemptIndex + 1, hostname, port);
         try {
             connect();
             awaitResumeOrLobby(attemptIndex);
@@ -415,11 +474,11 @@ public class FGameClient implements IToServer, IHasForgeLog {
             if (shuttingDown || reconnectState != ReconnectState.RECONNECTING) return;
         }
         final int next = attemptIndex + 1;
-        if (next >= BACKOFF_SECONDS.length) {
+        if (reconnectDelayMillis(next) < 0) {
             transitionToFailed();
             return;
         }
-        notifyReconnectState(ReconnectState.RECONNECTING, next, BACKOFF_SECONDS[next]);
+        notifyReconnectState(ReconnectState.RECONNECTING, next, delaySeconds(next));
         scheduleAttempt(next);
     }
 

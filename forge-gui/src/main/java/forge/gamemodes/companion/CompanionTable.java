@@ -209,6 +209,8 @@ public class CompanionTable {
     private final List<CompanionPlayerController> seats = new CopyOnWriteArrayList<>();
     private volatile Consumer<TableEditor.Result> onResult = r -> { };
     private volatile Consumer<String> onNotice = n -> { };
+    /** Told of each game the table starts ({@link #startFromLatest}), such as a share's phones. */
+    private final List<Consumer<Game>> gameStartListeners = new CopyOnWriteArrayList<>();
     /** The ops submitted with their own callback ({@link #submit(Op, Consumer)}), by identity, until they've run. */
     private final Map<Op, Consumer<Ran>> watched = Collections.synchronizedMap(new IdentityHashMap<>());
     private String lastSaved;
@@ -744,6 +746,25 @@ public class CompanionTable {
             tableActing = false;
         }
         lastSaved = latestStep() == CompanionStore.NO_STEP ? null : CompanionGameState.capture(game);
+        for (Consumer<Game> listener : gameStartListeners) {
+            try {
+                listener.accept(game);
+            } catch (RuntimeException e) {
+                e.printStackTrace(); // a listener's trouble mustn't stop the game starting
+            }
+        }
+    }
+
+    /**
+     * Tells {@code listener} of each game this table starts from now on, a restart from the match screen's included,
+     * once its state is applied: on that game's loop thread, before its first prompt.
+     */
+    public void addGameStartListener(Consumer<Game> listener) {
+        gameStartListeners.add(listener);
+    }
+
+    public void removeGameStartListener(Consumer<Game> listener) {
+        gameStartListeners.remove(listener);
     }
 
     /**

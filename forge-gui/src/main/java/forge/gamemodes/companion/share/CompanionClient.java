@@ -42,8 +42,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * being the phone's, the client builds a controller per seat, and the host drops whatever they send (M1).
  *
  * <p>The heartbeat is every 5 s, as the host counts a phone silent for 15 s as gone (plan 3.1), and the phone counts
- * the host gone after 15 s too. Reconnect is net play's, which says hello again on each new connection (slice 04 makes
- * it unbounded).
+ * the host gone after 15 s too. Reconnect is net play's, with Companion's backoff: 0.5 s doubling to 5 s, and it never
+ * gives up (slice 04). Each reconnect is a fresh join, in the join's order: login, hello with what the copy holds,
+ * welcome (which counts as the reconnect's answer), want, the steps, the entries, a fresh attach, then the epoch. A
+ * phone that reconnects to an ended game gets the end, and stops following. {@link #rejoin} follows a game this phone
+ * holds a copy of again, and keeps trying from the start, even when the host can't be reached at first (a restarted
+ * phone). {@link LinkListener}s hear whether it's connected or trying to.
  *
  * <p>With a device adapter, each connection's socket comes from {@link IDeviceAdapter#openLocalNetworkSocket}, bound to
  * the Wi-Fi network, so a phone with mobile data on still reaches a host on a Wi-Fi without internet; nothing else in
@@ -72,6 +76,35 @@ public class CompanionClient extends FGameClient {
     static final int READER_IDLE_SECONDS = 15;
     /** How long after the welcome the game may take to arrive ({@code openView}) before the client gives up. */
     static final int ATTACH_SECONDS = 30;
+    /** The reconnect backoff: the first wait, doubling up to {@link #MAX_BACKOFF_MILLIS}, without end. */
+    static final long FIRST_BACKOFF_MILLIS = 500;
+    static final long MAX_BACKOFF_MILLIS = 5_000;
+    /** A host on the local network answers a connect at once, or is gone: no need for Netty's 30 s. */
+    static final int CONNECT_TIMEOUT_MILLIS = 5_000;
+
+    /** How this client's link to the host is, for the screens (chunk B's N6). */
+    public enum Link {
+        /** The first connect is under way. */
+        CONNECTING,
+        /** The host welcomed this phone on the current connection. */
+        CONNECTED,
+        /** The connection was lost, or the host couldn't be reached: trying again, without end. */
+        RECONNECTING,
+        /** The host's game has ended: nothing more follows, and no reconnect. */
+        ENDED,
+        /** Over without the game's end: closed, or refused or dropped before it was following, so not retried. */
+        CLOSED
+    }
+
+    /** Told each time the {@link Link} changes. Netty's, the reconnect's or the caller's thread. */
+    public interface LinkListener {
+        void linkChanged(Link link);
+    }
+
+    private final List<LinkListener> linkListeners = new CopyOnWriteArrayList<>();
+    private Link link = Link.CONNECTING;
+    /** Whether the host sent the game's end. */
+    private volatile boolean ended;
 
     private final int token;
     private volatile String welcomedTo;
@@ -194,6 +227,61 @@ public class CompanionClient extends FGameClient {
         super.close();
         holdLocalNetwork(false);
         copier.shutdown(); // what came before the close is still written
+        setLink(Link.CLOSED);
+    }
+
+    /** Tells {@code listener} of each change of the link from now on. */
+    public void addLinkListener(LinkListener listener) {
+        linkListeners.add(listener);
+    }
+
+    /** The link to the host now. */
+    public Link link() {
+        synchronized (linkListeners) {
+            return link;
+        }
+    }
+
+    /** Whether the host sent the game's end: nothing more follows. */
+    public boolean hostEnded() {
+        return ended;
+    }
+
+    /**
+     * Sets the link and tells the listeners, outside the lock, when it changed. {@link Link#ENDED} and
+     * {@link Link#CLOSED} are final: an ended game stays ended for the screens, though the client is closed after.
+     */
+    private void setLink(Link to) {
+        synchronized (linkListeners) {
+            if (link == to || link == Link.CLOSED || link == Link.ENDED) {
+                return;
+            }
+            link = to;
+        }
+        netLog.info("[Companion] Link: {}", to);
+        for (LinkListener listener : linkListeners) {
+            listener.linkChanged(to);
+        }
+    }
+
+    /**
+     * Follows again the game {@code game} this phone holds a copy of, from its {@code share.json} (Load game, a
+     * restarted phone): like {@link #followAgain} then {@link #connect}, but as a phone that was following, so it
+     * keeps trying, without end, from the first connect on, even when the host can't be reached now. Blocks for the
+     * first connect, at most {@link #CONNECT_TIMEOUT_MILLIS}; never throws for an unreachable host. Throws as
+     * {@link #followAgain} does when the copy can't be read.
+     */
+    public void rejoin(String game) {
+        followAgain(game);
+        markSeated();
+        try {
+            connect();
+        } catch (Exception e) { // Netty rethrows a refused connect as a checked ConnectException it doesn't declare
+            netLog.info("[Companion] Can't reach the host of {} now, trying again: {}", game, e.toString());
+            if (!left) {
+                startReconnecting();
+            }
+        }
     }
 
     /**
@@ -219,9 +307,17 @@ public class CompanionClient extends FGameClient {
         return heldSeq;
     }
 
-    /** Net play's connect, on the local network. A reconnect attempt comes through here too, and holds it again. */
+    /**
+     * Net play's connect, on the local network. A reconnect attempt comes through here too, and holds it again; it
+     * first closes the attempt before it if that's still open (a welcome that didn't come in time), so a host never
+     * holds two connections of one phone.
+     */
     @Override
     public void connect() {
+        Channel stale = newestChannel;
+        if (stale != null && stale.isOpen() && getReconnectState() == ReconnectState.RECONNECTING) {
+            stale.close();
+        }
         holdLocalNetwork(true);
         boolean connected = false;
         try {
@@ -241,7 +337,40 @@ public class CompanionClient extends FGameClient {
     protected void onReconnectStateChanged(ReconnectState state) {
         if (state == ReconnectState.FAILED || state == ReconnectState.SEAT_LOST) {
             holdLocalNetwork(false); // a manual rejoin connects, and so holds, again
+            setLink(Link.CLOSED); // never with Companion's backoff
+        } else if (state == ReconnectState.RECONNECTING) {
+            setLink(Link.RECONNECTING);
+        } else if (state == ReconnectState.CONNECTED && connectionOpen) {
+            setLink(Link.CONNECTED);
         }
+    }
+
+    /** 0.5 s, doubling up to 5 s, and never giving up: a joined phone follows as long as it's in the game. */
+    @Override
+    protected long reconnectDelayMillis(int attemptIndex) {
+        return backoffMillis(attemptIndex);
+    }
+
+    static long backoffMillis(int attemptIndex) {
+        long delay = FIRST_BACKOFF_MILLIS;
+        for (int i = 0; i < attemptIndex && delay < MAX_BACKOFF_MILLIS; i++) {
+            delay *= 2;
+        }
+        return Math.min(delay, MAX_BACKOFF_MILLIS);
+    }
+
+    /**
+     * Each reconnect's attach sends the whole board into the view still shown, and its epoch then drops the stale
+     * card views: the same tracker throughout, as after an undo.
+     */
+    @Override
+    protected boolean keepsTrackerAcrossConnections() {
+        return true;
+    }
+
+    @Override
+    protected int connectTimeoutMillis() {
+        return CONNECT_TIMEOUT_MILLIS;
     }
 
     /** Each connection's socket, bound to the Wi-Fi network when the device has one. */
@@ -314,6 +443,7 @@ public class CompanionClient extends FGameClient {
             newestChannel = ctx.channel();
             connectionOpen = true;
             listenersTold = false;
+            viewArrived = false; // each connection's attach is a fresh one
             // before the login: this handler's channelActive runs before the protocol handler's, which writes it, and
             // writes on the event loop go out in order, so the host's TokenGate reads these 8 bytes first
             ctx.channel().writeAndFlush(TokenGate.preamble(ctx.alloc(), token));
@@ -345,6 +475,7 @@ public class CompanionClient extends FGameClient {
             // net play's handler before this one has decided: no reconnect follows, so this join is over
             if (getReconnectState() != ReconnectState.RECONNECTING) {
                 holdLocalNetwork(false);
+                setLink(ended ? Link.ENDED : Link.CLOSED);
             }
             super.channelInactive(ctx);
         }
@@ -354,6 +485,11 @@ public class CompanionClient extends FGameClient {
             if (msg instanceof ShareMessages.Welcome welcome) {
                 netLog.info("[Companion] {}", welcome);
                 Channel channel = ctx.channel();
+                if (channel == newestChannel) {
+                    // the host answered: a reconnect attempt succeeded, though the view comes only at its next prompt
+                    resumeAnswered();
+                    setLink(Link.CONNECTED);
+                }
                 copy(() -> follow(welcome, channel)); // sets welcomedTo once the id is checked and the copy made
                 if (!viewArrived) {
                     ctx.executor().schedule(() -> {
@@ -374,6 +510,10 @@ public class CompanionClient extends FGameClient {
             } else if (msg instanceof ShareMessages.Setup setup) {
                 copy(() -> saveSetup(setup.setup()));
             } else if (msg instanceof ShareMessages.End) {
+                // nothing follows the end: no reconnect when the host lets go of this phone
+                ended = true;
+                beginShutdown();
+                setLink(Link.ENDED);
                 copy(CompanionClient.this::end);
             } else if (msg instanceof ShareMessages.Epoch e) {
                 // the host sends it right after a full view, on the same connection: that view was read just before

@@ -338,7 +338,7 @@ public class CompanionSetupScreen extends LaunchScreen {
     }
 
     private void openGame(String id, CompanionSetup setup) {
-        if (ShareState.exists(store, id)) {
+        if (ShareState.isFollowed(store, id)) {
             // a followed game: loading its state would write to the host's copy. Load game never asks for this.
             throw new IllegalStateException("A followed game can't be opened as this device's own: " + id);
         }

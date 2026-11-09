@@ -93,8 +93,11 @@ public final class CompanionPeer implements IHasForgeLog {
     private final Runnable disconnect;
     private final PeerGuiGame gui;
     private final PeerGate gate = new PeerGate();
-    /** What the game's event bus holds instead of the forwarder, which it would keep until the game ends. */
-    private final Relay relay = new Relay();
+    /**
+     * What the game's event bus holds instead of the forwarder, which it would keep until the game ends. One per
+     * attach, as each game has its own bus.
+     */
+    private volatile Relay relay = new Relay();
     /** The input queues the forwarder observes, for the detach. */
     private final List<InputQueue> observed = new CopyOnWriteArrayList<>();
     /** Set on the game loop thread, read by {@link #close} from any. */
@@ -139,11 +142,28 @@ public final class CompanionPeer implements IHasForgeLog {
         table.runSystem(this::attachNow);
     }
 
-    /** Game loop thread: the phone gets the board once, its seats, then the epoch; deltas follow. */
+    /**
+     * Attaches the phone afresh to the game the table has just started (a restart from the match screen): it's let go
+     * of the old game first. Only a phone attached already: one still joining attaches to whatever game runs then.
+     * Game loop thread, of the new game.
+     */
+    void attachToNewGame() {
+        if (forwarder != null) {
+            attachNow();
+        }
+    }
+
+    /**
+     * Game loop thread: the phone gets the board once, its seats, then the epoch; deltas follow. A phone attached to an
+     * earlier game is let go of it first, and gets the new game in full, as on a join.
+     */
     void attachNow() {
         List<CompanionPlayerController> seats = table.seats();
         if (closed) {
             return;
+        }
+        if (forwarder != null) {
+            detachFromOldGame();
         }
         if (seats.isEmpty()) {
             // no game to show (the table has no seats yet, or no more): let the phone go rather than count it
@@ -156,8 +176,10 @@ public final class CompanionPeer implements IHasForgeLog {
         forwarder = new GameEventForwarder(gui, Thread.currentThread()); // this is the game loop thread
         gui.setForwarder(forwarder);
         // Game has no unsubscribe: the bus keeps the relay, which close() empties, so the forwarder can go
-        relay.target = forwarder;
-        game.subscribeToEvents(relay);
+        Relay current = new Relay();
+        current.target = forwarder;
+        relay = current;
+        game.subscribeToEvents(current);
         // so events reach the phone before the game thread blocks for input, as for a net play client
         for (CompanionPlayerController seat : seats) {
             InputQueue queue = seat.getInputQueue();
@@ -181,6 +203,20 @@ public final class CompanionPeer implements IHasForgeLog {
             relay.target = null; // closed while attaching
             stopObserving();
         }
+    }
+
+    /**
+     * Lets go of the game the phone was attached to: its events and inputs no longer reach the phone, what the old
+     * forwarder still held is sent, and the proxy forgets what it sent, so the next attach sends the new game in full
+     * with no delta baseline. Game loop thread.
+     */
+    private void detachFromOldGame() {
+        relay.target = null;
+        stopObserving();
+        gui.shutdownForwarder();
+        forwarder = null;
+        gui.resetForReconnect();
+        netLog.info("[Companion] {} let go of the old game of {}", client.getUsername(), table.id());
     }
 
     private void sendEpoch() {

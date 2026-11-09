@@ -117,6 +117,19 @@ public class ActiveGameShould {
         assertThat(phone.unreadableFiles()).isEmpty();
     }
 
+    /** A game this device shares has a share.json too, as host: it's still its own, continued, not followed. */
+    @Test
+    public void listAGameThisDeviceHostsAsItsOwn() {
+        String id = phone.create(seats("Ann", "Bo"));
+        ShareState.hosting(36744, 99, List.of((Inet4Address) code.address())).write(phone, id);
+
+        ActiveGame active = single();
+
+        assertThat(active.followed()).isFalse();
+        assertThat(active.code()).isEmpty();
+        assertThat(ShareState.hosted(phone, id)).map(ShareState::token).contains(99);
+    }
+
     @Test
     public void putAGameFirstOnceItsPlayedAgain() {
         String a = phone.create(seats("Ann", "Bo"));

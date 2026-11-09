@@ -156,4 +156,16 @@ public class CompanionClientShould {
 
         assertThat(CompanionClient.wantedSteps(store, GAME, 3, hostIndex)).containsExactly(1, 2, 3);
     }
+
+    @Test
+    public void neverGiveUpOnTheHostWaitingHalfASecondDoublingToFive() {
+        assertThat(CompanionClient.backoffMillis(0)).isEqualTo(500);
+        assertThat(CompanionClient.backoffMillis(1)).isEqualTo(1_000);
+        assertThat(CompanionClient.backoffMillis(2)).isEqualTo(2_000);
+        assertThat(CompanionClient.backoffMillis(3)).isEqualTo(4_000);
+        assertThat(CompanionClient.backoffMillis(4)).isEqualTo(5_000);
+        for (int attempt = 5; attempt < 10_000; attempt++) {
+            assertThat(CompanionClient.backoffMillis(attempt)).isEqualTo(5_000);
+        }
+    }
 }

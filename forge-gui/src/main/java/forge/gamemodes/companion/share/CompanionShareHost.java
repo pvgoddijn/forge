@@ -1,5 +1,6 @@
 package forge.gamemodes.companion.share;
 
+import forge.game.Game;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.net.CompatibleObjectDecoder;
 import forge.gamemodes.net.CompatibleObjectEncoder;
@@ -35,15 +36,18 @@ import io.netty.handler.timeout.IdleState;
 import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
 
+import java.io.UncheckedIOException;
 import java.net.Inet4Address;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 /**
  * Shares one Companion table with phones on the local network (plan decision 2): a small server of its own, built from
@@ -65,6 +69,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * doesn't answer within {@link #WANT_SECONDS} is let go. Each phone's data is sent from its connection's event loop:
  * the store's wakeup only schedules a drain there, and a drain sends nothing before the wanted steps went, so the game
  * thread never waits for a phone and the order holds.
+ *
+ * <p>Lasting (slice 04): the share's port and token are kept in the game's {@link ShareState} ({@code share.json},
+ * {@link ShareState.Role#HOSTING}), written when sharing starts, so a host restarted on the same game shares again on
+ * the same code, and its phones come back by themselves; when that port is taken it takes the next free one, which
+ * changes the code ({@link #codeChanged}). A phone whose connection drops is let go of at once: a view-only phone has
+ * nothing to resume, its reconnect is a fresh join. Each new game the table starts (a restart from the match screen)
+ * gets every attached phone a fresh attach. A phone joining an ended game gets the end and is let go, for as long as
+ * the share runs.
  */
 public final class CompanionShareHost implements IHasForgeLog {
     /** The Companion port, one above net play's 36743; the next free one up to {@link #LAST_PORT} if it's taken. */
@@ -88,6 +100,10 @@ public final class CompanionShareHost implements IHasForgeLog {
 
     private final CompanionTable table;
     private final int token;
+    /** The share state of an earlier share of this game, as found when this share was made. */
+    private final Optional<ShareState> earlier;
+    /** Gives the attached phones a fresh attach to each new game the table starts. */
+    private final Consumer<Game> onGameStart = this::gameStarted;
     private final Set<CompanionPeer> peers = ConcurrentHashMap.newKeySet();
     /** The admitted connections, each with its place in the journal; until their connection closes. */
     private final Set<Admission> admitted = ConcurrentHashMap.newKeySet();
@@ -101,19 +117,32 @@ public final class CompanionShareHost implements IHasForgeLog {
     /** The table's journal while shared, else null. */
     private volatile ShareJournal journal;
 
-    /** Shares {@code table} with a fresh random token (kept across restarts from slice 04). */
+    /**
+     * Shares {@code table} with the token of its earlier share, from its {@code share.json}, so the code stays the
+     * same; with a fresh random one when it was never shared (or that file doesn't read).
+     */
     public CompanionShareHost(CompanionTable table) {
-        this(table, new SecureRandom().nextInt());
+        this(table, ShareState.hosted(table.store(), table.id()));
+    }
+
+    private CompanionShareHost(CompanionTable table, Optional<ShareState> earlier) {
+        this(table, earlier.map(ShareState::token).orElseGet(() -> new SecureRandom().nextInt()), earlier);
     }
 
     CompanionShareHost(CompanionTable table, int token) {
+        this(table, token, Optional.empty());
+    }
+
+    private CompanionShareHost(CompanionTable table, int token, Optional<ShareState> earlier) {
         this.table = table;
         this.token = token;
+        this.earlier = earlier;
     }
 
     /**
-     * Listens on every interface, on the first free port from {@link #FIRST_PORT} to {@link #LAST_PORT}, and returns
-     * it. Throws {@link IllegalStateException} when none is free. Starting a started share returns its port.
+     * Listens on every interface, on the earlier share's port when it's free, else on the first free port from
+     * {@link #FIRST_PORT} to {@link #LAST_PORT}, and returns it; then writes the game's share state. Throws
+     * {@link IllegalStateException} when none is free. Starting a started share returns its port.
      */
     public synchronized int start() {
         return start(FIRST_PORT, LAST_PORT);
@@ -122,6 +151,13 @@ public final class CompanionShareHost implements IHasForgeLog {
     synchronized int start(int first, int last) {
         if (serverChannel != null) {
             return port;
+        }
+        List<Integer> ports = new ArrayList<>();
+        earlier.ifPresent(state -> ports.add(state.port())); // the same code, if it's free
+        for (int p = first; p <= last; p++) {
+            if (!ports.contains(p)) {
+                ports.add(p);
+            }
         }
         // before listening, so every phone finds it; with no phone it only fills memory (AC-114)
         journal = ShareJournal.install(table.store(), table.id());
@@ -146,12 +182,15 @@ public final class CompanionShareHost implements IHasForgeLog {
                                 new PeerHandler(admission));
                     }
                 });
-        for (int p = first; p <= last; p++) {
+        for (int p : ports) {
             ChannelFuture bound = bootstrap.bind(p).awaitUninterruptibly();
             if (bound.isSuccess()) {
                 serverChannel = bound.channel();
                 port = p;
-                netLog.info("[Companion] Sharing {} on port {}", table.id(), p);
+                netLog.info("[Companion] Sharing {} on port {}{}", table.id(), p,
+                        codeChanged() ? " (the earlier port " + earlier.get().port() + " is taken: a new code)" : "");
+                table.addGameStartListener(onGameStart);
+                writeShareState();
                 return p;
             }
             netLog.info("[Companion] Port {} is taken: {}", p, String.valueOf(bound.cause()));
@@ -168,6 +207,7 @@ public final class CompanionShareHost implements IHasForgeLog {
      * it's called from there (the stop dialog, or {@code matchLeft} when the match is left).
      */
     public synchronized void stop() {
+        table.removeGameStartListener(onGameStart);
         if (journal != null) {
             table.store().setJournal(null); // the store writes as unshared again
             journal = null;
@@ -193,7 +233,8 @@ public final class CompanionShareHost implements IHasForgeLog {
             meter.write();
         }
         if (serverChannel != null) {
-            serverChannel.close();
+            // waited for, so a share started again right after (a restart) can bind the same port
+            serverChannel.close().awaitUninterruptibly(STOP_FLUSH_MILLIS);
             serverChannel = null;
         }
         if (bossGroup != null) {
@@ -206,6 +247,49 @@ public final class CompanionShareHost implements IHasForgeLog {
 
     public synchronized boolean isStarted() {
         return serverChannel != null;
+    }
+
+    /**
+     * Stops sharing for good: {@link #stop}, and the game's share state goes, so resuming the game doesn't share it
+     * again. Its phones keep their copies and keep trying until they stop following.
+     */
+    public synchronized void stopForGood() {
+        stop();
+        try {
+            ShareState.delete(table.store(), table.id());
+        } catch (UncheckedIOException e) {
+            netLog.warn("[Companion] Can't delete the share state of {}: {}", table.id(), e.toString());
+        }
+    }
+
+    /**
+     * Whether this game was shared before on another port than this share's, which was taken: the code changed, and
+     * phones that followed it must be given the new one. Once started.
+     */
+    public synchronized boolean codeChanged() {
+        return serverChannel != null && earlier.isPresent() && earlier.get().port() != port;
+    }
+
+    /** A new game started on the table: each attached phone gets it afresh at its first prompt. Its loop thread. */
+    private void gameStarted(Game game) {
+        netLog.info("[Companion] A new game of {} started: attaching {} phones afresh", table.id(), peers.size());
+        for (CompanionPeer peer : peers) {
+            table.runSystem(peer::attachToNewGame);
+        }
+    }
+
+    /** Writes the game's share state: hosted, on this port and token, at this device's addresses now. */
+    private void writeShareState() {
+        List<Inet4Address> addresses = new ArrayList<>();
+        for (LocalAddresses.Usable usable : LocalAddresses.find()) {
+            addresses.add(usable.address());
+        }
+        try {
+            ShareState.hosting(port, token, addresses).write(table.store(), table.id());
+        } catch (UncheckedIOException e) {
+            // the share works; only a restart can't share again on the same code
+            netLog.warn("[Companion] Can't write the share state of {}: {}", table.id(), e.toString());
+        }
     }
 
     /** The port shared on, once started. */
@@ -359,6 +443,16 @@ public final class CompanionShareHost implements IHasForgeLog {
             }
             stepsSent = true;
             drain(); // the catch-up, before the view
+            ShareJournal shared = journal;
+            if (shared == null || shared.ended()) {
+                // an ended game (or a share stopping): no view to attach to, the end is what the phone needs. A drain
+                // again, for an end written since the last one; then the connection closes once it's all out
+                drain();
+                netLog.info("[Companion] {} joined {}, which has ended: letting it go", client.getUsername(),
+                        table.id());
+                ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
+                return;
+            }
             peer.attach();
             netLog.info("[Companion] {} joined {} from {}", client.getUsername(), table.id(),
                     ctx.channel().remoteAddress());

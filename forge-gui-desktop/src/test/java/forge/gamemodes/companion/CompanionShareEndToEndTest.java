@@ -56,14 +56,14 @@ import static org.testng.Assert.assertTrue;
  * system ops and ops, and flushes the views, where the loop's priority prompt would.
  */
 public class CompanionShareEndToEndTest extends AITest {
-    private static final long WAIT_MS = 15_000;
+    static final long WAIT_MS = 15_000;
 
-    private static CompanionTable newTable() {
+    static CompanionTable newTable() {
         return newTable("t");
     }
 
     /** A table under the id {@code id}, which may be one the store's rule refuses (a host sending a bad id). */
-    private static CompanionTable newTable(String id) {
+    static CompanionTable newTable(String id) {
         try {
             File dir = Files.createTempDirectory("companion-share").toFile();
             CompanionSetup setup = CompanionSetup.withDefaults(List.of(new CompanionSetup.Seat("Ann", true),
@@ -79,7 +79,7 @@ public class CompanionShareEndToEndTest extends AITest {
     }
 
     /** A phone's own Companion store, empty. */
-    private static CompanionStore tempStore() {
+    static CompanionStore tempStore() {
         try {
             return new CompanionStore(Files.createTempDirectory("companion-phone").toFile());
         } catch (IOException e) {
@@ -87,7 +87,7 @@ public class CompanionShareEndToEndTest extends AITest {
         }
     }
 
-    private static byte[] logBytes(CompanionStore store, String game) {
+    static byte[] logBytes(CompanionStore store, String game) {
         File log = new File(store.gameDir(game), "log.txt");
         try {
             return log.exists() ? Files.readAllBytes(log.toPath()) : new byte[0];
@@ -96,7 +96,7 @@ public class CompanionShareEndToEndTest extends AITest {
         }
     }
 
-    private static boolean sameLog(CompanionStore host, CompanionStore phone, String game) {
+    static boolean sameLog(CompanionStore host, CompanionStore phone, String game) {
         return Arrays.equals(logBytes(host, game), logBytes(phone, game));
     }
 
@@ -118,22 +118,22 @@ public class CompanionShareEndToEndTest extends AITest {
     }
 
     /** The phone's steps are the host's: the same step numbers and hashes, and {@code states/} byte for byte. */
-    private static boolean sameSteps(CompanionStore host, CompanionStore phone, String game) {
+    static boolean sameSteps(CompanionStore host, CompanionStore phone, String game) {
         return host.stepHashes(game).equals(phone.stepHashes(game))
                 && stateFiles(host, game).equals(stateFiles(phone, game));
     }
 
     /** The phone's copy is the host's: its log, and its steps. */
-    private static boolean sameCopy(CompanionStore host, CompanionStore phone, String game) {
+    static boolean sameCopy(CompanionStore host, CompanionStore phone, String game) {
         return sameLog(host, phone, game) && sameSteps(host, phone, game);
     }
 
     /** A table with a running three-player game, its start saved, at its first prompt. */
-    private CompanionTable startedTable(Game game) {
+    static CompanionTable startedTable(Game game) {
         return startedTable(game, "t");
     }
 
-    private CompanionTable startedTable(Game game, String id) {
+    static CompanionTable startedTable(Game game, String id) {
         CompanionTable table = newTable(id);
         for (Player p : game.getPlayers()) {
             new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table);
@@ -143,12 +143,12 @@ public class CompanionShareEndToEndTest extends AITest {
         return table;
     }
 
-    private static void addCard(CompanionTable table, Game game, String card) {
+    static void addCard(CompanionTable table, Game game, String card) {
         act(table, game, new CompanionTable.AddCard(game.getPhaseHandler().getPlayerTurn().getName(), card, false,
                 TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
     }
 
-    private static void undo(CompanionTable table, Game game) {
+    static void undo(CompanionTable table, Game game) {
         table.undo();
         assertTrue(table.runPending(game));
         flushViews(table);
@@ -166,19 +166,19 @@ public class CompanionShareEndToEndTest extends AITest {
     }
 
     /** Runs {@code op} and then the save the next prompt would make, as the game loop does. */
-    private static void act(CompanionTable table, Game game, CompanionTable.Op op) {
+    static void act(CompanionTable table, Game game, CompanionTable.Op op) {
         table.submit(op);
         assertTrue(table.runPending(game));
         table.save(game);
     }
 
     /** What the loop does when an input changes: every view observing the seats' inputs flushes. */
-    private static void flushViews(CompanionTable table) {
+    static void flushViews(CompanionTable table) {
         table.seats().get(0).getInputQueue().updateObservers();
     }
 
     /** Waits, bounded, for {@code condition}; the host's loop work is done meanwhile by {@code loop}. */
-    private static void await(BooleanSupplier condition, Runnable loop, String why) throws InterruptedException {
+    static void await(BooleanSupplier condition, Runnable loop, String why) throws InterruptedException {
         long deadline = System.currentTimeMillis() + WAIT_MS;
         while (!condition.getAsBoolean()) {
             if (System.currentTimeMillis() > deadline) {
@@ -190,7 +190,7 @@ public class CompanionShareEndToEndTest extends AITest {
     }
 
     /** Every player's life, and the card ids in each of their zones: what a joined board must match. */
-    private static Map<String, String> board(GameView view) {
+    static Map<String, String> board(GameView view) {
         Map<String, String> board = new TreeMap<>();
         if (view == null || view.getPlayers() == null) {
             return board;
@@ -209,7 +209,7 @@ public class CompanionShareEndToEndTest extends AITest {
     }
 
     /** The ids of every card in every player's zones. */
-    private static Set<Integer> cardIds(GameView view) {
+    static Set<Integer> cardIds(GameView view) {
         Set<Integer> ids = new TreeSet<>();
         for (PlayerView player : view.getPlayers()) {
             for (ZoneType zone : ZoneType.values()) {
@@ -225,7 +225,7 @@ public class CompanionShareEndToEndTest extends AITest {
      * Whether the joined view's tracker knows every card of {@code current} and none of {@code stale}: read on the GUI
      * thread, which applies the view and resets the tracker.
      */
-    private static boolean trackerHolds(HeadlessNetworkGuiGame view, Set<Integer> current, Set<Integer> stale) {
+    static boolean trackerHolds(HeadlessNetworkGuiGame view, Set<Integer> current, Set<Integer> stale) {
         AtomicBoolean holds = new AtomicBoolean();
         FThreads.invokeInEdtAndWait(() -> {
             Tracker tracker = view.getGameView().getTracker();
@@ -235,7 +235,7 @@ public class CompanionShareEndToEndTest extends AITest {
         return holds.get();
     }
 
-    private static boolean onBattlefield(GameView view, String name) {
+    static boolean onBattlefield(GameView view, String name) {
         if (view == null || view.getPlayers() == null) {
             return false;
         }
