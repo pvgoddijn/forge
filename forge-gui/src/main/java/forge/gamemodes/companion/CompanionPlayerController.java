@@ -1,16 +1,30 @@
 package forge.gamemodes.companion;
 
+import com.google.common.collect.ImmutableList;
 import forge.LobbyPlayer;
 import forge.game.Game;
+import forge.game.GameLogEntryType;
+import forge.game.GameObject;
+import forge.game.card.Card;
+import forge.game.card.CardCollectionView;
+import forge.game.card.CardView;
 import forge.game.combat.Combat;
 import forge.game.combat.CombatUtil;
+import forge.game.event.GameEventAddLog;
 import forge.game.phase.PhaseHandler;
 import forge.game.phase.PhaseType;
 import forge.game.player.Player;
 import forge.game.player.PlayerView;
 import forge.game.spellability.SpellAbility;
+import forge.game.zone.ZoneType;
+import forge.item.IPaperCard;
 import forge.player.PlayerControllerHuman;
+import forge.util.Localizer;
+import forge.util.MessageUtil;
+import org.apache.commons.lang3.StringUtils;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -39,6 +53,7 @@ public class CompanionPlayerController extends PlayerControllerHuman {
     @Override
     public List<SpellAbility> chooseSpellAbilityToPlay() {
         Game game = getGame();
+        table.endRevealRun(); // a reveal from here on is a new one, even if it's the same as the last
         PhaseHandler ph = game.getPhaseHandler();
         if (table.isParked()) {
             // A sorcery waits for its main phase (AC-42, D5). Until it's reached, every seat passes at every stop, so
@@ -121,6 +136,63 @@ public class CompanionPlayerController extends PlayerControllerHuman {
             return false;
         }
         return super.isUiSetToSkipPhase(turnPlayer, phase);
+    }
+
+    /**
+     * Every seat is on the operator's one screen, so a reveal the engine makes to several seats shows once, for the
+     * first of them ({@link CompanionTable#firstToShow}), its caption naming the cards' owner rather than "your".
+     */
+    @Override
+    protected void reveal(CardCollectionView cards, ZoneType zone, PlayerView owner, String message, boolean addSuffix) {
+        List<Integer> cardIds = new ArrayList<>();
+        for (Card c : cards) {
+            cardIds.add(c.getId());
+        }
+        Object key = Arrays.asList("reveal", zone, owner == null ? null : owner.getId(), message, addSuffix, cardIds);
+        if (!table.firstToShow(getGame(), getPlayer(), key)) {
+            return;
+        }
+        // Forge's caption, worded for nobody in particular: the same keys, the owner named
+        Localizer localizer = Localizer.getInstance();
+        String zoneName = zone.getTranslatedName().toLowerCase();
+        if (StringUtils.isBlank(message)) {
+            message = localizer.getMessage("lblLookCardInPlayerZone", "{player's}", zoneName);
+        } else if (addSuffix) {
+            message += " " + localizer.getMessage("lblPlayerZone", "{player's}", zoneName);
+        }
+        String caption = MessageUtil.formatMessage(message, (PlayerView) null, owner);
+        if (cards.isEmpty()) {
+            getGame().getUndoManager().barrier("Information revealed");
+            getYieldController().maybeInterruptOnReveal();
+            getGui().message(MessageUtil.formatMessage(localizer.getMessage("lblThereNoCardInPlayerZone", "{player's}", zoneName),
+                    (PlayerView) null, owner), caption);
+            return;
+        }
+        super.reveal(cards, zone, owner, caption, false);
+    }
+
+    /**
+     * As {@link #reveal}: a value the engine tells every seat shows once, worded for nobody in particular ("Bo chose
+     * red", not "You chose red").
+     */
+    @Override
+    public void notifyOfValue(SpellAbility sa, GameObject relatedTarget, String value) {
+        Object key = Arrays.asList("notify", sa == null ? null : sa.getId(), relatedTarget, value);
+        if (!table.firstToShow(getGame(), getPlayer(), key)) {
+            return;
+        }
+        getGame().getUndoManager().barrier("Information revealed");
+        getYieldController().maybeInterruptOnReveal();
+        String message = MessageUtil.formatNotificationMessage(sa, null, relatedTarget, value);
+        if (sa != null && sa.isManaAbility()) {
+            getGame().fireEvent(new GameEventAddLog(GameLogEntryType.LAND, message));
+        } else if (sa != null && sa.getHostCard() != null && getGui().isLibgdxPort()) {
+            IPaperCard paperCard = sa.getHostCard().getPaperCard();
+            CardView cardView = paperCard != null ? CardView.getCardForUi(paperCard) : sa.getHostCard().getView();
+            getGui().confirm(cardView, message, true, ImmutableList.of(Localizer.getInstance().getMessage("lblOK")));
+        } else {
+            getGui().message(message, sa == null || sa.getHostCard() == null ? "" : CardView.get(sa.getHostCard()).toString());
+        }
     }
 
     @Override

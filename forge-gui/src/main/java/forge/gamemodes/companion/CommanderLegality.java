@@ -156,19 +156,25 @@ public final class CommanderLegality {
     public record AddCheck(Verdict verdict, String card, String target, SeatAhead skip) {
         private static final String MODE_OFF = " To add it anyway, turn Commander mode off in the game menu.";
 
-        /** The "move ahead" button, such as "Move to Carol's turn (2 turns ahead)". For {@link Verdict#SKIP} only. */
+        /**
+         * The "move ahead" button, such as "Move to Carol": short, so the button keeps its normal text size on a
+         * phone; the turns ahead are in the {@link #message}. For {@link Verdict#SKIP} only.
+         */
         public String moveLabel() {
-            return "Move to " + skip.seat() + "'s turn (" + turns(skip.turnsAhead()) + " ahead)";
+            return "Move to " + skip.seat();
         }
 
-        /** Why the card can't go to the target, and for a skip, who it fits. Empty for {@link Verdict#LEGAL}. */
+        /**
+         * Why the card can't go to the target, and for a skip, who it fits and the question the buttons answer. Empty
+         * for {@link Verdict#LEGAL}.
+         */
         public String message() {
-            String outside = card + " is outside the colour identity of " + target + "'s commander.";
+            String outside = card + " isn't legal for " + target + ": it's outside their commander's colour identity.";
             switch (verdict) {
                 case SKIP:
-                    return outside + " It fits " + skip.seat() + ", whose turn is " + turns(skip.turnsAhead())
-                            + " ahead. Moving there plays the turns in between, their draws and upkeeps included, and"
-                            + " adds it on " + skip.seat() + "'s turn." + MODE_OFF;
+                    return outside + " " + skip.seat() + " can play it, " + turns(skip.turnsAhead()) + " ahead.\n\n"
+                            + "Move the game to " + skip.seat() + "'s turn and add it there? The turns in between are"
+                            + " played, draws and upkeeps included." + MODE_OFF;
                 case NO_SEAT:
                     return outside + " It fits no other player either, so it wasn't added." + MODE_OFF;
                 case NOT_FOR_TARGET:

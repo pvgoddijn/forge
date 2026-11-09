@@ -2429,7 +2429,8 @@ public class GameAction {
         Player goesFirst = null;
 
         if (game != null) {
-            if (game.getRules().getGameType().equals(GameType.Puzzle)) {
+            // a puzzle, or a game whose players chose who starts: the first seat, with no coin toss
+            if (game.getRules().getGameType().equals(GameType.Puzzle) || game.getRules().isFirstSeatStarts()) {
                 return game.getPlayers().get(0);
             }
 

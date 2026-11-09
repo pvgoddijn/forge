@@ -21,9 +21,12 @@ import forge.gui.interfaces.IGuiGame;
 import forge.item.PaperCard;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -202,6 +205,8 @@ public class CompanionTable {
     private final List<CompanionPlayerController> seats = new CopyOnWriteArrayList<>();
     private volatile Consumer<TableEditor.Result> onResult = r -> { };
     private volatile Consumer<String> onNotice = n -> { };
+    /** The ops submitted with their own callback ({@link #submit(Op, Consumer)}), by identity, until they've run. */
+    private final Map<Op, Consumer<Ran>> watched = Collections.synchronizedMap(new IdentityHashMap<>());
     private String lastSaved;
     private boolean saveFailing;
     /** Whether an op other than undo has run since the latest save. See {@link #ranSinceSave}. Game loop thread only. */
@@ -249,6 +254,14 @@ public class CompanionTable {
      * isn't something that happened. Game loop thread only.
      */
     private boolean tableActing;
+    /**
+     * The reveal or message the seats were last shown ({@link #firstToShow}), or null when something else happened
+     * since. Game loop thread only.
+     */
+    private RevealRun revealRun;
+
+    /** A reveal or message, by what makes it the same one, and the seat in the game's order it went to last. */
+    private record RevealRun(Object key, int lastSeatIndex) { }
 
     public CompanionTable(String id, CompanionSetup setup, CompanionStore store) {
         this.id = id;
@@ -350,10 +363,15 @@ public class CompanionTable {
         onNotice.accept(notice);
     }
 
-    /** Writes {@code entry} through the store, which never throws for it, and keeps it in {@link #log}. */
-    private synchronized void append(CompanionLogEntry entry) {
+    /**
+     * Writes {@code entry} through the store, which never throws for it, and keeps it in {@link #log}. Returns it as
+     * written, with its seq.
+     */
+    private synchronized CompanionLogEntry append(CompanionLogEntry entry) {
         List<CompanionLogEntry> entries = cachedLog();
-        entries.add(store.appendLog(id, entry));
+        CompanionLogEntry written = store.appendLog(id, entry);
+        entries.add(written);
+        return written;
     }
 
     private synchronized List<CompanionLogEntry> cachedLog() {
@@ -419,7 +437,7 @@ public class CompanionTable {
             // they were for the old game; the restart is from a save made before they were submitted
             tell("The game was restarted: " + nameOf(parked.get(0)) + " and anything after it wasn't added",
                     affectedBy(parked.get(0)));
-            clearParked();
+            dropParked();
         }
         // An action can arrive just before a prompt opens. End that prompt as it opens, or the action would wait
         // for the operator's next tap.
@@ -554,6 +572,33 @@ public class CompanionTable {
                 + "(?![\\p{L}\\p{N}])").matcher(text).find();
     }
 
+    /**
+     * What an op submitted with {@link #submit(Op, Consumer)} did, once it has run.
+     *
+     * @param result what it said, as {@link #setOnResult} is told too
+     * @param seq      the seq of the log entry it wrote, as {@link CompanionLogEntry#seq}
+     * @param waited   whether it was parked first ({@link #isParked}), so it ran later than it was submitted
+     * @param undoable whether an undo right after it would take back only this op: it didn't wait, and the table was
+     *                 settled just before it ran (as the latest save left it, nothing run since, no stack or combat).
+     *                 {@link #undoAdd} still checks the log when it runs
+     */
+    public record Ran(TableEditor.Result result, long seq, boolean waited, boolean undoable) { }
+
+    /**
+     * {@link #submit(Op)}, and once {@code op} has run, after any prompt it asked (a cast's target) and after it's in
+     * the log, {@code onRan} is told what it did, then the table's {@link #setOnResult} as usual. On the game loop
+     * thread. An op that parks is told when it runs; one dropped while parked (an undo, a restart) is never told.
+     */
+    public void submit(Op op, Consumer<Ran> onRan) {
+        watched.put(op, onRan);
+        submit(op);
+    }
+
+    /** Whether {@code op}'s callback ({@link #submit(Op, Consumer)}) is still waiting to be told. For tests. */
+    boolean isWatched(Op op) {
+        return watched.containsKey(op);
+    }
+
     /** Queues {@code op}, and ends the priority prompt so the game runs it. Any thread. */
     public void submit(Op op) {
         pending.add(op);
@@ -630,7 +675,17 @@ public class CompanionTable {
      * {@link Undo}. Any thread.
      */
     public void undo() {
-        submit(new Undo());
+        submit(new Undo(0));
+    }
+
+    /**
+     * Takes back the add that wrote log entry {@code addSeq}, as {@link #undo} would, but only while that undo
+     * would reach it alone ({@link AutoAdd#undoReaches}): when anything else ran since, or before it in its step, it
+     * says so and undoes nothing
+     * (slice 7's undo prompt after an auto-add). Any thread.
+     */
+    public void undoAdd(long addSeq) {
+        submit(new Undo(addSeq));
     }
 
     /**
@@ -643,16 +698,29 @@ public class CompanionTable {
      * undo during a turn skip goes back to before the skip, and drops it), and every seat's yield (End Turn).
      */
     private final class Undo implements Op {
+        /** The add this undo is for, by log seq, or 0 for whatever was last. */
+        private final long addSeq;
+
+        Undo(long addSeq0) {
+            addSeq = addSeq0;
+        }
+
         @Override
         public TableEditor.Result run(Game game) {
             int latest = latestStep();
             if (latest == CompanionStore.NO_STEP) {
                 return new TableEditor.Result(false, "Nothing to undo yet");
             }
-            boolean settled = settled(game);
+            boolean settled = settledAsSaved(game);
             int back = settled ? latest - 1 : latest;
             if (back < 0) {
                 return new TableEditor.Result(false, "Nothing to undo: this is the start of the game");
+            }
+            if (addSeq > 0 && !AutoAdd.undoReaches(log(), addSeq, back)) {
+                String card = log().stream().filter(e -> e.seq() == addSeq).map(CompanionLogEntry::card)
+                        .filter(c -> c != null).findFirst().orElse("the card");
+                return new TableEditor.Result(false, "Something else happened besides adding " + card + ", so it"
+                        + " wasn't undone. Undo in the game menu takes back the latest action.");
             }
             List<String> state = store.loadStep(id, back).orElse(null);
             if (state == null) {
@@ -683,24 +751,24 @@ public class CompanionTable {
             if (!parked.isEmpty()) {
                 List<String> affected = affectedBy(parked.get(0));
                 String first = nameOf(parked.get(0));
-                clearParked();
+                dropParked();
                 tell("Undone: " + first + " and anything after it wasn't added", affected);
             }
             return new TableEditor.Result(true, text);
         }
+    }
 
-        /** Whether the game is as the latest save left it: nothing on the stack, no combat, nothing changed. */
-        private boolean settled(Game game) {
-            if (!game.getStack().isEmpty() || game.getStack().hasSimultaneousStackEntries()
-                    || game.getPhaseHandler().inCombat() || lastSaved == null) {
-                return false;
-            }
-            try {
-                return CompanionGameState.capture(game).equals(lastSaved);
-            } catch (RuntimeException e) {
-                e.printStackTrace();
-                return false; // it can't be compared, so it isn't as saved
-            }
+    /** Whether the game is as the latest save left it: nothing on the stack, no combat, nothing changed. */
+    private boolean settledAsSaved(Game game) {
+        if (!game.getStack().isEmpty() || game.getStack().hasSimultaneousStackEntries()
+                || game.getPhaseHandler().inCombat() || lastSaved == null) {
+            return false;
+        }
+        try {
+            return CompanionGameState.capture(game).equals(lastSaved);
+        } catch (RuntimeException e) {
+            e.printStackTrace();
+            return false; // it can't be compared, so it isn't as saved
         }
     }
 
@@ -725,7 +793,7 @@ public class CompanionTable {
                 park(game, op, target);
                 continue;
             }
-            runOne(game, op);
+            runOne(game, op, false);
         }
         return any;
     }
@@ -794,7 +862,7 @@ public class CompanionTable {
         clearParked();
         if (turnEnded) {
             tell("The turn ended before " + mainName(waitedFor) + ": " + nameOf(ops.get(0)) + " is cast now");
-            ops.forEach(op -> runOne(game, op));
+            ops.forEach(op -> runOne(game, op, true));
             return;
         }
         for (int i = 0; i < ops.size(); i++) {
@@ -810,7 +878,7 @@ public class CompanionTable {
                 // past it, and no main phase left in this turn: the end step or cleanup
                 tell("The main phases of this turn are over: " + nameOf(op) + " is cast now");
             }
-            runOne(game, op);
+            runOne(game, op, true);
         }
     }
 
@@ -823,6 +891,13 @@ public class CompanionTable {
                 affectedBy(op));
     }
 
+    /** Drops the parked ops, which are then never run, so their callbacks are never told either. */
+    private void dropParked() {
+        parked.forEach(watched::remove);
+        clearParked();
+    }
+
+    /** Empties the parked list, for ops about to run or be dropped ({@link #dropParked}). */
     private void clearParked() {
         parked.clear();
         parkedFor = null;
@@ -849,7 +924,10 @@ public class CompanionTable {
         }
     }
 
-    private void runOne(Game game, Op op) {
+    /** Runs {@code op}, which {@code waited} says was parked first, and logs and reports what it did. */
+    private void runOne(Game game, Op op, boolean waited) {
+        // only an op that ran on a settled table can be undone alone (the undo prompt after an auto-add)
+        boolean undoable = !waited && watched.containsKey(op) && !ranSinceSave && settledAsSaved(game);
         TableEditor.Result result;
         tableActing = true;
         try {
@@ -882,7 +960,15 @@ public class CompanionTable {
         if (card != null) {
             entry = entry.withCard(card, result.fromHand());
         }
-        append(entry);
+        CompanionLogEntry written = append(entry);
+        Consumer<Ran> onRan = watched.remove(op);
+        if (onRan != null) {
+            try {
+                onRan.accept(new Ran(result, written.seq(), waited, undoable));
+            } catch (RuntimeException e) {
+                e.printStackTrace(); // the op ran; a callback's failure mustn't stop the table
+            }
+        }
         onResult.accept(result);
     }
 
@@ -907,6 +993,7 @@ public class CompanionTable {
      * can't hold a combat in progress), then works out {@link #canUndo} for that prompt. Game loop thread.
      */
     void atPrompt(Game game) {
+        endRevealRun();
         PhaseType phase = game.getPhaseHandler().getPhase();
         boolean settledPoint = game.getStack().isEmpty() && phase != null && phase.isMain();
         if (settledPoint) {
@@ -928,6 +1015,24 @@ public class CompanionTable {
             // an unreadable log mustn't stop the prompt; the history keeps what it showed last
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Whether {@code seat} shows the reveal or message {@code key} stands for. The engine shows one to each seat in
+     * turn, in the game's order of players, and every seat is on the operator's one screen, so only the first of a
+     * run shows it: a later seat given the same one is part of that run. The same one given to an earlier seat again
+     * is a new run, as is anything after {@link #endRevealRun}. Game loop thread.
+     */
+    boolean firstToShow(Game game, Player seat, Object key) {
+        int index = game.getPlayers().indexOf(seat);
+        boolean sameRun = revealRun != null && revealRun.key().equals(key) && index > revealRun.lastSeatIndex();
+        revealRun = new RevealRun(key, index);
+        return !sameRun;
+    }
+
+    /** Ends the current run of reveals ({@link #firstToShow}): a seat is asked for priority, or the prompt is shown. */
+    void endRevealRun() {
+        revealRun = null;
     }
 
     /**

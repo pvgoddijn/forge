@@ -17,9 +17,13 @@ public interface CardNameReader {
      *     faces, so a double-faced card can come from either face (AC-13)
      * @param confident whether the best match can be offered as the answer (AC-8). If not, the operator gets the
      *     name search with {@code textRead} filled in (AC-11)
+     * @param bestScore the reader's score for the first of {@code cards}, 0 if there is none. Higher is surer; the OCR
+     *     reader's scores run from below 0 to about 2, and {@code confident} is its own cut-off on this score. Auto mode
+     *     sets its threshold on it (slice 7)
+     * @param secondScore the reader's score for the second of {@code cards}, or {@link Double#NaN} if there is none
      */
-    record Reading(String textRead, List<String> cards, boolean confident) {
-        public static final Reading NOTHING = new Reading("", List.of(), false);
+    record Reading(String textRead, List<String> cards, boolean confident, double bestScore, double secondScore) {
+        public static final Reading NOTHING = new Reading("", List.of(), false, 0, Double.NaN);
 
         public Reading {
             cards = List.copyOf(cards);

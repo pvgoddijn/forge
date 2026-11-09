@@ -44,9 +44,12 @@ public final class DesktopCardCamera implements CardCamera {
         return true;
     }
 
-    /** Asks for a photo on Swing's thread, off the game's, so the game screen keeps drawing while the chooser is open. */
+    /**
+     * Asks for a photo on Swing's thread, off the game's, so the game screen keeps drawing while the chooser is open.
+     * The prompt is the chooser's title.
+     */
     @Override
-    public void photograph(Consumer<CardPhoto> onResult) {
+    public void photograph(String prompt, Consumer<CardPhoto> onResult) {
         String scripted = System.getProperty(PHOTO_PROPERTY);
         if (scripted != null) {
             onResult.accept(new CardPhoto(new File(scripted), null, false));
@@ -54,7 +57,7 @@ public final class DesktopCardCamera implements CardCamera {
         }
         SwingUtilities.invokeLater(() -> {
             JFileChooser chooser = new JFileChooser();
-            chooser.setDialogTitle("Photo of a card");
+            chooser.setDialogTitle(prompt == null ? "Photo of a card" : prompt);
             chooser.setFileFilter(new FileNameExtensionFilter("Photos", "jpg", "jpeg", "png"));
             boolean chosen = chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION;
             // the chosen photo is the operator's own file, so it isn't deleted after reading

@@ -2279,6 +2279,158 @@ public class TableEditorTest extends AITest {
         assertEquals(lastEntry(rec).undid(), List.of(2), "the cast's entry carries step 2, the save it never got");
     }
 
+    // ---- Auto mode's undo prompt (slice 7) ----
+
+    /** Submits an add as auto mode does, and returns what its callback was told once it ran. */
+    private static List<CompanionTable.Ran> autoAdd(Recorded rec, Game game, String seat, String card) {
+        List<CompanionTable.Ran> ran = new ArrayList<>();
+        rec.table.submit(new CompanionTable.AddCard(seat, card, true, TableEditor.Mode.CAST), ran::add);
+        assertTrue(rec.table.runPending(game));
+        return ran;
+    }
+
+    /** The undo prompt's Undo takes back the auto-add, before or after its spell resolved and the game was saved. */
+    @Test
+    public void theUndoPromptTakesBackTheAutoAdd() {
+        for (boolean resolved : new boolean[] {false, true}) {
+            Game game = startTable();
+            Player ann = game.getPhaseHandler().getPlayerTurn();
+            Recorded rec = new Recorded();
+            rec.table.save(game);
+            List<CompanionTable.Ran> ran = autoAdd(rec, game, ann.getName(), "Grizzly Bears");
+            assertEquals(ran.size(), 1, "told once, after it ran");
+            assertTrue(ran.get(0).result().done());
+            assertEquals(ran.get(0).seq(), lastEntry(rec).seq(), "the seq of the add's own entry");
+            assertTrue(ran.get(0).undoable(), "it ran on a settled table");
+            assertFalse(ran.get(0).waited());
+            if (resolved) {
+                resolveAll(game);
+                rec.table.save(game); // step 1, as the next Main 1 prompt saves
+                assertEquals(rec.store.latestStep("t"), 1);
+            }
+
+            rec.table.undoAdd(ran.get(0).seq());
+            assertTrue(rec.table.runPending(game));
+
+            assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.UNDO, "resolved: " + resolved);
+            assertEquals(countCardsWithName(game, "Grizzly Bears", ZoneType.Battlefield), 0);
+            assertEquals(CompanionCards.hiddenInHand(ann), CompanionSetup.DEFAULT_HAND, "the hand count is back");
+            assertEquals(rec.store.latestStep("t"), 0);
+        }
+    }
+
+    /** When another action ran after the auto-add, the prompt's Undo says so and takes nothing back. */
+    @Test
+    public void theUndoPromptRefusesWhenSomethingElseRanSince() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        List<CompanionTable.Ran> ran = autoAdd(rec, game, ann.getName(), "Grizzly Bears");
+        resolveAll(game);
+        act(rec, game, g -> TableEditor.setLife(bo, 30, false));
+
+        rec.table.undoAdd(ran.get(0).seq());
+        assertTrue(rec.table.runPending(game));
+
+        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened besides adding Grizzly Bears"),
+                rec.results.toString());
+        assertEquals(lastEntry(rec).kind(), CompanionLogEntry.Kind.NOTICE);
+        assertEquals(bo.getLife(), 30, "the later action stays");
+        assertEquals(countCardsWithName(game, "Grizzly Bears", ZoneType.Battlefield), 1, "and so does the add");
+    }
+
+    /** An action since the save, before the auto-add, would be undone with it: no Undo is offered, and it's refused. */
+    @Test
+    public void theUndoPromptIsNotOfferedWhenAnActionRanBeforeTheAutoAddInItsStep() {
+        Game game = startTable();
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        rec.table.submit(g -> TableEditor.setLife(bo, 30, false)); // not saved: nothing is, outside a prompt
+        assertTrue(rec.table.runPending(game));
+        List<CompanionTable.Ran> ran = autoAdd(rec, game, ann.getName(), "Grizzly Bears");
+        assertTrue(ran.get(0).result().done());
+        assertFalse(ran.get(0).undoable(), "the life change ran since the save");
+
+        rec.table.undoAdd(ran.get(0).seq());
+        assertTrue(rec.table.runPending(game));
+
+        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened besides adding"
+                + " Grizzly Bears"), rec.results.toString());
+        assertEquals(bo.getLife(), 30, "the life change stays");
+    }
+
+    /**
+     * An auto-added sorcery that parked runs much later, with whatever ran while it waited in its step: it's reported
+     * as having waited, no Undo is offered, and an undo for it is refused rather than take back the life change too.
+     */
+    @Test
+    public void aParkedAutoAddedSorceryWithALifeChangeWhileParkedIsNotUndoneAlone() {
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        List<CompanionTable.Ran> ran = new ArrayList<>();
+        rec.table.submit(cast(ann, "Divination"), ran::add);
+        assertTrue(rec.table.runPending(game));
+        assertTrue(rec.table.isParked());
+        rec.table.submit(g -> TableEditor.setLife(bo, 30, false));
+        assertTrue(rec.table.runPending(game), "the life change runs at once, while the sorcery waits");
+        assertTrue(ran.isEmpty());
+
+        moveTo(game, PhaseType.MAIN1);
+        rec.table.runParked(game);
+        assertEquals(ran.size(), 1);
+        assertTrue(ran.get(0).result().done());
+        assertTrue(ran.get(0).waited());
+        assertFalse(ran.get(0).undoable());
+
+        rec.table.undoAdd(ran.get(0).seq());
+        assertTrue(rec.table.runPending(game));
+
+        assertTrue(rec.results.get(rec.results.size() - 1).startsWith("Something else happened besides adding"
+                + " Divination"), rec.results.toString());
+        assertEquals(bo.getLife(), 30, "the life change stays");
+        assertEquals(castCount(game, "Divination"), 1, "and so does the sorcery");
+    }
+
+    /** A parked auto-add that an undo drops is never run, so its callback is let go too. */
+    @Test
+    public void anUndoLetsGoOfAParkedAutoAddsCallback() {
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        rec.table.save(game);
+        rec.table.submit(g -> TableEditor.setLife(ann, 30, false));
+        assertTrue(rec.table.runPending(game));
+        CompanionTable.AddCard add = cast(ann, "Divination");
+        List<CompanionTable.Ran> ran = new ArrayList<>();
+        rec.table.submit(add, ran::add);
+        assertTrue(rec.table.runPending(game));
+        assertTrue(rec.table.isWatched(add), "parked, its callback waits");
+
+        rec.table.undo();
+        assertTrue(rec.table.runPending(game));
+
+        assertFalse(rec.table.isParked());
+        assertFalse(rec.table.isWatched(add), "dropped with it");
+        assertTrue(ran.isEmpty());
+    }
+
+    /** An add that didn't happen is reported not done to its callback too, so no undo prompt is offered for it. */
+    @Test
+    public void anAutoAddThatDidNotHappenIsReportedNotDone() {
+        Game game = startTable();
+        Recorded rec = new Recorded();
+        List<CompanionTable.Ran> ran = autoAdd(rec, game, "Nobody", "Grizzly Bears");
+        assertEquals(ran.size(), 1);
+        assertFalse(ran.get(0).result().done());
+    }
+
     /** Through the real loop: undo at a combat stop ends the combat and goes back to the main phase before it. */
     @Test
     public void onTheGameLoopUndoInACombatEndsItAndGoesBackToMain1() {
@@ -3932,5 +4084,234 @@ public class TableEditorTest extends AITest {
     public void aCommanderWithoutAPairingTakesNoSecond() {
         assertFalse(CommanderLegality.canHaveSecondCommander(card(KRENKO)));
         assertFalse(CommanderLegality.canHaveSecondCommander(card("Marwyn, the Nurturer")));
+    }
+
+    /** Stops a started game in its start hook, once the first turn is set up. */
+    private static final class StopGame extends RuntimeException {
+        StopGame() {
+            super("stopped in the start hook");
+        }
+    }
+
+    /**
+     * The table decides who starts, so a Companion game has no coin toss: the engine gives the first turn to the first
+     * player in game order, and the state the start hook loads then makes the setup's first seat the active player.
+     */
+    @Test
+    public void aCompanionGameHasNoCoinTossAndTheStateSetsWhoStarts() {
+        initAndCreateGame(); // loads the model
+        // Ann plays first, but the operator is Bo, so the game order is Bo, Cy, Ann
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", false), new CompanionSetup.Seat("Bo", true), new CompanionSetup.Seat("Cy", false)));
+        for (int run = 0; run < 5; run++) { // a random pick would miss one of these
+            List<forge.game.player.RegisteredPlayer> players = new ArrayList<>();
+            for (CompanionSetup.Seat seat : setup.gameOrder()) {
+                forge.game.player.RegisteredPlayer rp = new forge.game.player.RegisteredPlayer(new forge.deck.Deck())
+                        .setPlayer(new forge.ai.LobbyPlayerAi(seat.name(), null));
+                rp.setStartingHand(0);
+                players.add(rp);
+            }
+            forge.game.GameRules rules = CompanionMatch.rules(setup);
+            Game game = new Game(players, rules, new forge.game.Match(rules, players, "Test"));
+            List<forge.game.event.GameEventFlipCoin> flips = new ArrayList<>();
+            game.subscribeToEvents(new Object() {
+                @com.google.common.eventbus.Subscribe
+                public void onFlip(forge.game.event.GameEventFlipCoin ev) {
+                    flips.add(ev);
+                }
+            });
+            List<String> turns = new ArrayList<>();
+            try {
+                game.getAction().startGame(null, () -> {
+                    turns.add(game.getPhaseHandler().getPlayerTurn().getName());
+                    CompanionGameState.of(setup.initialState()).applyNow(game);
+                    turns.add(game.getPhaseHandler().getPlayerTurn().getName());
+                    throw new StopGame();
+                });
+            } catch (StopGame expected) {
+                // the first turn is set up
+            }
+            assertTrue(flips.isEmpty(), "no coin toss");
+            assertEquals(turns, List.of("Bo", "Ann"), "the engine's pick, then the state's first seat");
+        }
+    }
+
+    /** Builds a seat's event handler on its own screen that counts its coin flips, as the match screen would show them. */
+    private static forge.gui.control.FControlGameEventHandler handlerCountingCoins(
+            forge.player.PlayerControllerHuman seat, List<String> coins) {
+        return handlerOn(seat, screenCountingCoins(coins));
+    }
+
+    /** Builds a seat's event handler on the given screen. */
+    private static forge.gui.control.FControlGameEventHandler handlerOn(
+            forge.player.PlayerControllerHuman seat, forge.gui.interfaces.IGuiGame screen) {
+        seat.getInputQueue().deleteObservers();
+        seat.setGui(screen);
+        return new forge.gui.control.FControlGameEventHandler(seat);
+    }
+
+    /** A screen that counts its coin flips, as the match screen would show them. */
+    private static forge.gui.interfaces.IGuiGame screenCountingCoins(List<String> coins) {
+        return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
+                TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("showCoinFlip")) {
+                        coins.add(args[1] + (Boolean.TRUE.equals(args[0]) ? " (heads)" : " (tails)"));
+                    }
+                    Class<?> type = method.getReturnType();
+                    if (type == boolean.class) {
+                        return false;
+                    }
+                    if (type == int.class) {
+                        return 0;
+                    }
+                    if (type.isPrimitive() && type != void.class) {
+                        throw new UnsupportedOperationException(method.getName());
+                    }
+                    return null;
+                });
+    }
+
+    /**
+     * Every seat's event handler is on the operator's one screen and gets the same event object from the game's
+     * event bus, so a coin flip shows once, naming the flipper: not once per seat, as it was.
+     */
+    @Test
+    public void aCoinFlipShowsOnceForTheWholeTable() {
+        forge.model.FModel.getPreferences().setPref(
+                forge.localinstance.properties.ForgePreferences.FPref.UI_COIN_DICE_ANIMATION, true);
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> coins = new ArrayList<>();
+        forge.gui.interfaces.IGuiGame screen = screenCountingCoins(coins);
+        List<forge.gui.control.FControlGameEventHandler> handlers = new ArrayList<>();
+        for (Player p : game.getPlayers()) {
+            handlers.add(handlerOn(
+                    new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table), screen));
+        }
+        Player bo = game.getPlayers().get(1);
+        forge.game.event.GameEventFlipCoin flip = new forge.game.event.GameEventFlipCoin(bo.getView(), true, false);
+        for (forge.gui.control.FControlGameEventHandler handler : handlers) {
+            handler.visit(flip);
+        }
+        assertEquals(coins, List.of(bo.getName() + " flipped heads (heads)"));
+    }
+
+    /** With a seat per player, as in hotseat, each seat's handler still shows the flip, from its own side. */
+    @Test
+    public void aCoinFlipStillShowsForEachSeatOutsideCompanion() {
+        forge.model.FModel.getPreferences().setPref(
+                forge.localinstance.properties.ForgePreferences.FPref.UI_COIN_DICE_ANIMATION, true);
+        Game game = startTable();
+        List<String> coins = new ArrayList<>();
+        List<forge.gui.control.FControlGameEventHandler> handlers = new ArrayList<>();
+        for (Player p : game.getPlayers()) {
+            handlers.add(handlerCountingCoins(
+                    new forge.player.PlayerControllerHuman(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null)), coins));
+        }
+        Player bo = game.getPlayers().get(1);
+        for (forge.gui.control.FControlGameEventHandler handler : handlers) {
+            handler.visit(new forge.game.event.GameEventFlipCoin(bo.getView(), true, true));
+        }
+        assertEquals(coins.size(), 3, String.valueOf(coins));
+        assertEquals(coins.stream().filter(c -> c.endsWith("(heads)")).count(), 1L, "one seat won");
+    }
+
+    /** A screen shared by every seat, recording the caption of each reveal and message it shows. */
+    private static forge.gui.interfaces.IGuiGame screenRecordingReveals(List<String> shown) {
+        return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
+                TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
+                (proxy, method, args) -> {
+                    if (method.getName().equals("reveal") || method.getName().equals("message")) {
+                        shown.add(String.valueOf(args[0]));
+                    }
+                    Class<?> type = method.getReturnType();
+                    if (type == boolean.class) {
+                        return false;
+                    }
+                    if (type == int.class) {
+                        return 0;
+                    }
+                    if (type.isPrimitive() && type != void.class) {
+                        throw new UnsupportedOperationException(method.getName());
+                    }
+                    return null;
+                });
+    }
+
+    /** Seats every player of {@code game} with {@code seatFor}'s controller, all on {@code screen}. */
+    private static void seatEveryoneOn(Game game, forge.gui.interfaces.IGuiGame screen,
+            java.util.function.Function<Player, forge.player.PlayerControllerHuman> seatFor) {
+        for (Player p : game.getPlayers()) {
+            forge.player.PlayerControllerHuman seat = seatFor.apply(p);
+            seat.getInputQueue().deleteObservers();
+            seat.setGui(screen);
+            p.dangerouslySetController(seat);
+        }
+    }
+
+    /**
+     * Every seat is on the operator's one screen, so a card revealed to the whole table shows once, naming its owner,
+     * not once per seat; a card shown to one player alone still shows, for them. The same reveal to an earlier seat
+     * than the last one shown is a new reveal, and shows again.
+     */
+    @Test
+    public void aRevealToTheTableShowsOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        Card top = addCardToZone("Island", bo, ZoneType.Library);
+        forge.game.card.CardCollection cards = new forge.game.card.CardCollection(top);
+
+        game.getAction().reveal(cards, bo, false);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s library"), shown.get(0));
+
+        shown.clear();
+        game.getAction().reveal(cards, bo); // to everyone but its owner
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+
+        shown.clear();
+        game.getAction().notifyOfValue(null, bo, "Bo chose red", null);
+        assertEquals(shown, List.of("Bo chose red"));
+
+        shown.clear();
+        game.getAction().revealTo(cards, bo); // looking at the top card, privately
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s library"), shown.get(0));
+
+        shown.clear();
+        game.getAction().revealTo(cards, game.getPlayers().get(0)); // an earlier seat than Bo: a reveal of its own
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+
+        shown.clear();
+        table.endRevealRun(); // a seat is asked for priority in between
+        game.getAction().revealTo(cards, game.getPlayers().get(2));
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+    }
+
+    /** With a seat per player, as in hotseat, each seat is still shown the reveal. */
+    @Test
+    public void aRevealStillShowsForEachSeatOutsideCompanion() {
+        Game game = startTable();
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new forge.player.PlayerControllerHuman(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null)));
+        Player bo = game.getPlayers().get(1);
+        forge.game.card.CardCollection cards = new forge.game.card.CardCollection(addCardToZone("Island", bo, ZoneType.Library));
+
+        game.getAction().reveal(cards, bo, false);
+        assertEquals(shown.size(), 3, String.valueOf(shown));
+
+        shown.clear();
+        game.getAction().notifyOfValue(null, bo, "Bo chose red", null);
+        assertEquals(shown.size(), 3, String.valueOf(shown));
     }
 }

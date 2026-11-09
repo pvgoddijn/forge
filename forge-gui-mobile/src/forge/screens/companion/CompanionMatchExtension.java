@@ -6,11 +6,14 @@ import forge.game.Game;
 import forge.game.card.CardView;
 import forge.game.player.PlayerView;
 import forge.gamemodes.companion.CompanionCards;
+import forge.gamemodes.companion.CompanionPreferences;
+import forge.gamemodes.companion.CompanionPreferences.CPref;
 import forge.gamemodes.companion.CompanionSetup;
 import forge.gamemodes.companion.CompanionStore;
 import forge.gamemodes.companion.CompanionTable;
 import forge.gamemodes.companion.TableEditor;
 import forge.gamemodes.match.HostedMatch;
+import forge.gui.FThreads;
 import forge.interfaces.IGameController;
 import forge.menu.FDropDownMenu;
 import forge.menu.FMenuItem;
@@ -73,6 +76,13 @@ class CompanionMatchExtension implements MatchExtension {
         boolean commanderMode = table.commanderMode();
         menu.addItem(new FMenuItem(commanderMode ? "Commander mode: on" : "Commander mode: off",
                 e -> table.setCommanderMode(!commanderMode)));
+        // AC-10: confirm mode by default; auto mode adds a confident photo at once, with an undo prompt
+        CompanionPreferences prefs = CompanionPreferences.get();
+        boolean autoAdd = prefs.getPrefBoolean(CPref.AUTO_ADD);
+        menu.addItem(new FMenuItem(autoAdd ? "Auto-add photos: on" : "Auto-add photos: off", e -> {
+            prefs.setPref(CPref.AUTO_ADD, !autoAdd);
+            prefs.save();
+        }));
         // read from the views on the UI thread; the op re-checks each card on the game thread
         List<CardView> sick = new ArrayList<>();
         for (PlayerView p : MatchController.instance.getGameView().getPlayers()) {
@@ -87,6 +97,34 @@ class CompanionMatchExtension implements MatchExtension {
                     e -> chooseToReady(READY_PICK, sick)));
         }
         menu.addItem(new FMenuItem("End game…", FSkinImage.CONCEDE, e -> confirmEnd()));
+    }
+
+    /**
+     * After an auto-add has run (AC-9), from its own result callback, so after any target or mode prompt the cast
+     * asked: what was added, with OK and Undo. Undo is offered only when it would take back that add alone
+     * ({@link CompanionTable.Ran#undoable}), and {@link CompanionTable#undoAdd} checks again when it runs; otherwise
+     * the prompt says what was added, with OK, and points to the game menu's Undo. A sorcery that waited for a main
+     * phase gets no prompt: it runs long after the photo, so a prompt then would surprise, and the table's own
+     * notices already said it waits and its result says it was cast. An add that didn't happen, such as a cast
+     * cancelled at its target prompt, has nothing to undo: the table's own result message says why. Game loop thread.
+     */
+    static void afterAutoAdd(CompanionTable table, CompanionTable.Ran ran) {
+        if (!ran.result().done() || ran.waited()) {
+            return;
+        }
+        if (!ran.undoable()) {
+            String card = ran.result().card();
+            String added = card == null ? ran.result().message() : "Added " + card + ".";
+            FThreads.invokeInEdtLater(() -> FOptionPane.showOptionDialog(added + " Undo in the game menu takes back"
+                    + " the latest action.", "Added", null, List.of("OK"), 0, null));
+            return;
+        }
+        FThreads.invokeInEdtLater(() -> FOptionPane.showOptionDialog(ran.result().message(), "Added", null,
+                List.of("OK", "Undo"), 0, choice -> {
+                    if (choice != null && choice == 1) {
+                        table.undoAdd(ran.seq());
+                    }
+                }));
     }
 
     private void showHistory() {

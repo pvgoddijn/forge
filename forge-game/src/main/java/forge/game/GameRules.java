@@ -16,6 +16,7 @@ public class GameRules {
     private boolean AISideboardingEnabled = false;
     private boolean sideboardForAI = false;
     private boolean allowCheatShuffle = false;
+    private boolean firstSeatStarts = false;
     private final Set<GameType> appliedVariants = EnumSet.noneOf(GameType.class);
     private int simTimeout = 120;
 
@@ -102,6 +103,14 @@ public class GameRules {
     }
     public void setAllowCheatShuffle(boolean allowCheatShuffle) {
         this.allowCheatShuffle = allowCheatShuffle;
+    }
+
+    /** True when the first registered player starts, with no coin toss: the players decide who starts, not the game. */
+    public boolean isFirstSeatStarts() {
+        return firstSeatStarts;
+    }
+    public void setFirstSeatStarts(boolean firstSeatStarts) {
+        this.firstSeatStarts = firstSeatStarts;
     }
 
     public int getGamesToWinMatch() {

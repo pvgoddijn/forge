@@ -36,6 +36,8 @@ class OcrCardNameReaderTest {
         CardNameReader.Reading reading = reader.read(new CardPhoto(photo, null, false));
         assertEquals("Westfold Rider", reading.cards().get(0));
         assertTrue(reading.confident());
+        assertTrue(reading.bestScore() >= 0.10, "the best score passes the reader's own cut-off");
+        assertTrue(reading.bestScore() > reading.secondScore(), "the scores come best first");
         assertTrue(reading.cards().size() <= CardNameReader.MAX_SUGGESTIONS);
         assertTrue(photo.exists(), "a photo that isn't temporary is kept");
     }
@@ -58,7 +60,9 @@ class OcrCardNameReaderTest {
     void anUndecodablePhotoReadsNothing() throws IOException {
         File broken = Files.createTempFile("broken", ".jpg").toFile();
         CardNameReader reader = new OcrCardNameReader(List::of, (jpeg, longSide) -> null);
-        assertEquals(CardNameReader.Reading.NOTHING, reader.read(new CardPhoto(broken, null, true)));
+        CardNameReader.Reading reading = reader.read(new CardPhoto(broken, null, true));
+        assertEquals(CardNameReader.Reading.NOTHING, reading);
+        assertEquals(0, reading.bestScore());
         assertFalse(broken.exists());
     }
 }

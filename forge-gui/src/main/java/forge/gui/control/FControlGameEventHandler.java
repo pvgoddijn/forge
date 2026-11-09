@@ -196,6 +196,14 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
         return processEvent();
     }
 
+    /** The last event each screen showed a pop-up for: seats sharing a screen each get the same event object. */
+    private static final Map<IGuiGame, Object> lastShown = Collections.synchronizedMap(new WeakHashMap<>());
+
+    /** Whether no other handler on this screen has shown {@code ev} yet, so its pop-up shows once per screen. */
+    private boolean firstOnScreen(final GameEvent ev) {
+        return lastShown.put(matchController, ev) != ev;
+    }
+
     @Override
     public Void visit(final GameEventFlipCoin ev) {
         if (humanController == null || !FModel.getPreferences().getPrefBoolean(FPref.UI_COIN_DICE_ANIMATION)) {
@@ -210,6 +218,7 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
             msg = Localizer.getInstance().getMessage(
                     heads ? "lblYouHaveWonTheCoinToss" : "lblYouLostTheCoinToss", me.getName());
         } else {
+            if (!firstOnScreen(ev)) { return null; }   // the message is the same for every seat on this screen
             heads = ev.heads();
             msg = Localizer.getInstance().getMessage("lblPlayerFlippedCoin",
                     ev.flipper().getName(),
@@ -289,6 +298,7 @@ public class FControlGameEventHandler extends IGameEventVisitor.Base<Void> {
 
     @Override
     public Void visit(final GameEventFlipOntoBattlefield ev) {
+        if (!firstOnScreen(ev)) { return null; }   // one animation per screen
         if (ev.finished()) {
             matchController.endFlipOntoBattlefield(ev.flipped());
             return null;

@@ -48,6 +48,8 @@ public final class CardCaptureActivity extends Activity implements CameraControl
     public static final String EXTRA_PHOTO = "photo";
     public static final String EXTRA_CORNERS = "corners";
     public static final String EXTRA_REFUSED = "refused";
+    /** Optional String extra on the starting intent: what to photograph, shown at the top of the screen. */
+    public static final String EXTRA_PROMPT = "prompt";
     private static final String PHOTO_DIR = "companion-photos";
 
     private static final int REQUEST_CAMERA = 1;
@@ -90,6 +92,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
     private TextureView preview;
     private Button shutter;
     private TextView message;
+    private TextView promptLine; // what to photograph, from EXTRA_PROMPT; hidden without one
 
     private CameraController camera;
     private Dim streamSize;
@@ -120,8 +123,13 @@ public final class CardCaptureActivity extends Activity implements CameraControl
 
     /** Starts the capture. The callback replaces any earlier one. */
     public static void start(Activity from, Callback callback) {
+        start(from, null, callback);
+    }
+
+    /** Starts the capture showing {@code prompt}, such as "Ann's commander: photograph it", or none if null. */
+    public static void start(Activity from, String prompt, Callback callback) {
         pendingCallback = callback;
-        from.startActivity(new Intent(from, CardCaptureActivity.class));
+        from.startActivity(new Intent(from, CardCaptureActivity.class).putExtra(EXTRA_PROMPT, prompt));
     }
 
     /**
@@ -132,6 +140,8 @@ public final class CardCaptureActivity extends Activity implements CameraControl
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
+        showPrompt();
         Callback older = callback;
         callback = pendingCallback;
         if (older != null && older != callback) {
@@ -147,7 +157,15 @@ public final class CardCaptureActivity extends Activity implements CameraControl
         requestInFlight = state != null && state.getBoolean(STATE_REQUEST_IN_FLIGHT);
         layOutEdgeToEdge();
         setContentView(buildUi());
+        showPrompt();
         camera = new CameraController(this, this);
+    }
+
+    /** Shows the starting intent's prompt, or hides the line when it has none. */
+    private void showPrompt() {
+        String prompt = getIntent().getStringExtra(EXTRA_PROMPT);
+        promptLine.setText(prompt == null ? "" : prompt);
+        promptLine.setVisibility(prompt == null || prompt.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
     @Override
@@ -776,6 +794,15 @@ public final class CardCaptureActivity extends Activity implements CameraControl
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        promptLine = new TextView(this);
+        promptLine.setTextColor(Color.WHITE);
+        promptLine.setBackgroundColor(0xCC000000);
+        promptLine.setPadding(dp(12), dp(8), dp(12), dp(8));
+        promptLine.setTextSize(20);
+        promptLine.setGravity(Gravity.CENTER);
+        promptLine.setVisibility(View.GONE);
+        panel.addView(promptLine);
 
         stats = new TextView(this);
         stats.setTextColor(Color.WHITE);

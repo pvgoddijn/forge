@@ -29,9 +29,12 @@ public final class AndroidCardPhotos {
         return activity.getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY);
     }
 
-    /** Opens the capture screen. {@code onResult} gets the photo, or null if cancelled or the camera was refused. */
-    public static void photograph(Activity activity, Consumer<CardPhoto> onResult) {
-        activity.runOnUiThread(() -> CardCaptureActivity.start(activity, (photoPath, corners, refused) -> {
+    /**
+     * Opens the capture screen, showing {@code prompt} (null for none) at its top. {@code onResult} gets the photo, or
+     * null if cancelled or the camera was refused.
+     */
+    public static void photograph(Activity activity, String prompt, Consumer<CardPhoto> onResult) {
+        activity.runOnUiThread(() -> CardCaptureActivity.start(activity, prompt, (photoPath, corners, refused) -> {
             if (refused) {
                 FThreads.invokeInEdtLater(() -> FOptionPane.showMessageDialog(
                         "Forge may not use the camera, so cards can't be photographed. Camera access can be given in "
