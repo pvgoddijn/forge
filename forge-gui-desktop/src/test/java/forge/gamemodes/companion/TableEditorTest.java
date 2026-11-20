@@ -910,6 +910,76 @@ public class TableEditorTest extends AITest {
         assertEquals(named(active, ZoneType.Graveyard, card).size(), 1, card + " ends in the graveyard");
     }
 
+    @DataProvider
+    public Object[][] knownFacesInHand() {
+        return new Object[][] {
+                {"Fire", "Fire // Ice", CardStateName.LeftSplit},
+                {"Ice", "Fire // Ice", CardStateName.RightSplit},
+                {"Heart's Desire", "Lovestruck Beast", CardStateName.Secondary},
+        };
+    }
+
+    /**
+     * AC-20 for a face's own name: a known Fire // Ice in hand is the card that's cast when "Fire" is added from hand,
+     * as Fire, and the unknown cards stay where they are.
+     */
+    @Test(dataProvider = "knownFacesInHand")
+    public void aFaceNameAddedFromHandCastsTheKnownCardAsThatFace(String face, String card, CardStateName state) {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        addCardToZone("Grizzly Bears", game.getNextPlayerAfter(active), ZoneType.Battlefield);
+        Card known = addCardToZone(card, active, ZoneType.Hand);
+        game.getAction().checkStateEffects(true);
+        int hidden = CompanionCards.hiddenInHand(active);
+
+        TableEditor.Result result = TableEditor.addCard(active, face, true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(CompanionCards.hiddenInHand(active), hidden, "no unknown card left the hand");
+        assertTrue(named(active, ZoneType.Hand, card).isEmpty(), "the known " + card + " left the hand");
+        SpellAbility cast = game.getStack().peekAbility();
+        assertEquals(cast.getHostCard().getId(), known.getId(), "the known card itself is cast");
+        assertEquals(cast.getCardStateName(), state, face + " is cast, not another face");
+    }
+
+    /** A known modal double-faced card in hand, added by its land back's name, is played as that land. */
+    @Test
+    public void aLandBackNameAddedFromHandPlaysTheKnownCardAsTheLand() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Card known = addCardToZone("Agadeem's Awakening", active, ZoneType.Hand);
+        int hidden = CompanionCards.hiddenInHand(active);
+
+        TableEditor.Result result = TableEditor.addCard(active, "Agadeem, the Undercrypt", true,
+                TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(CompanionCards.hiddenInHand(active), hidden);
+        List<Card> land = named(active, ZoneType.Battlefield, "Agadeem, the Undercrypt");
+        assertEquals(land.size(), 1);
+        assertEquals(land.get(0).getId(), known.getId());
+    }
+
+    /** An add of a known card's face that fails leaves the known card in hand as it was, whole. */
+    @Test
+    public void aFailedFaceAddLeavesTheKnownCardWholeInHand() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Card known = addCardToZone("Commit // Memory", active, ZoneType.Hand);
+
+        assertFalse(TableEditor.addCard(active, "Memory", true, TableEditor.Mode.CAST).done());
+        assertTrue(known.isInZone(ZoneType.Hand));
+        assertEquals(known.getName(), "Commit // Memory");
+        assertEquals(known.getCurrentStateName(), CardStateName.Original);
+
+        // turned to its adventure to be put in, which isn't a permanent: turned back
+        Card beast = addCardToZone("Lovestruck Beast", active, ZoneType.Hand);
+        assertFalse(TableEditor.addCard(active, "Heart's Desire", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
+        assertTrue(beast.isInZone(ZoneType.Hand));
+        assertEquals(beast.getName(), "Lovestruck Beast");
+        assertEquals(beast.getCurrentStateName(), CardStateName.Original);
+    }
+
     /**
      * An aftermath half (Memory) is cast only from a graveyard, never from a hand: picked by its own name, it isn't
      * cast as the other half instead. The add fails as any uncastable card's does, and the hand is as it was.

@@ -136,6 +136,9 @@ public final class TableEditor {
             }
             // in hand first, as the rules expect of anything cast, and for zone-change triggers to see where it was
             game.getAction().moveToHand(card, null);
+        } else if (half == null && !card.getName().equals(name)) {
+            // the known card picked by one face's name (Heart's Desire, Agadeem, the Undercrypt): turned to it, as above
+            CardUtil.turnToRightFace(name, card);
         }
 
         boolean done;
@@ -915,7 +918,12 @@ public final class TableEditor {
     /** Puts things back as they were before {@link #addCard}, when the card couldn't go where it was meant to. */
     private static void undoAdd(Player player, Card card, Card known, Card hidden) {
         if (known != null) {
-            return; // it never left the hand
+            // it never left the hand, but may have been turned to the face it was picked by
+            if (known.getCurrentStateName() != CardStateName.Original && known.hasState(CardStateName.Original)) {
+                known.setState(CardStateName.Original, true);
+                known.setBackSide(false);
+            }
+            return;
         }
         Game game = player.getGame();
         game.getAction().ceaseToExist(card, true);
@@ -978,13 +986,34 @@ public final class TableEditor {
         return null;
     }
 
+    /**
+     * {@code player}'s known card in hand named {@code name}: by its whole name first, else one whose face or half it
+     * names (a known Fire // Ice for "Fire", a known Lovestruck Beast for "Heart's Desire").
+     */
     private static Card findKnownInHand(Player player, String name) {
+        Card byFace = null;
         for (Card card : player.getCardsIn(ZoneType.Hand)) {
-            if (!CompanionCards.isPlaceholder(card) && card.getName().equals(name)) {
+            if (CompanionCards.isPlaceholder(card)) {
+                continue;
+            }
+            if (card.getName().equals(name)) {
                 return card;
             }
+            if (byFace == null && hasFaceNamed(card, name)) {
+                byFace = card;
+            }
         }
-        return null;
+        return byFace;
+    }
+
+    private static boolean hasFaceNamed(Card card, String name) {
+        CardRules rules = card.getRules();
+        if (rules == null) {
+            return false;
+        }
+        ICardFace main = rules.getMainPart();
+        ICardFace other = rules.getOtherPart();
+        return main != null && name.equals(main.getName()) || other != null && name.equals(other.getName());
     }
 
     private static Card firstPlaceholderInHand(Player player) {
