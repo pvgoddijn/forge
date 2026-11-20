@@ -40,7 +40,8 @@ _Last updated 2026-11-20._
 - [ ] Finish-game and ante reveals still repeat once per seat on a shared screen.
 - [ ] Undo does not restore storm counts or until-end-of-turn effects.
 - [ ] Split/adventure/MDFC sorcery halves don't wait for a main phase; Topsy Turvy phase order not handled.
-- [ ] Card picker omits back-face names of double-faced cards; cancel in the commander step drops every seat's choice.
+- [x] Card picker: a back-face name of a double-faced card ("Insectile Aberration") now also offers the card itself ("Delver of Secrets"), right after the back face (slice 8). The back-face names were already offered; split/adventure halves unchanged.
+- [ ] Cancel in the commander step drops every seat's choice.
 - [x] Uncommitted camera-PoC docs from `feature/companion-mode` reviewed and folded in here (slice 8).
 
 ## From the core cleanup (D2, 2026-11-07)
