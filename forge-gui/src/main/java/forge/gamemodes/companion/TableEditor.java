@@ -808,10 +808,28 @@ public final class TableEditor {
      * be cast in response; the sorcery face is then cast where it was logged.
      */
     static boolean waitsForMainPhase(PaperCard printing, Mode mode) {
+        return waitsForMainPhase(printing, printing.getName(), mode);
+    }
+
+    /**
+     * {@link #waitsForMainPhase(PaperCard, Mode)} for {@code printing} picked as {@code name}. When that's one face's
+     * own name (Heart's Desire, Flamethrower Sonata, Agadeem, the Undercrypt, Memory), only that face is cast
+     * ({@link #addCard} turns the card to it), so it alone decides: a sorcery face waits, any other doesn't. The
+     * whole card's name, or one that names no face (a flavor name), counts every face it can be cast as.
+     */
+    static boolean waitsForMainPhase(PaperCard printing, String name, Mode mode) {
         if (mode != Mode.CAST) {
             return false;
         }
-        List<ICardFace> faces = castableFaces(printing.getRules());
+        CardRules rules = printing.getRules();
+        if (!name.equalsIgnoreCase(printing.getName())) {
+            for (ICardFace face : Arrays.asList(rules.getMainPart(), rules.getOtherPart())) {
+                if (face != null && name.equalsIgnoreCase(face.getName())) {
+                    return face.getType().isSorcery() && !instantSpeed(face);
+                }
+            }
+        }
+        List<ICardFace> faces = castableFaces(rules);
         return faces.stream().anyMatch(face -> face.getType().isSorcery())
                 && faces.stream().noneMatch(TableEditor::instantSpeed);
     }
@@ -825,7 +843,7 @@ public final class TableEditor {
      */
     public static PhaseType mainPhaseFor(Game game, Player player, String name, Mode mode) {
         PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(name);
-        if (printing == null || !waitsForMainPhase(printing, mode)) {
+        if (printing == null || !waitsForMainPhase(printing, name, mode)) {
             return null;
         }
         PhaseHandler ph = game.getPhaseHandler();

@@ -845,6 +845,13 @@ public class TableEditorTest extends AITest {
                 // an instant face can be cast now, so the card doesn't wait whichever face is chosen later
                 {"Bonecrusher Giant", null, "adventure creature with an instant adventure"},
                 {"Commit // Memory", null, "split card with an instant half and a sorcery half"},
+                // a single face's name: only that face is cast, so it alone decides
+                {"Heart's Desire", PhaseType.MAIN1, "sorcery adventure picked by its own name"},
+                {"Stomp", null, "instant adventure picked by its own name"},
+                {"Flamethrower Sonata", PhaseType.MAIN1, "sorcery back of a modal double-faced card"},
+                {"Agadeem, the Undercrypt", null, "land back of a modal double-faced sorcery: played, not cast"},
+                {"Memory", PhaseType.MAIN1, "sorcery half of a split card"},
+                {"Commit", null, "instant half of a split card"},
         };
     }
 
