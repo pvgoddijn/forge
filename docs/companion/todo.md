@@ -12,6 +12,7 @@ _Last updated 2026-11-20._
 - [ ] Rerun `CardNameBenchmark` on the new set with crop-only reading; record in `slices/08-quality-pass.md`.
 - [ ] Measure the auto-add threshold (placeholder 0.50 / lead 0.30, unmeasured; needs ~300 confident reads with none wrong for 1 in 100).
 - [ ] AC-32 still missed (phone top-3 73.2 % vs 90 %). Most misses are blurry evening shots: tighten the capture gate (shoot only when steady and sharp; prompt "hold still" / "more light").
+  - Gate logic in forge-card-ocr (`SharpnessGate`, `TitleSharpness`), Android wiring pending. Title-band sharpness threshold 300 calibrated on the 55 phone captures (photo downscaled to 640x480): all 16 misses at or below 379, holds back 13 of them and 4 of 39 good reads; recheck on real analysis frames.
 - [ ] Time photo → suggestions on the phone (target 2 s).
 - [ ] Airplane-mode full 4-player Commander game check.
 - [x] Push slice 8 and open its PR on the fork, stacked on slice 7.
