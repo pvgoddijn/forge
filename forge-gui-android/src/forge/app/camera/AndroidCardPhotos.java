@@ -23,6 +23,7 @@ import forge.toolbox.FOptionPane;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /** Companion's card photos on Android: {@link CardCaptureActivity} takes them, and the OCR reader reads them. */
@@ -42,7 +43,7 @@ public final class AndroidCardPhotos {
      * null if cancelled or the camera was refused.
      */
     public static void photograph(Activity activity, String prompt, Consumer<CardPhoto> onResult) {
-        activity.runOnUiThread(() -> CardCaptureActivity.start(activity, prompt, (photoPath, corners, refused) -> {
+        activity.runOnUiThread(() -> CardCaptureActivity.start(activity, prompt, (photoPath, corners, refused, captureGate) -> {
             if (refused) {
                 FThreads.invokeInEdtLater(() -> FOptionPane.showMessageDialog(
                         "Forge may not use the camera, so cards can't be photographed. Camera access can be given in "
@@ -52,7 +53,7 @@ public final class AndroidCardPhotos {
                 onResult.accept(null);
             } else if (keepPhotos()) {
                 // copying a full-size photo to the external files would stall the UI thread
-                new Thread(() -> onResult.accept(keepForTraining(activity, new File(photoPath), corners)),
+                new Thread(() -> onResult.accept(keepForTraining(activity, new File(photoPath), corners, captureGate)),
                         "keep-photo").start();
             } else {
                 // a camera photo is only for reading, so it's deleted once read (AC-7)
@@ -70,7 +71,7 @@ public final class AndroidCardPhotos {
      * Moves the photo to a new run under {@code getExternalFilesDir(null)/companion-captures}, where {@code adb pull}
      * reaches it without root, for the OCR benchmark. If it can't be kept, it's read and deleted as usual.
      */
-    private static CardPhoto keepForTraining(Activity activity, File photo, float[] corners) {
+    private static CardPhoto keepForTraining(Activity activity, File photo, float[] corners, Map<String, Object> captureGate) {
         try {
             TrainingCaptures captures = trainingCaptures(activity);
             if (captures == null) {
@@ -82,7 +83,7 @@ public final class AndroidCardPhotos {
             BitmapFactory.decodeFile(photo.getPath(), bounds);
             int orientation = new ExifInterface(photo.getPath()).getAttributeInt(ExifInterface.TAG_ORIENTATION, 0);
             TrainingCaptures.Capture capture = new TrainingCaptures.Capture(photo.lastModified(),
-                    Build.MANUFACTURER + " " + Build.MODEL, bounds.outWidth, bounds.outHeight, orientation, corners);
+                    Build.MANUFACTURER + " " + Build.MODEL, bounds.outWidth, bounds.outHeight, orientation, corners, captureGate);
             TrainingCaptures.Run run = captures.keep(photo, capture);
             Log.d(CaptureLog.TAG, "Photo kept for training in " + run.dir());
             return new CardPhoto(run.photo(), corners, false, run);

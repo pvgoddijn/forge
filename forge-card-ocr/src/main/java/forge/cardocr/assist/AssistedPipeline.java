@@ -58,6 +58,8 @@ public final class AssistedPipeline {
      * @param timeline where the time has gone since the card appeared, or null
      * @param blockedMs how long the block on recapturing a card has held captures back so far
      * @param blockReleasedBy what last lifted that block, or null
+     * @param sharpness whether the card is steady, sharp and bright enough for an automatic capture, and why not
+     * @param exposureNs the camera's exposure the frame came with, or null if not known
      */
     public record Outcome(CardQuad topCandidate, TrackedCard card, float[] signature,
             double finderMs, double framesPerSecond, FinderStats.Summary timings,
@@ -66,13 +68,15 @@ public final class AssistedPipeline {
             boolean latched, boolean captureNow,
             FrameMotion motion, long phoneSteadyMs, Long steadyWaitMs,
             MotionAudit.Step audit, MotionAudit.Summary auditSummary,
-            OutlineDisplay.Shown shown, CardQuad focusQuad, CaptureTimeline timeline, long blockedMs, String blockReleasedBy) {
+            OutlineDisplay.Shown shown, CardQuad focusQuad, CaptureTimeline timeline, long blockedMs, String blockReleasedBy,
+            SharpnessGate.Decision sharpness, Long exposureNs) {
     }
 
     private final CardTracker tracker = new CardTracker();
     private final FinderStats stats = new FinderStats();
     private final RefocusPolicy refocus = new RefocusPolicy();
     private final CaptureGate gate;
+    private final SharpnessGate sharpness = new SharpnessGate();
     private final PhoneSteadiness phone = new PhoneSteadiness();
     private final MotionAudit motionAudit = new MotionAudit();
     private final LocalTracking localTracking = new LocalTracking();
@@ -164,8 +168,14 @@ public final class AssistedPipeline {
             phone.update(motion.speedRadS(), BlurBudget.limitRadS(in.exposureNs()), in.nowMs());
             phoneState = new CaptureGate.PhoneState(motion.speedRadS(), phone.steadyForMs(in.nowMs()));
         }
+        // Judged first, so the capture gate neither fires nor latches while the title would come out unreadable.
+        SharpnessGate.Decision sharp = sharpness.update(card, in.luma(), in.width(), in.height(), in.nowMs(), in.exposureNs());
         boolean capture = gate.update(card, signature, in.nowMs(), settled, in.steadyMs(),
-                in.autoEnabled(), in.captureInFlight(), phoneState);
+                in.autoEnabled(), in.captureInFlight(), phoneState, sharp.ready());
+        if (gate.isLatched() || in.captureInFlight()) {
+            // Captured, by either trigger: the next card, or this one once the block lifts, waits afresh.
+            sharpness.reset();
+        }
         long phoneSteadyFor = phoneState == null ? 0 : phoneState.steadyForMs();
         boolean cardSteady = card != null && card.steadyForMs(in.nowMs()) >= Math.min(in.steadyMs(), CaptureGate.CARD_STILL_MS);
         timeline.frame(found.candidates().stream().anyMatch(CardQuad::refined), shown != null, card != null,
@@ -176,7 +186,8 @@ public final class AssistedPipeline {
                 stats.summary(), glareNow, glareWarned, glareShare, action, focusGeneration, settled,
                 gate.isLatched(), capture, motion, phoneState == null ? 0 : phoneState.steadyForMs(),
                 capture ? (Long) gate.lastWaitMs() : null, step, motionAudit.summary(), shown,
-                focusSubject(card, shown), capture && times != null ? times.withTrigger(in.nowMs()) : times, gate.blockedMs(), gate.releasedBy());
+                focusSubject(card, shown), capture && times != null ? times.withTrigger(in.nowMs()) : times, gate.blockedMs(), gate.releasedBy(),
+                sharp, in.exposureNs());
     }
 
     /** Focus can start before the card is confirmed, so that the two overlap. A second sighting avoids chasing one odd frame. */

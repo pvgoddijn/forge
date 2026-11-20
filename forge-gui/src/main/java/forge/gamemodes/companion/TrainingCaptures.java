@@ -13,7 +13,10 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Photos kept for the OCR benchmark (slice 8), only while the hidden "Keep photos for training" setting
@@ -24,7 +27,8 @@ import java.util.List;
  *   labels.csv                    run,card (one row per run, rewritten when a run is labelled again)
  *   20261107-153012-123/
  *     photo.jpg                   the photo as the camera stored it
- *     run.json                    what was known about it: size, EXIF orientation, the tracked outline, the read
+ *     run.json                    what was known about it: size, EXIF orientation, the tracked outline, the read,
+ *                                 the auto-capture gate's last decision (captureGate)
  * </pre>
  * The outline in {@code run.json} is {@code finalOutline}, in the stored photo's pixels before any EXIF rotation, so
  * {@code analysisWidth} is the photo's own width and the benchmark's scale from the analysis frame is 1.
@@ -68,13 +72,20 @@ public final class TrainingCaptures {
      * @param imageHeight its height
      * @param exifOrientation its EXIF orientation tag, 0 if it has none
      * @param corners the tracked card's outline as {@link CardPhoto#cardCorners()} gives it, or null if none was tracked
+     * @param captureGate what the auto-capture gate made of the last frame before the photo, such as its verdict and
+     *     measures, by name, to calibrate it from phone captures; numbers, booleans and strings, or null if not known
      */
     public record Capture(long takenMs, String device, int imageWidth, int imageHeight, int exifOrientation,
-                          float[] corners) {
+                          float[] corners, Map<String, Object> captureGate) {
         public Capture {
             if (corners != null && corners.length != 8) {
                 throw new IllegalArgumentException("corners needs 4 corners, as 8 numbers");
             }
+            captureGate = captureGate == null ? null : Collections.unmodifiableMap(new LinkedHashMap<>(captureGate));
+        }
+
+        public Capture(long takenMs, String device, int imageWidth, int imageHeight, int exifOrientation, float[] corners) {
+            this(takenMs, device, imageWidth, imageHeight, exifOrientation, corners, null);
         }
     }
 
@@ -150,6 +161,24 @@ public final class TrainingCaptures {
         return '"' + text.replace("\"", "\"\"") + '"';
     }
 
+    /** Names and values as a JSON object. A number that isn't finite is left out: JSON can't hold it. */
+    static JsonObject toJson(Map<String, Object> values) {
+        JsonObject out = new JsonObject();
+        values.forEach((name, value) -> {
+            if (value instanceof Number number) {
+                double d = number.doubleValue();
+                if (!Double.isNaN(d) && !Double.isInfinite(d)) {
+                    out.addProperty(name, number);
+                }
+            } else if (value instanceof Boolean flag) {
+                out.addProperty(name, flag);
+            } else if (value != null) {
+                out.addProperty(name, value.toString());
+            }
+        });
+        return out;
+    }
+
     /** One kept photo: its folder, and its label once a card is picked. */
     public final class Run {
         private final File dir;
@@ -223,6 +252,9 @@ public final class TrainingCaptures {
                     outline.add(corner);
                 }
                 json.add("finalOutline", outline);
+            }
+            if (capture.captureGate() != null) {
+                json.add("captureGate", toJson(capture.captureGate()));
             }
             if (reading != null) {
                 JsonObject read = new JsonObject();

@@ -232,4 +232,103 @@ class SharpnessGateTest {
         TrackedCard reshaped = new TrackedCard(1, CARD, 0, 0, true, card(10, 0), 1);
         assertEquals(SharpnessGate.Verdict.HOLD_STILL, gate.update(reshaped, SHARP, W, H, 700).verdict());
     }
+
+    /** The whole pipeline on one still card, focus granted at once, auto capture on and no gyroscope. */
+    private static final class Session {
+        final AssistedPipeline pipeline = new AssistedPipeline(null);
+        long now;
+        int generation;
+        AssistedPipeline.Outcome last;
+
+        AssistedPipeline.Outcome step(byte[] luma, Long exposureNs) {
+            now += FRAME_MS;
+            FocusStatus focus = generation == 0 ? FocusStatus.NONE : new FocusStatus(generation, FocusStatus.Outcome.FOCUSED, 50);
+            last = pipeline.onFrame(new AssistedPipeline.Input(new FindResult(List.of(CARD), 0, 0, 0), luma, W, H, now, focus,
+                    true, 0, false, null, exposureNs));
+            if (last.focusAction() == AssistedPipeline.FocusAction.FOCUS_ON_CARD) {
+                generation = last.focusGeneration();
+            }
+            return last;
+        }
+
+        /** Steps until a capture or the time, and returns when it captured, or -1. */
+        long runUntil(byte[] luma, Long exposureNs, long untilMs) {
+            while (now < untilMs) {
+                if (step(luma, exposureNs).captureNow()) {
+                    return now;
+                }
+            }
+            return -1;
+        }
+
+        String status() {
+            return StatusText.main(last.card() != null, last.latched(), false, true, last.sharpness().verdict());
+        }
+    }
+
+    private static final Long EVENING_EXPOSURE_NS = 33_000_000L;
+
+    @Test
+    void aBlurredSteadyCardInDimLightIsNotCapturedAndAsksForMoreLight() {
+        Session session = new Session();
+        long captured = session.runUntil(BLURRED, EVENING_EXPOSURE_NS, SharpnessGate.FALLBACK_AFTER_MS - FRAME_MS);
+        assertEquals(-1, captured, "captured at " + captured);
+        assertNotNull(session.last.card());
+        assertFalse(session.last.latched(), "held back without latching");
+        assertEquals(SharpnessGate.Verdict.MORE_LIGHT, session.last.sharpness().verdict());
+        assertEquals("More light", session.status());
+        assertEquals(EVENING_EXPOSURE_NS, session.last.exposureNs());
+    }
+
+    @Test
+    void aSharpSteadyCardIsCapturedPromptly() {
+        Session session = new Session();
+        long captured = session.runUntil(SHARP, EVENING_EXPOSURE_NS, 2000);
+        assertTrue(captured > 0 && captured <= 800, "captured at " + captured);
+        assertTrue(session.last.sharpness().ready());
+        assertFalse(session.last.sharpness().timedOut());
+        assertTrue(session.last.latched());
+        Map<String, Object> recorded = session.last.sharpness().describe(session.last.exposureNs());
+        assertEquals("READY", recorded.get("verdict"));
+        assertEquals(EVENING_EXPOSURE_NS, recorded.get("exposureNs"));
+        assertTrue((Double) recorded.get("laplacianVariance") >= SharpnessGate.MIN_SHARPNESS, recorded.toString());
+        assertTrue(recorded.containsKey("meanLuma") && recorded.containsKey("cornerSpread"), recorded.toString());
+    }
+
+    @Test
+    void aCardThatTurnsSharpIsCapturedOnceItDoes() {
+        Session session = new Session();
+        assertEquals(-1, session.runUntil(BLURRED, EVENING_EXPOSURE_NS, 1500));
+        long captured = session.runUntil(SHARP, EVENING_EXPOSURE_NS, 2500);
+        assertTrue(captured > 1500 && captured <= 1500 + 2 * FRAME_MS, "captured at " + captured);
+    }
+
+    @Test
+    void untilTheWindowIsCoveredItSaysHoldStill() {
+        Session session = new Session();
+        AssistedPipeline.Outcome first = null;
+        while (first == null || first.card() == null) {
+            first = session.step(SHARP, EVENING_EXPOSURE_NS);
+        }
+        assertEquals(SharpnessGate.Verdict.HOLD_STILL, first.sharpness().verdict());
+        assertEquals("Hold still", session.status());
+    }
+
+    @Test
+    void aBlurredCardIsStillCapturedAfterTheFallback() {
+        Session session = new Session();
+        long captured = session.runUntil(BLURRED, EVENING_EXPOSURE_NS, SharpnessGate.FORCE_AFTER_MS + 1000);
+        assertTrue(captured >= SharpnessGate.FALLBACK_AFTER_MS, "captured at " + captured);
+        assertTrue(session.last.sharpness().timedOut());
+    }
+
+    @Test
+    void theShutterIsNotHeldBackByABlurredTitle() {
+        Session session = new Session();
+        session.runUntil(BLURRED, EVENING_EXPOSURE_NS, 1000);
+        session.pipeline.latch(session.last.signature());
+        AssistedPipeline.Outcome after = session.step(BLURRED, EVENING_EXPOSURE_NS);
+        assertTrue(after.latched(), "a shutter press marks the card captured whatever its sharpness");
+        assertFalse(after.captureNow());
+    }
 }

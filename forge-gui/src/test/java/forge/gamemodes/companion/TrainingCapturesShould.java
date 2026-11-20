@@ -12,7 +12,9 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -117,6 +119,34 @@ public class TrainingCapturesShould {
         JsonObject json = runJson(run);
         assertThat(json.get("tracked").getAsBoolean()).isFalse();
         assertThat(json.has("finalOutline")).isFalse();
+    }
+
+    @Test
+    public void recordWhatTheCaptureGateMadeOfTheLastFrame() throws IOException {
+        Map<String, Object> gate = new LinkedHashMap<>();
+        gate.put("trigger", "auto");
+        gate.put("verdict", "READY");
+        gate.put("timedOut", false);
+        gate.put("laplacianVariance", 412.5);
+        gate.put("meanLuma", 140.25);
+        gate.put("cornerSpread", Double.NaN);
+        gate.put("exposureNs", 33_000_000L);
+        TrainingCaptures.Run run = captures.keep(photo("x"),
+                new TrainingCaptures.Capture(TAKEN, "Google Pixel 7", 3000, 4000, 6, CORNERS, gate));
+
+        JsonObject recorded = runJson(run).getAsJsonObject("captureGate");
+        assertThat(recorded.get("trigger").getAsString()).isEqualTo("auto");
+        assertThat(recorded.get("verdict").getAsString()).isEqualTo("READY");
+        assertThat(recorded.get("timedOut").getAsBoolean()).isFalse();
+        assertThat(recorded.get("laplacianVariance").getAsDouble()).isEqualTo(412.5);
+        assertThat(recorded.get("meanLuma").getAsDouble()).isEqualTo(140.25);
+        assertThat(recorded.get("exposureNs").getAsLong()).isEqualTo(33_000_000L);
+        assertThat(recorded.has("cornerSpread")).as("NaN isn't JSON").isFalse();
+    }
+
+    @Test
+    public void leaveTheCaptureGateOutWhenNotKnown() throws IOException {
+        assertThat(runJson(captures.keep(photo("x"), capture(CORNERS))).has("captureGate")).isFalse();
     }
 
     @Test

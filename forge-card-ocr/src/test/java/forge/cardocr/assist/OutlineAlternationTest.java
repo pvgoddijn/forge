@@ -18,7 +18,14 @@ class OutlineAlternationTest {
     private static final long FRAME_MS = 110;
     private static final long STEADY_MS = 800;
     private static final long FOCUS_MS = 220;
-    private static final byte[] LUMA = new byte[W * H];
+    /** Fine, bright texture everywhere, so the title reads as sharp wherever the outline puts it. */
+    private static final byte[] LUMA = sharpTexture();
+
+    private static byte[] sharpTexture() {
+        byte[] luma = new byte[W * H];
+        new Random(7).nextBytes(luma);
+        return luma;
+    }
 
     /** A card with its centre at (x, y) and this height, turned so that it's upright. */
     private static CardQuad outline(double x, double y, double height, double score) {

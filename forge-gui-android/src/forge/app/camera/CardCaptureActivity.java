@@ -34,7 +34,8 @@ import java.util.*;
  * <li>{@code RESULT_CANCELED}: Cancel, back, or a camera error (shown briefly first). If camera access
  *     was refused, the boolean extra {@value #EXTRA_REFUSED} is true.</li>
  * </ul>
- * The callback gets the photo's path and corners, or a null path for every cancelled outcome.
+ * The callback gets the photo's path and corners, or a null path for every cancelled outcome, and with an Assisted
+ * photo what the auto-capture gate made of the last frame before it, for "Keep photos for training".
  *
  * <p>The activity must be portrait-locked: the photo's JPEG orientation assumes device rotation 0.
  */
@@ -42,7 +43,11 @@ public final class CardCaptureActivity extends Activity implements CameraControl
 
     /** The photo, or null for cancelled, refused or an error. Called once, on the main thread, before finish(). */
     public interface Callback {
-        void onResult(String photoPath, float[] corners, boolean refused);
+        /**
+         * @param captureGate the trigger and the sharpness gate's last decision, by name
+         *     ({@link SharpnessGate.Decision#describe}), or null without card finding
+         */
+        void onResult(String photoPath, float[] corners, boolean refused, Map<String, Object> captureGate);
     }
 
     public static final String EXTRA_PHOTO = "photo";
@@ -145,7 +150,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
         Callback older = callback;
         callback = pendingCallback;
         if (older != null && older != callback) {
-            older.onResult(null, null, false);
+            older.onResult(null, null, false, null);
         }
     }
 
@@ -201,7 +206,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
         shutterSound.release();
         if (isFinishing()) {
             // Back, or finished by the system: the caller still hears once.
-            sendResult(null, null, false);
+            sendResult(null, null, false, null);
         }
         super.onDestroy();
     }
@@ -216,7 +221,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
         if (results.length == 0 || results[0] != PackageManager.PERMISSION_GRANTED) {
             done = true;
             setResult(RESULT_CANCELED, new Intent().putExtra(EXTRA_REFUSED, true));
-            sendResult(null, null, true);
+            sendResult(null, null, true, null);
             finish();
         } else {
             startCameraIfPossible();
@@ -233,7 +238,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
     }
 
     /** Calls this activity's callback at most once, and forgets it if no newer one has replaced it. */
-    private void sendResult(String photoPath, float[] corners, boolean refused) {
+    private void sendResult(String photoPath, float[] corners, boolean refused, Map<String, Object> captureGate) {
         if (resultSent) {
             return;
         }
@@ -244,11 +249,11 @@ public final class CardCaptureActivity extends Activity implements CameraControl
             pendingCallback = null;
         }
         if (target != null) {
-            target.onResult(photoPath, corners, refused);
+            target.onResult(photoPath, corners, refused, captureGate);
         }
     }
 
-    private void finishWithPhoto(File photo, float[] corners) {
+    private void finishWithPhoto(File photo, float[] corners, Map<String, Object> captureGate) {
         if (resultSent) {
             // cancelled while the photo was being saved: nobody will read it, and photos aren't kept (AC-7)
             if (!photo.delete()) {
@@ -262,7 +267,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
             data.putExtra(EXTRA_CORNERS, corners);
         }
         setResult(RESULT_OK, data);
-        sendResult(photo.getAbsolutePath(), corners, false);
+        sendResult(photo.getAbsolutePath(), corners, false, captureGate);
         finish();
     }
 
@@ -286,7 +291,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
     private void cancel() {
         done = true;
         setResult(RESULT_CANCELED);
-        sendResult(null, null, false);
+        sendResult(null, null, false, null);
         finish();
     }
 
@@ -434,7 +439,8 @@ public final class CardCaptureActivity extends Activity implements CameraControl
 
     private void showOutcome(AssistedPipeline.Outcome outcome) {
         latestOutcome = outcome;
-        String status = StatusText.main(outcome.card() != null, outcome.latched(), captureInFlight, true);
+        String status = StatusText.main(outcome.card() != null, outcome.latched(), captureInFlight, true,
+                outcome.sharpness().verdict());
         if (!status.contentEquals(stats.getText())) {
             stats.setText(status);
         }
@@ -551,7 +557,19 @@ public final class CardCaptureActivity extends Activity implements CameraControl
         float[] corners = trackedInPhoto == null ? null : toArray(trackedInPhoto);
         Log.d(CaptureLog.TAG, "Photo saved: trigger=" + (capture == null ? CaptureTrigger.SHUTTER : capture.trigger()).id()
                 + " captureMs=" + captureTimeMs + " tracked=" + (corners != null) + " photoCrop=" + photoCrop + " yuv=" + camera.yuvInUse());
-        runOnUiThread(() -> finishWithPhoto(photo, corners));
+        Map<String, Object> captureGate = captureGate(capture);
+        runOnUiThread(() -> finishWithPhoto(photo, corners, captureGate));
+    }
+
+    /** The trigger and the sharpness gate's decision on the frame the capture started from, to calibrate the gate. */
+    private static Map<String, Object> captureGate(PendingCapture capture) {
+        if (capture == null || capture.outcome() == null) {
+            return null;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("trigger", capture.trigger().id());
+        out.putAll(capture.outcome().sharpness().describe(capture.outcome().exposureNs()));
+        return out;
     }
 
     private static float[] toArray(CardQuad quad) {
@@ -632,7 +650,7 @@ public final class CardCaptureActivity extends Activity implements CameraControl
         try {
             File photo = writePhoto(jpeg);
             Log.d(CaptureLog.TAG, "Plain photo saved: captureMs=" + captureTimeMs);
-            runOnUiThread(() -> finishWithPhoto(photo, null));
+            runOnUiThread(() -> finishWithPhoto(photo, null, null));
         } catch (RuntimeException e) {
             onCameraError("Could not save the photo: " + e.getMessage());
         }

@@ -39,6 +39,29 @@ public final class SharpnessGate {
         public boolean ready() {
             return verdict == Verdict.READY;
         }
+
+        /**
+         * The decision as names and values for a training capture's record, to calibrate the thresholds from phone
+         * captures. Measures not taken are left out.
+         *
+         * @param exposureNs the camera's exposure on the frame, or null if not known
+         */
+        public Map<String, Object> describe(Long exposureNs) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("verdict", verdict.name());
+            out.put("timedOut", timedOut);
+            if (reading != null && reading.measured()) {
+                out.put("laplacianVariance", reading.laplacianVariance());
+                out.put("meanLuma", reading.meanLuma());
+            }
+            if (!Double.isNaN(cornerSpread)) {
+                out.put("cornerSpread", cornerSpread);
+            }
+            if (exposureNs != null) {
+                out.put("exposureNs", exposureNs);
+            }
+            return out;
+        }
     }
 
     /** How long the outline must have been watched, and kept still, before a capture. */
