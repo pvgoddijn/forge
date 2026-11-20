@@ -5,6 +5,7 @@ _ADLC phase 3 (Breakdown). Each file is self-contained: an implementer reads onl
 | # | Slice | User-visible result | Needs | ACs |
 |---|---|---|---|---|
 | S | [OCR spike](S-ocr-spike.md) | Engine decision with numbers (not shipped) | About 30 photos from you | evidence for 7, 31, 32 |
+| C | [Camera PoC](C-camera-poc.md) | Standalone test app on your phone: capture only the card, compared with a plain shutter (not shipped; done, slice 1 is built from it) | S; your phone and about 30 cards | evidence for 6, 7, 31, 32 |
 | 0 | [Walking skeleton](00-walking-skeleton.md) (redone on the engine) | Start a real engine game, add a card by name and see its effects, survive a restart | — | 1, 2, 5, 14, 15, 16, 29, 34, 40; part of 17, 23, 30 |
 | 1 | [Photo capture](01-photo-capture.md) (built from the camera PoC) | Photograph a card, pick from suggestions | 0 | 6, 7, 8, 11, 13 |
 | 2 | [Zones and hand](02-zones-and-hand.md) | Cards go to the right zone, hand counts stay right. **Deferred** until the owner decides what to do with it | 0 | 18–23, hand part of 5 |
