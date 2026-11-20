@@ -3,6 +3,7 @@ package forge.gamemodes.companion;
 import forge.StaticData;
 import forge.card.CardRules;
 import forge.card.CardSplitType;
+import forge.card.CardStateName;
 import forge.card.GamePieceType;
 import forge.card.ICardFace;
 import forge.card.mana.ManaAtom;
@@ -122,13 +123,17 @@ public final class TableEditor {
         Card known = fromHand ? findKnownInHand(player, name) : null;
         Card hidden = fromHand && known == null ? firstPlaceholderInHand(player) : null;
         Card card = known;
+        CardStateName half = splitHalf(printing, name);
         if (card == null) {
             if (hidden != null) {
                 game.getAction().ceaseToExist(hidden, true);
             }
             card = Card.fromPaperCard(printing, player);
             card.setGameTimestamp(game.getNextTimestamp());
-            CardUtil.turnToRightFace(name, card);
+            if (half == null) {
+                // a split half stays whole: turnToRightFace would turn even the left half's name to the right half
+                CardUtil.turnToRightFace(name, card);
+            }
             // in hand first, as the rules expect of anything cast, and for zone-change triggers to see where it was
             game.getAction().moveToHand(card, null);
         }
@@ -140,7 +145,7 @@ public final class TableEditor {
                 game.getAction().moveToPlay(card, player, null, AbilityKey.newMap());
             }
         } else {
-            done = cast(player, card);
+            done = cast(player, card, half);
         }
         if (!done) {
             undoAdd(player, card, known, hidden);
@@ -814,8 +819,9 @@ public final class TableEditor {
     /**
      * {@link #waitsForMainPhase(PaperCard, Mode)} for {@code printing} picked as {@code name}. When that's one face's
      * own name (Heart's Desire, Flamethrower Sonata, Agadeem, the Undercrypt, Memory), only that face is cast
-     * ({@link #addCard} turns the card to it), so it alone decides: a sorcery face waits, any other doesn't. The
-     * whole card's name, or one that names no face (a flavor name), counts every face it can be cast as.
+     * ({@link #addCard} turns the card to it, or casts a split card as that half only), so it alone decides: a
+     * sorcery face waits, any other doesn't. The whole card's name, or one that names no face (a flavor name), counts
+     * every face it can be cast as.
      */
     static boolean waitsForMainPhase(PaperCard printing, String name, Mode mode) {
         if (mode != Mode.CAST) {
@@ -863,9 +869,35 @@ public final class TableEditor {
         return phase.isBefore(PhaseType.COMBAT_BEGIN) ? PhaseType.MAIN1 : PhaseType.MAIN2;
     }
 
+    /**
+     * The half of a split card {@code name} names (Fire of Fire // Ice), or {@code null} when it names the whole card,
+     * isn't a split card's, or names no half. {@link #addCard} casts such a card whole, as {@code half} only.
+     */
+    static CardStateName splitHalf(PaperCard printing, String name) {
+        CardRules rules = printing.getRules();
+        if (rules.getSplitType() != CardSplitType.Split || name.equalsIgnoreCase(printing.getName())) {
+            return null;
+        }
+        if (name.equalsIgnoreCase(rules.getMainPart().getName())) {
+            return CardStateName.LeftSplit;
+        }
+        if (rules.getOtherPart() != null && name.equalsIgnoreCase(rules.getOtherPart().getName())) {
+            return CardStateName.RightSplit;
+        }
+        return null;
+    }
+
     private static boolean cast(Player player, Card card) {
+        return cast(player, card, null);
+    }
+
+    /** Casts {@code card} for free, as {@code half} only when that's a split card's half, else as any face it has. */
+    private static boolean cast(Player player, Card card, CardStateName half) {
         // as a "cast it without paying" effect sees them: at any time, on anyone's turn, every face and half
-        List<SpellAbility> spells = AbilityUtils.getBasicSpellsFromPlayEffect(card, player);
+        List<SpellAbility> spells = new ArrayList<>(AbilityUtils.getBasicSpellsFromPlayEffect(card, player));
+        if (half != null) {
+            spells.removeIf(sa -> sa.getCardStateName() != half);
+        }
         if (spells.isEmpty()) {
             return false;
         }

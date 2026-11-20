@@ -6,6 +6,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import forge.game.Game;
 import forge.game.card.Card;
+import forge.card.CardStateName;
+import forge.game.spellability.SpellAbility;
 import forge.game.combat.Combat;
 import forge.game.combat.CombatUtil;
 import forge.game.phase.PhaseType;
@@ -852,6 +854,9 @@ public class TableEditorTest extends AITest {
                 {"Agadeem, the Undercrypt", null, "land back of a modal double-faced sorcery: played, not cast"},
                 {"Memory", PhaseType.MAIN1, "sorcery half of a split card"},
                 {"Commit", null, "instant half of a split card"},
+                {"Grind", PhaseType.MAIN1, "sorcery left half of a split card"},
+                {"Fire", null, "instant left half of a split card"},
+                {"Ice", null, "instant right half of a split card"},
         };
     }
 
@@ -871,6 +876,54 @@ public class TableEditorTest extends AITest {
         assertTrue(TableEditor.waitsForMainPhase(divination, TableEditor.Mode.CAST));
         assertFalse(TableEditor.waitsForMainPhase(divination, TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
         assertFalse(TableEditor.waitsForMainPhase(bears, TableEditor.Mode.CAST));
+    }
+
+    @DataProvider
+    public Object[][] splitHalves() {
+        return new Object[][] {
+                {"Fire", "Fire // Ice", CardStateName.LeftSplit},
+                {"Ice", "Fire // Ice", CardStateName.RightSplit},
+                {"Commit", "Commit // Memory", CardStateName.LeftSplit},
+                {"Grind", "Grind // Dust", CardStateName.LeftSplit},
+        };
+    }
+
+    /**
+     * The card picker offers each half of a split card by its own name, and OCR often reads just one. Picked that way,
+     * the card is cast as that half, and only that half, then goes to the graveyard as the whole card.
+     */
+    @Test(dataProvider = "splitHalves")
+    public void aSplitHalfPickedByItsOwnNameIsCastAsThatHalf(String half, String card, CardStateName state) {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Player other = game.getNextPlayerAfter(active);
+        addCardToZone("Grizzly Bears", other, ZoneType.Battlefield);
+        game.getAction().checkStateEffects(true);
+
+        TableEditor.Result result = TableEditor.addCard(active, half, false, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertFalse(game.getStack().isEmpty(), half + " is on the stack");
+        SpellAbility cast = game.getStack().peekAbility();
+        assertEquals(cast.getCardStateName(), state, half + " is cast, not the other half");
+        assertEquals(cast.getHostCard().getName(), half);
+        resolveAll(game);
+        assertEquals(named(active, ZoneType.Graveyard, card).size(), 1, card + " ends in the graveyard");
+    }
+
+    /**
+     * An aftermath half (Memory) is cast only from a graveyard, never from a hand: picked by its own name, it isn't
+     * cast as the other half instead. The add fails as any uncastable card's does, and the hand is as it was.
+     */
+    @Test
+    public void anAftermathHalfPickedByItsOwnNameIsNotCastFromHand() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        TableEditor.Result result = TableEditor.addCard(active, "Memory", true, TableEditor.Mode.CAST);
+        assertFalse(result.done());
+        assertEquals(result.message(), "Memory wasn't added: it couldn't be cast, or the cast was cancelled.");
+        assertTrue(game.getStack().isEmpty());
+        assertEquals(CompanionCards.hiddenInHand(active), 7, "the unknown card went back");
+        assertTrue(named(active, ZoneType.Graveyard, "Commit // Memory").isEmpty());
     }
 
     /** A table with a real store in a temp directory, collecting what it reports. */
