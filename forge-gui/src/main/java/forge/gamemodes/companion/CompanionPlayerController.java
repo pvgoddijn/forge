@@ -1,6 +1,7 @@
 package forge.gamemodes.companion;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Multimap;
 import forge.LobbyPlayer;
 import forge.game.Game;
 import forge.game.GameLogEntryType;
@@ -18,7 +19,9 @@ import forge.game.player.PlayerView;
 import forge.game.spellability.SpellAbility;
 import forge.game.zone.ZoneType;
 import forge.item.IPaperCard;
+import forge.item.PaperCard;
 import forge.player.PlayerControllerHuman;
+import forge.util.Lang;
 import forge.util.Localizer;
 import forge.util.MessageUtil;
 import org.apache.commons.lang3.StringUtils;
@@ -192,6 +195,22 @@ public class CompanionPlayerController extends PlayerControllerHuman {
             getGui().confirm(cardView, message, true, ImmutableList.of(Localizer.getInstance().getMessage("lblOK")));
         } else {
             getGui().message(message, sa == null || sa.getHostCard() == null ? "" : CardView.get(sa.getHostCard()).toString());
+        }
+    }
+
+    /**
+     * As {@link #reveal}: the cards the engine took out of the decks for ante (or for not playing for it), shown to
+     * every seat at the start, show once, each deck named by its owner rather than "your".
+     */
+    @Override
+    public void revealAnte(String message, Multimap<Player, PaperCard> removedAnteCards) {
+        if (!table.firstToShow(getGame(), getPlayer(), Arrays.asList("ante", message, removedAnteCards))) {
+            return;
+        }
+        Localizer localizer = Localizer.getInstance();
+        for (Player p : removedAnteCards.keySet()) {
+            getGui().reveal(localizer.getMessage("lblActionFromPlayerDeck", message,
+                    Lang.getInstance().getPossessedObject(p.getName(), "")), ImmutableList.copyOf(removedAnteCards.get(p)));
         }
     }
 

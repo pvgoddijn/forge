@@ -4297,6 +4297,58 @@ public class TableEditorTest extends AITest {
         assertEquals(shown.size(), 1, String.valueOf(shown));
     }
 
+    /**
+     * The ante cards taken out of the decks at the start are shown to every seat by the engine; on the one screen they
+     * show once, naming each deck's owner rather than "your".
+     */
+    @Test
+    public void removedAnteCardsShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        com.google.common.collect.Multimap<Player, PaperCard> removed = com.google.common.collect.ArrayListMultimap.create();
+        removed.put(bo, StaticData.instance().getCommonCards().getCard("Contract from Below"));
+
+        game.getAction().revealAnte("These ante cards were removed", removed);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s"), shown.get(0));
+    }
+
+    /**
+     * When a seat leaves the game, or the game ends, its face-down cards are revealed to every other seat, including
+     * seats already out of the game. They show once, however many seats have lost.
+     */
+    @Test
+    public void faceDownCardsRevealedWhenASeatLosesShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        Card hidden = addCardToZone("Grizzly Bears", cy, ZoneType.Battlefield);
+        hidden.turnFaceDown(true);
+
+        bo.concede();
+        game.getAction().checkGameOverCondition();
+        assertTrue(bo.hasLost());
+        shown.clear();
+        table.endRevealRun();
+
+        cy.concede(); // the last opponent: the game ends, and Cy's face-down card is revealed to Ann and to Bo
+        game.getAction().checkGameOverCondition();
+        assertTrue(game.isGameOver());
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+    }
+
     /** With a seat per player, as in hotseat, each seat is still shown the reveal. */
     @Test
     public void aRevealStillShowsForEachSeatOutsideCompanion() {

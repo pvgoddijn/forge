@@ -37,7 +37,7 @@ _Last updated 2026-11-20._
 - [ ] Coin flips and reveals show once (fixes are on slice 7, not yet on the phone).
 
 ## Known gaps
-- [ ] Finish-game and ante reveals still repeat once per seat on a shared screen.
+- [x] Finish-game and ante reveals no longer repeat once per seat on a shared screen (slice 8): a seat's face-down cards revealed when it leaves or the game ends went to seats already out of the game, which broke the "same run" order (it counted only seats still in); the run now follows every seat's order. The ante cards removed at the start (`revealAnte`) show once, naming each deck's owner.
 - [ ] Undo does not restore storm counts or until-end-of-turn effects.
 - [ ] Split/adventure/MDFC sorcery halves don't wait for a main phase; Topsy Turvy phase order not handled.
 - [x] Card picker: a back-face name of a double-faced card ("Insectile Aberration") now also offers the card itself ("Delver of Secrets"), right after the back face (slice 8). The back-face names were already offered; split/adventure halves unchanged.
