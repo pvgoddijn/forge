@@ -1,10 +1,14 @@
 package forge.gamemodes.companion;
 
+import forge.StaticData;
+import forge.card.CardStateName;
 import forge.game.Game;
 import forge.game.GameState;
 import forge.game.card.Card;
 import forge.game.player.Player;
+import forge.game.spellability.SpellAbility;
 import forge.game.zone.MagicStack;
+import forge.item.PaperCard;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -14,15 +18,22 @@ import java.util.List;
  * put back (see {@link PlaceholderText}), and every player gets the table effect back, as a game state doesn't save
  * effects. It also holds what Forge's state doesn't: how often each commander was cast from the Command zone, the tax,
  * one {@code p1commandercast=2|Krenko, Mob Boss} line per commander cast, put back on the player's commander of that
- * name after a load (see {@link #applyGameOnThread}).
+ * name after a load (see {@link #applyGameOnThread}). And the spells cast this turn, which the storm count and "the
+ * second spell you cast each turn" read: one {@code p0spellcastthisturn=Original|Divination} line per spell, in the
+ * order cast, by the index of the player who cast it (see {@link #restoreSpellsCastThisTurn}).
  */
 public class CompanionGameState extends GameState {
     private static final String COMMANDER_CAST = "commandercast";
+    private static final String SPELL_CAST = "spellcastthisturn";
 
     /** A commander's cast count from the Command zone, by the index of its owner in the game's players. */
     private record CommanderCast(int player, String name, int count) { }
 
+    /** A spell cast this turn: by the player at that index, the card's printed name and the face it was cast as. */
+    private record SpellCast(int player, CardStateName state, String name) { }
+
     private final List<CommanderCast> commanderCasts = new ArrayList<>();
+    private final List<SpellCast> spellsCast = new ArrayList<>();
     private PlaceholderText placeholders;
 
     public static CompanionGameState of(List<String> lines) {
@@ -46,6 +57,13 @@ public class CompanionGameState extends GameState {
                 }
             }
         }
+        for (SpellAbility spell : game.getStack().getSpellsCastThisTurn()) {
+            Card card = spell.getHostCard();
+            int player = players.indexOf(spell.getActivatingPlayer());
+            if (card != null && player >= 0) {
+                state.spellsCast.add(new SpellCast(player, card.getCurrentStateName(), card.getPaperCard().getName()));
+            }
+        }
         return state.toString();
     }
 
@@ -56,6 +74,10 @@ public class CompanionGameState extends GameState {
             sb.append('p').append(cast.player()).append(COMMANDER_CAST).append('=')
                     .append(cast.count()).append('|').append(cast.name()).append('\n');
         }
+        for (SpellCast cast : spellsCast) {
+            sb.append('p').append(cast.player()).append(SPELL_CAST).append('=')
+                    .append(cast.state().name()).append('|').append(cast.name()).append('\n');
+        }
         return sb.toString();
     }
 
@@ -63,18 +85,25 @@ public class CompanionGameState extends GameState {
     protected void parseLine(String line) {
         int eq = line.indexOf('=');
         String key = eq < 0 ? "" : line.substring(0, eq).trim().toLowerCase();
-        if (!key.startsWith("p") || !key.endsWith(COMMANDER_CAST)) {
+        String suffix = key.endsWith(COMMANDER_CAST) ? COMMANDER_CAST : key.endsWith(SPELL_CAST) ? SPELL_CAST : null;
+        if (!key.startsWith("p") || suffix == null) {
             super.parseLine(line);
             return;
         }
         String value = line.substring(eq + 1);
         int bar = value.indexOf('|');
+        String before = value.substring(0, Math.max(bar, 0)).trim();
+        String name = value.substring(bar + 1).trim();
         try {
-            int player = Integer.parseInt(key.substring(1, key.length() - COMMANDER_CAST.length()));
-            int count = Integer.parseInt(value.substring(0, Math.max(bar, 0)).trim());
-            commanderCasts.add(new CommanderCast(player, value.substring(bar + 1).trim(), count));
-        } catch (NumberFormatException e) {
-            System.err.println("Unreadable commander cast count, skipped: " + line);
+            int player = Integer.parseInt(key.substring(1, key.length() - suffix.length()));
+            if (suffix.equals(COMMANDER_CAST)) {
+                commanderCasts.add(new CommanderCast(player, name, Integer.parseInt(before)));
+            } else {
+                CardStateName state = CardStateName.smartValueOf(before);
+                spellsCast.add(new SpellCast(player, state == null ? CardStateName.Original : state, name));
+            }
+        } catch (IllegalArgumentException e) { // NumberFormatException too
+            System.err.println("Unreadable " + suffix + " line, skipped: " + line);
         }
     }
 
@@ -130,6 +159,40 @@ public class CompanionGameState extends GameState {
             CompanionCards.addTableEffect(game, player);
         }
         restoreCommanderCasts(game);
+        restoreSpellsCastThisTurn(game);
+    }
+
+    /**
+     * The engine keeps each spell cast this turn as a copy of its spell, on a copy of its card, made as it was cast;
+     * the storm count is how many there are, and a player's count those they cast. A load doesn't touch them, so an
+     * undo kept the spells cast after the save, and a resume had none. They are put back as the save had them: for
+     * each, a new card of that name, on the face it was cast as, out of every zone, and its spell, cast by that
+     * player. That is what the cast was read for (its colors, types, mana value, who cast it); what the copy can't
+     * have back is what was true only of that cast (the mana paid, X, targets, a cost reduction), and a card the
+     * catalog doesn't know counts as a spell with nothing to read. They don't count again toward the spells the
+     * player cast this game.
+     */
+    private void restoreSpellsCastThisTurn(Game game) {
+        List<Player> players = game.getPlayers();
+        List<SpellAbility> castThisTurn = game.getStack().getSpellsCastThisTurn();
+        castThisTurn.clear();
+        for (SpellCast cast : spellsCast) {
+            if (cast.player() < 0 || cast.player() >= players.size()) {
+                continue;
+            }
+            Player player = players.get(cast.player());
+            PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(cast.name());
+            Card card = printing == null ? CompanionCards.newPlaceholder(player) : Card.fromPaperCard(printing, player);
+            if (printing != null && cast.state() != CardStateName.Original && card.hasState(cast.state())) {
+                card.setState(cast.state(), false);
+            }
+            SpellAbility spell = card.getCurrentState().getNonManaAbilities().stream()
+                    .filter(SpellAbility::isSpell).findFirst()
+                    .map(sa -> sa.copy(card, player, true))
+                    .orElseGet(() -> new SpellAbility.EmptySa(card, player));
+            castThisTurn.add(spell);
+        }
+        game.updateStackForView();
     }
 
     /**

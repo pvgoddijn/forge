@@ -1405,6 +1405,76 @@ public class TableEditorTest extends AITest {
         assertEquals(castCount(game, "Llanowar Elves"), 0);
     }
 
+    /** The table casts {@code name} for {@code player}, every seat passes until it resolves, and the prompt saves. */
+    private static void castAndResolve(Recorded rec, Game game, Player player, String name) {
+        rec.table.submit(cast(player, name));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+        saveAsTheTableDoes(rec, game);
+    }
+
+    /**
+     * An undo puts back the spells cast this turn as they were at the save it returns to: after two spells, undoing
+     * the second leaves a storm count of one, cast by the active player, not the two the engine had counted.
+     */
+    @Test
+    public void anUndoKeepsTheSpellsCastThisTurnUpToTheSave() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        castAndResolve(rec, game, ann, "Divination");
+        castAndResolve(rec, game, ann, "Divination");
+        assertEquals(game.getStack().getSpellsCastThisTurn().size(), 2);
+
+        undo(rec, game);
+        assertEquals(castCount(game, "Divination"), 1, "the second cast was taken back");
+        assertEquals(game.getStack().getSpellsCastThisTurn().size(), 1, "storm count");
+        assertEquals(ann.getSpellsCastThisTurn(), 1);
+        assertEquals(game.getView().getStormCount(), 1, "the view's storm count too");
+        Card cast = game.getStack().getSpellCardsCastThisTurn().get(0);
+        assertEquals(cast.getName(), "Divination");
+        assertTrue(cast.isSorcery() && cast.isBlue(), "the cast card's characteristics, for 'a blue spell' checks");
+    }
+
+    /** A resumed game counts the spells cast this turn by whom they were cast, as the saved game did. */
+    @Test
+    public void theSpellsCastThisTurnSurviveSaveAndLoad() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        castAndResolve(rec, game, ann, "Divination");
+        castAndResolve(rec, game, bo, "Lightning Bolt");
+        int boIndex = game.getPlayers().indexOf(bo);
+
+        Game loaded = saveAndLoad(game);
+        assertEquals(loaded.getStack().getSpellsCastThisTurn().size(), 2, "storm count");
+        assertEquals(loaded.getPlayers().get(game.getPlayers().indexOf(ann)).getSpellsCastThisTurn(), 1);
+        assertEquals(loaded.getPlayers().get(boIndex).getSpellsCastThisTurn(), 1);
+        assertEquals(loaded.getStack().getSpellCardsCastThisTurn().stream().map(Card::getName).toList(),
+                List.of("Divination", "Lightning Bolt"), "in the order cast");
+        assertEquals(saveAndLoad(saveAndLoad(loaded)).getStack().getSpellsCastThisTurn().size(), 2,
+                "a load of a load keeps them too");
+    }
+
+    /** A split card's half is put back as the half it was cast as: Fire, a red spell of mana value 2. */
+    @Test
+    public void aSpellCastAsOneHalfIsLoadedAsThatHalf() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        castAndResolve(rec, game, ann, "Fire");
+
+        Card fire = saveAndLoad(game).getStack().getSpellCardsCastThisTurn().get(0);
+        assertEquals(fire.getCurrentStateName(), CardStateName.LeftSplit);
+        assertEquals(fire.getName(), "Fire");
+        assertTrue(fire.isRed() && !fire.isBlue());
+        assertEquals(fire.getCMC(), 2);
+    }
+
     /** "Check early": a second Add while a skip waits queues behind it, and both run in Cy's Main 1, in order. */
     @Test
     public void aSecondAddWhileASkipIsParkedQueuesBehindIt() {
