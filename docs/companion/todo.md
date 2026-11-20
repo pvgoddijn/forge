@@ -19,7 +19,7 @@ _Last updated 2026-11-20._
 ## Core cleanup (done 2026-11-07, see `core-footprint.md`)
 - [x] D1–D8 folded into their PRs; PRs #4–#11 force-pushed. Core diff 674 lines/28 files → 362/21.
 - [ ] Manual check on the PC test build (`-Pcompanion-photos`): Companion game menu (no Concede), right-click Move… then Zoom, life tap, 2+ seats prompt note, End game… closes, plain hot-seat afterwards shows no Companion items.
-- [ ] Build without `-Pcompanion-photos` but run with `-Dforge.companion.photos=true` silently has no camera; log a warning.
+- [x] Build without `-Pcompanion-photos` but run with `-Dforge.companion.photos=true` silently has no camera; log a warning.
 - [ ] Owner: keep the "Core footprint" plan section folded into the early plan commit, or move it later?
 
 ## Proposed slices (owner to confirm)
