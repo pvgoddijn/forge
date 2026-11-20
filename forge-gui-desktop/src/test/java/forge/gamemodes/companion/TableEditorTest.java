@@ -4219,12 +4219,13 @@ public class TableEditorTest extends AITest {
         assertEquals(coins.stream().filter(c -> c.endsWith("(heads)")).count(), 1L, "one seat won");
     }
 
-    /** A screen shared by every seat, recording the caption of each reveal and message it shows. */
+    /** A screen shared by every seat, recording the caption of each reveal, message and list of choices it shows. */
     private static forge.gui.interfaces.IGuiGame screenRecordingReveals(List<String> shown) {
         return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
                 TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
                 (proxy, method, args) -> {
-                    if (method.getName().equals("reveal") || method.getName().equals("message")) {
+                    if (method.getName().equals("reveal") || method.getName().equals("message")
+                            || method.getName().equals("getChoices")) {
                         shown.add(String.valueOf(args[0]));
                     }
                     Class<?> type = method.getReturnType();
@@ -4315,6 +4316,51 @@ public class TableEditorTest extends AITest {
         removed.put(bo, StaticData.instance().getCommonCards().getCard("Contract from Below"));
 
         game.getAction().revealAnte("These ante cards were removed", removed);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s"), shown.get(0));
+    }
+
+    /**
+     * The cards the AI can't play are listed for every seat by the engine at the start; on the one screen the list
+     * shows once, naming each deck's owner.
+     */
+    @Test
+    public void cardsTheAICantPlayShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        java.util.Map<Player, java.util.Map<forge.deck.DeckSection, List<? extends PaperCard>>> unplayable = new java.util.HashMap<>();
+        unplayable.put(bo, java.util.Map.of(forge.deck.DeckSection.Main,
+                List.of(StaticData.instance().getCommonCards().getCard("Contract from Below"))));
+
+        game.getAction().revealUnplayableByAI("The AI can't play these", unplayable);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s"), shown.get(0));
+    }
+
+    /**
+     * The unsupported cards taken out of the decks are listed for every seat by the engine at the start; on the one
+     * screen the list shows once, naming each deck's owner.
+     */
+    @Test
+    public void unsupportedCardsShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        java.util.Map<Player, List<PaperCard>> unsupported = new java.util.HashMap<>();
+        unsupported.put(bo, List.of(StaticData.instance().getCommonCards().getCard("Contract from Below")));
+
+        game.getAction().revealUnsupported(unsupported);
         assertEquals(shown.size(), 1, String.valueOf(shown));
         assertTrue(shown.get(0).contains(bo.getName() + "'s"), shown.get(0));
     }

@@ -38,6 +38,7 @@ _Last updated 2026-11-20._
 
 ## Known gaps
 - [x] Finish-game and ante reveals no longer repeat once per seat on a shared screen (slice 8): a seat's face-down cards revealed when it leaves or the game ends went to seats already out of the game, which broke the "same run" order (it counted only seats still in); the run now follows every seat's order. The ante cards removed at the start (`revealAnte`) show once, naming each deck's owner.
+- [x] The other start-of-game fan-outs show once on a shared screen too (slice 8): the cards the AI can't play (`revealAISkipCards`, via `GameAction.revealUnplayableByAI`) and the unsupported cards removed from the decks (`revealUnsupported`, a list dialog), each naming the deck's owner.
 - [ ] Undo does not restore storm counts or until-end-of-turn effects.
 - [ ] Split/adventure/MDFC sorcery halves don't wait for a main phase; Topsy Turvy phase order not handled.
 - [x] Card picker: a back-face name of a double-faced card ("Insectile Aberration") now also offers the card itself ("Delver of Secrets"), right after the back face (slice 8). The back-face names were already offered; split/adventure halves unchanged.

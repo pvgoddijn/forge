@@ -3,6 +3,7 @@ package forge.gamemodes.companion;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Multimap;
 import forge.LobbyPlayer;
+import forge.deck.DeckSection;
 import forge.game.Game;
 import forge.game.GameLogEntryType;
 import forge.game.GameObject;
@@ -30,6 +31,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeSet;
 
 /**
  * A seat at a tracked table. The operator answers for every seat, so each one is a human controller on the same
@@ -211,6 +214,57 @@ public class CompanionPlayerController extends PlayerControllerHuman {
         for (Player p : removedAnteCards.keySet()) {
             getGui().reveal(localizer.getMessage("lblActionFromPlayerDeck", message,
                     Lang.getInstance().getPossessedObject(p.getName(), "")), ImmutableList.copyOf(removedAnteCards.get(p)));
+        }
+    }
+
+    /**
+     * As {@link #revealAnte}: the cards the AI can't play, listed for every seat at the start, show once, each deck
+     * named by its owner.
+     */
+    @Override
+    public void revealAISkipCards(String message, Map<Player, Map<DeckSection, List<? extends PaperCard>>> unplayable) {
+        if (!table.firstToShow(getGame(), getPlayer(), Arrays.asList("aiSkip", message, unplayable))) {
+            return;
+        }
+        Localizer localizer = Localizer.getInstance();
+        boolean cardsOnly = getGui().isLibgdxPort(); // mobile can't zoom a list of names, so it shows the cards alone
+        for (Player p : unplayable.keySet()) {
+            Map<DeckSection, List<? extends PaperCard>> removed = unplayable.get(p);
+            List<Object> labels = new ArrayList<>();
+            for (DeckSection s : new TreeSet<>(removed.keySet())) {
+                if (cardsOnly && DeckSection.Sideboard.equals(s)) {
+                    continue;
+                }
+                if (!cardsOnly) {
+                    labels.add("=== " + s.getLocalizedName() + " ===");
+                }
+                labels.addAll(removed.get(s));
+            }
+            if (cardsOnly && labels.isEmpty()) {
+                continue;
+            }
+            getGui().reveal(localizer.getMessage("lblActionFromPlayerDeck", message,
+                    Lang.getInstance().getPossessedObject(p.getName(), "")), ImmutableList.copyOf(labels));
+        }
+    }
+
+    /**
+     * As {@link #revealAnte}: the unsupported cards taken out of the decks, listed for every seat at the start, show
+     * once, each deck named by its owner.
+     */
+    @Override
+    public void revealUnsupported(Map<Player, List<PaperCard>> unsupported) {
+        if (!table.firstToShow(getGame(), getPlayer(), Arrays.asList("unsupported", unsupported))) {
+            return;
+        }
+        Localizer localizer = Localizer.getInstance();
+        for (Player p : unsupported.keySet()) {
+            List<PaperCard> removed = unsupported.get(p);
+            if (removed == null || removed.isEmpty()) {
+                continue;
+            }
+            getGui().getChoices(localizer.getMessage("lblActionFromPlayerDeck", localizer.getMessage("lblRemoved"),
+                    Lang.getInstance().getPossessedObject(p.getName(), "")), -1, -1, ImmutableList.copyOf(removed));
         }
     }
 
