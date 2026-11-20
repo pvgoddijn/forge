@@ -684,7 +684,20 @@ public final class TableEditor {
         if (printing == null) {
             return null;
         }
-        CardRules rules = printing.getRules();
+        List<ManaCost> costs = new ArrayList<>();
+        for (ICardFace face : castableFaces(printing.getRules())) {
+            if (instantSpeed(face)) {
+                costs.add(face.getManaCost());
+            }
+        }
+        return costs.isEmpty() ? null : costs;
+    }
+
+    /**
+     * The faces {@code rules} can be cast as: the front and, for a split, adventure, omen or modal double-faced card,
+     * the other one. A transforming or meld card's back face isn't cast.
+     */
+    private static List<ICardFace> castableFaces(CardRules rules) {
         List<ICardFace> faces = new ArrayList<>();
         faces.add(rules.getMainPart());
         CardSplitType split = rules.getSplitType();
@@ -692,13 +705,11 @@ public final class TableEditor {
                 || split == CardSplitType.Omen || split == CardSplitType.Modal)) {
             faces.add(rules.getOtherPart());
         }
-        List<ManaCost> costs = new ArrayList<>();
-        for (ICardFace face : faces) {
-            if (face.getType().isInstant() || hasFlash(face)) {
-                costs.add(face.getManaCost());
-            }
-        }
-        return costs.isEmpty() ? null : costs;
+        return faces;
+    }
+
+    private static boolean instantSpeed(ICardFace face) {
+        return face.getType().isInstant() || hasFlash(face);
     }
 
     private static boolean hasFlash(ICardFace face) {
@@ -789,9 +800,20 @@ public final class TableEditor {
     /**
      * Whether adding {@code printing} this way has to wait for a main phase: a sorcery, cast (AC-42). Permanent spells
      * are sorcery-speed too, but the owner asked for sorceries only; widen it here if that changes (D5).
+     * <p>
+     * The face is only chosen when the card is cast, after this is decided, so every face it can be cast as counts
+     * ({@link #castableFaces}), not just the front: it waits when one of them is a sorcery (an adventure creature's
+     * sorcery adventure, a modal double-faced card's sorcery back, a split card's sorcery half) and none can be cast
+     * at instant speed. With an instant or flash face too (Commit // Memory) it doesn't wait, so that face can still
+     * be cast in response; the sorcery face is then cast where it was logged.
      */
     static boolean waitsForMainPhase(PaperCard printing, Mode mode) {
-        return mode == Mode.CAST && printing.getRules().getType().isSorcery();
+        if (mode != Mode.CAST) {
+            return false;
+        }
+        List<ICardFace> faces = castableFaces(printing.getRules());
+        return faces.stream().anyMatch(face -> face.getType().isSorcery())
+                && faces.stream().noneMatch(TableEditor::instantSpeed);
     }
 
     /**

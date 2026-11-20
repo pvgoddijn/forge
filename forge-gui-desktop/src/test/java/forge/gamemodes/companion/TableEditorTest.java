@@ -21,6 +21,7 @@ import java.util.List;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertThrows;
 import static org.testng.Assert.assertTrue;
@@ -831,6 +832,29 @@ public class TableEditorTest extends AITest {
                 "put in, not cast");
         assertNull(TableEditor.mainPhaseFor(game, active, "Not A Card Name", TableEditor.Mode.CAST),
                 "a token or emblem name");
+    }
+
+    @DataProvider
+    public Object[][] castableFaces() {
+        return new Object[][] {
+                // a sorcery face the card's front type doesn't show: it waits
+                {"Lovestruck Beast", PhaseType.MAIN1, "adventure creature with a sorcery adventure"},
+                {"Torrent Sculptor", PhaseType.MAIN1, "modal double-faced creature with a sorcery back"},
+                {"Grind // Dust", PhaseType.MAIN1, "split card with two sorcery halves"},
+                {"Agadeem's Awakening", PhaseType.MAIN1, "modal double-faced sorcery with a land back"},
+                // an instant face can be cast now, so the card doesn't wait whichever face is chosen later
+                {"Bonecrusher Giant", null, "adventure creature with an instant adventure"},
+                {"Commit // Memory", null, "split card with an instant half and a sorcery half"},
+        };
+    }
+
+    /** Known gap: the faces a card can be cast as decide whether it waits, not the front face's type. */
+    @Test(dataProvider = "castableFaces")
+    public void theFacesACardCanBeCastAsDecideWhetherItWaits(String name, PhaseType expected, String what) {
+        assertNotNull(StaticData.instance().getCommonCards().getUniqueByName(name), name);
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        assertEquals(TableEditor.mainPhaseFor(game, active, name, TableEditor.Mode.CAST), expected, what);
     }
 
     @Test
