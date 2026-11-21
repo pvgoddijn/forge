@@ -27,9 +27,6 @@ public final class StatusText {
         if (!autoEnabled) {
             return "Card found. Press the shutter";
         }
-        if (sharpness == SharpnessGate.Verdict.HOLD_STILL) {
-            return "Hold still";
-        }
         return sharpness == SharpnessGate.Verdict.MORE_LIGHT ? "More light" : "Hold steady";
     }
 

@@ -129,7 +129,7 @@ public class TrainingCapturesShould {
         gate.put("timedOut", false);
         gate.put("laplacianVariance", 412.5);
         gate.put("meanLuma", 140.25);
-        gate.put("cornerSpread", Double.NaN);
+        gate.put("unmeasured", Double.NaN);
         gate.put("exposureNs", 33_000_000L);
         TrainingCaptures.Run run = captures.keep(photo("x"),
                 new TrainingCaptures.Capture(TAKEN, "Google Pixel 7", 3000, 4000, 6, CORNERS, gate));
@@ -141,7 +141,7 @@ public class TrainingCapturesShould {
         assertThat(recorded.get("laplacianVariance").getAsDouble()).isEqualTo(412.5);
         assertThat(recorded.get("meanLuma").getAsDouble()).isEqualTo(140.25);
         assertThat(recorded.get("exposureNs").getAsLong()).isEqualTo(33_000_000L);
-        assertThat(recorded.has("cornerSpread")).as("NaN isn't JSON").isFalse();
+        assertThat(recorded.has("unmeasured")).as("NaN isn't JSON").isFalse();
     }
 
     @Test

@@ -58,7 +58,7 @@ public final class AssistedPipeline {
      * @param timeline where the time has gone since the card appeared, or null
      * @param blockedMs how long the block on recapturing a card has held captures back so far
      * @param blockReleasedBy what last lifted that block, or null
-     * @param sharpness whether the card is steady, sharp and bright enough for an automatic capture, and why not
+     * @param sharpness whether the card's title is sharp and bright enough for an automatic capture, and why not
      * @param exposureNs the camera's exposure the frame came with, or null if not known
      */
     public record Outcome(CardQuad topCandidate, TrackedCard card, float[] signature,

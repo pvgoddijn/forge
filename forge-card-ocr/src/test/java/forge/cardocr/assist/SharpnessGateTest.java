@@ -6,7 +6,7 @@ import forge.cardocr.finder.*;
 import java.util.*;
 import org.junit.jupiter.api.*;
 
-/** The auto-capture's steadiness, sharpness and light gate on synthetic analysis frames, with exactly known corners. */
+/** The auto-capture's sharpness and light gate on synthetic analysis frames, with exactly known corners. */
 class SharpnessGateTest {
 
     private static final int W = 640;
@@ -119,37 +119,21 @@ class SharpnessGateTest {
     }
 
     @Test
-    void aSteadySharpCardIsReadyOnceWatchedForTheWindow() {
-        SharpnessGate gate = new SharpnessGate();
-        assertEquals(SharpnessGate.Verdict.HOLD_STILL, gate.update(tracked(1, CARD), SHARP, W, H, 0).verdict(), "only just seen");
-        SharpnessGate.Decision ready = feedUntil(gate, SHARP, SharpnessGate.STEADY_WINDOW_MS + FRAME_MS, null);
-        assertEquals(SharpnessGate.Verdict.READY, ready.verdict());
-        assertFalse(ready.timedOut());
-        assertEquals(0, ready.cornerSpread(), 1e-9);
+    void aSharpCardIsReadyOnItsFirstFrame() {
+        SharpnessGate.Decision first = new SharpnessGate().update(tracked(1, CARD), SHARP, W, H, 0);
+        assertEquals(SharpnessGate.Verdict.READY, first.verdict(), "no steadiness window to wait out");
+        assertFalse(first.timedOut());
     }
 
     @Test
-    void jitteringCornersAskToHoldStill() {
+    void movingCornersDoNotHoldASharpCardBack() {
+        // Phone movement is CaptureGate's to judge, from the gyroscope and focus.
         SharpnessGate gate = new SharpnessGate();
-        SharpnessGate.Decision last = null;
-        double shift = 0.03 * 300; // 3 % of the long side, beyond the allowed spread
-        for (int i = 0; i * FRAME_MS < 2000; i++) {
-            CardQuad quad = card(i % 2 == 0 ? 0 : shift, i % 3 == 0 ? 0 : -shift / 2);
-            last = gate.update(tracked(1, quad), SHARP, W, H, i * FRAME_MS);
-            assertNotEquals(SharpnessGate.Verdict.READY, last.verdict(), "frame " + i);
-        }
-        assertEquals(SharpnessGate.Verdict.HOLD_STILL, last.verdict());
-        assertTrue(last.cornerSpread() > SharpnessGate.MAX_CORNER_SPREAD);
-    }
-
-    @Test
-    void aSmallFitNoiseStillCountsAsSteady() {
-        SharpnessGate gate = new SharpnessGate();
-        SharpnessGate.Decision last = null;
+        double shift = 0.03 * 300;
         for (int i = 0; i * FRAME_MS < 600; i++) {
-            last = gate.update(tracked(1, card(i % 2 == 0 ? 0 : 1.5, 0)), SHARP, W, H, i * FRAME_MS);
+            CardQuad quad = card(i % 2 == 0 ? 0 : shift, i % 3 == 0 ? 0 : -shift / 2);
+            assertEquals(SharpnessGate.Verdict.READY, gate.update(tracked(1, quad), SHARP, W, H, i * FRAME_MS).verdict(), "frame " + i);
         }
-        assertEquals(SharpnessGate.Verdict.READY, last.verdict());
     }
 
     @Test
@@ -161,14 +145,14 @@ class SharpnessGateTest {
     }
 
     @Test
-    void aSteadyButBlurredTitleAsksForMoreLightInALongExposure() {
+    void aBlurredTitleAsksForMoreLightInALongExposure() {
         assertEquals(SharpnessGate.Verdict.MORE_LIGHT, feedUntil(new SharpnessGate(), BLURRED, 600, 40_000_000L).verdict());
         assertEquals(SharpnessGate.Verdict.MORE_LIGHT, feedUntil(new SharpnessGate(), BLURRED, 600, null).verdict(), "exposure unknown");
     }
 
     @Test
-    void aSteadyButBlurredTitleInAShortExposureAsksToHoldStill() {
-        assertEquals(SharpnessGate.Verdict.HOLD_STILL, feedUntil(new SharpnessGate(), BLURRED, 600, 10_000_000L).verdict());
+    void aBlurredTitleInAShortExposureJustWaits() {
+        assertEquals(SharpnessGate.Verdict.WAITING, feedUntil(new SharpnessGate(), BLURRED, 600, 10_000_000L).verdict());
     }
 
     @Test
@@ -190,17 +174,19 @@ class SharpnessGateTest {
     }
 
     @Test
-    void aCardThatNeverSettlesIsCapturedAtTheForceTime() {
+    void aCardThatNeverPassesIsCapturedAtTheForceTime() {
         SharpnessGate gate = new SharpnessGate();
+        CardQuad offFrame = card(1000, 1000);
         SharpnessGate.Decision last = null;
         long t = 0;
         for (int i = 0; t < SharpnessGate.FORCE_AFTER_MS; i++, t = i * FRAME_MS) {
-            last = gate.update(tracked(1, card(i % 2 == 0 ? 0 : 20, 0)), darkened(SHARP, 8), W, H, t);
+            last = gate.update(tracked(1, offFrame), SHARP, W, H, t);
             if (t < SharpnessGate.FALLBACK_AFTER_MS) {
                 assertNotEquals(SharpnessGate.Verdict.READY, last.verdict(), "at " + t);
             }
         }
-        last = gate.update(tracked(1, card(20, 0)), SHARP, W, H, t);
+        assertEquals(SharpnessGate.Verdict.WAITING, last.verdict(), "an unmeasurable band waits, with no prompt");
+        last = gate.update(tracked(1, offFrame), SHARP, W, H, t);
         assertEquals(SharpnessGate.Verdict.READY, last.verdict());
         assertTrue(last.timedOut());
     }
@@ -210,7 +196,7 @@ class SharpnessGateTest {
         SharpnessGate gate = new SharpnessGate();
         feedUntil(gate, BLURRED, SharpnessGate.FALLBACK_AFTER_MS - FRAME_MS, null);
         long t = SharpnessGate.FALLBACK_AFTER_MS + FRAME_MS;
-        assertEquals(SharpnessGate.Verdict.HOLD_STILL, gate.update(tracked(2, CARD), BLURRED, W, H, t).verdict());
+        assertNotEquals(SharpnessGate.Verdict.READY, gate.update(tracked(2, CARD), BLURRED, W, H, t).verdict());
         for (long until = t + SharpnessGate.FALLBACK_AFTER_MS - FRAME_MS; t < until; t += FRAME_MS) {
             assertNotEquals(SharpnessGate.Verdict.READY, gate.update(tracked(2, CARD), BLURRED, W, H, t).verdict(), "at " + t);
         }
@@ -223,14 +209,6 @@ class SharpnessGateTest {
         feedUntil(gate, SHARP, 600, null);
         TrackedCard gap = new TrackedCard(1, CARD, 0, 0, false);
         assertEquals(SharpnessGate.Verdict.NO_CARD, gate.update(gap, SHARP, W, H, 700).verdict());
-    }
-
-    @Test
-    void anotherOutlineOfTheSameCardRestartsTheSteadinessWindow() {
-        SharpnessGate gate = new SharpnessGate();
-        feedUntil(gate, SHARP, 600, null);
-        TrackedCard reshaped = new TrackedCard(1, CARD, 0, 0, true, card(10, 0), 1);
-        assertEquals(SharpnessGate.Verdict.HOLD_STILL, gate.update(reshaped, SHARP, W, H, 700).verdict());
     }
 
     /** The whole pipeline on one still card, focus granted at once, auto capture on and no gyroscope. */
@@ -267,6 +245,7 @@ class SharpnessGateTest {
     }
 
     private static final Long EVENING_EXPOSURE_NS = 33_000_000L;
+    private static final Long DAYLIGHT_EXPOSURE_NS = 10_000_000L;
 
     @Test
     void aBlurredSteadyCardInDimLightIsNotCapturedAndAsksForMoreLight() {
@@ -292,7 +271,8 @@ class SharpnessGateTest {
         assertEquals("READY", recorded.get("verdict"));
         assertEquals(EVENING_EXPOSURE_NS, recorded.get("exposureNs"));
         assertTrue((Double) recorded.get("laplacianVariance") >= SharpnessGate.MIN_SHARPNESS, recorded.toString());
-        assertTrue(recorded.containsKey("meanLuma") && recorded.containsKey("cornerSpread"), recorded.toString());
+        assertTrue(recorded.containsKey("meanLuma"), recorded.toString());
+        assertFalse(recorded.containsKey("cornerSpread"), "no corner-steadiness window any more");
     }
 
     @Test
@@ -304,14 +284,23 @@ class SharpnessGateTest {
     }
 
     @Test
-    void untilTheWindowIsCoveredItSaysHoldStill() {
+    void aSharpCardIsReadyAsSoonAsItIsTracked() {
         Session session = new Session();
         AssistedPipeline.Outcome first = null;
         while (first == null || first.card() == null) {
             first = session.step(SHARP, EVENING_EXPOSURE_NS);
         }
-        assertEquals(SharpnessGate.Verdict.HOLD_STILL, first.sharpness().verdict());
-        assertEquals("Hold still", session.status());
+        assertEquals(SharpnessGate.Verdict.READY, first.sharpness().verdict(), "no steadiness window");
+    }
+
+    @Test
+    void aBlurredCardInAShortExposureIsNotCapturedAndHasNoSpecialPrompt() {
+        Session session = new Session();
+        long captured = session.runUntil(BLURRED, DAYLIGHT_EXPOSURE_NS, SharpnessGate.FALLBACK_AFTER_MS - FRAME_MS);
+        assertEquals(-1, captured, "captured at " + captured);
+        assertNotNull(session.last.card());
+        assertEquals(SharpnessGate.Verdict.WAITING, session.last.sharpness().verdict());
+        assertEquals("Hold steady", session.status());
     }
 
     @Test
