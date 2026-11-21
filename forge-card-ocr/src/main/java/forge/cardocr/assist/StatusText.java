@@ -9,6 +9,12 @@ public final class StatusText {
     }
 
     public static String main(boolean cardTracked, boolean latched, boolean capturing, boolean autoEnabled) {
+        return main(cardTracked, latched, capturing, autoEnabled, null);
+    }
+
+    /** @param sharpness why an automatic capture is waiting, as {@link SharpnessGate} says, or null if not known */
+    public static String main(boolean cardTracked, boolean latched, boolean capturing, boolean autoEnabled,
+            SharpnessGate.Verdict sharpness) {
         if (capturing) {
             return "Capturing";
         }
@@ -18,7 +24,10 @@ public final class StatusText {
         if (latched) {
             return "Remove or change the card";
         }
-        return autoEnabled ? "Hold steady" : "Card found. Press the shutter";
+        if (!autoEnabled) {
+            return "Card found. Press the shutter";
+        }
+        return sharpness == SharpnessGate.Verdict.MORE_LIGHT ? "More light" : "Hold steady";
     }
 
     /** Worded so that no outcome reads as the app rejecting the card. */

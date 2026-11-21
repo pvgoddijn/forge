@@ -6,6 +6,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import forge.game.Game;
 import forge.game.card.Card;
+import forge.card.CardStateName;
+import forge.game.spellability.SpellAbility;
 import forge.game.combat.Combat;
 import forge.game.combat.CombatUtil;
 import forge.game.phase.PhaseType;
@@ -21,6 +23,7 @@ import java.util.List;
 
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertThrows;
 import static org.testng.Assert.assertTrue;
@@ -833,6 +836,39 @@ public class TableEditorTest extends AITest {
                 "a token or emblem name");
     }
 
+    @DataProvider
+    public Object[][] castableFaces() {
+        return new Object[][] {
+                // a sorcery face the card's front type doesn't show: it waits
+                {"Lovestruck Beast", PhaseType.MAIN1, "adventure creature with a sorcery adventure"},
+                {"Torrent Sculptor", PhaseType.MAIN1, "modal double-faced creature with a sorcery back"},
+                {"Grind // Dust", PhaseType.MAIN1, "split card with two sorcery halves"},
+                {"Agadeem's Awakening", PhaseType.MAIN1, "modal double-faced sorcery with a land back"},
+                // an instant face can be cast now, so the card doesn't wait whichever face is chosen later
+                {"Bonecrusher Giant", null, "adventure creature with an instant adventure"},
+                {"Commit // Memory", null, "split card with an instant half and a sorcery half"},
+                // a single face's name: only that face is cast, so it alone decides
+                {"Heart's Desire", PhaseType.MAIN1, "sorcery adventure picked by its own name"},
+                {"Stomp", null, "instant adventure picked by its own name"},
+                {"Flamethrower Sonata", PhaseType.MAIN1, "sorcery back of a modal double-faced card"},
+                {"Agadeem, the Undercrypt", null, "land back of a modal double-faced sorcery: played, not cast"},
+                {"Memory", PhaseType.MAIN1, "sorcery half of a split card"},
+                {"Commit", null, "instant half of a split card"},
+                {"Grind", PhaseType.MAIN1, "sorcery left half of a split card"},
+                {"Fire", null, "instant left half of a split card"},
+                {"Ice", null, "instant right half of a split card"},
+        };
+    }
+
+    /** Known gap: the faces a card can be cast as decide whether it waits, not the front face's type. */
+    @Test(dataProvider = "castableFaces")
+    public void theFacesACardCanBeCastAsDecideWhetherItWaits(String name, PhaseType expected, String what) {
+        assertNotNull(StaticData.instance().getCommonCards().getUniqueByName(name), name);
+        Game game = startTableIn(PhaseType.UPKEEP);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        assertEquals(TableEditor.mainPhaseFor(game, active, name, TableEditor.Mode.CAST), expected, what);
+    }
+
     @Test
     public void waitsForMainPhaseOnlyForACastSorcery() {
         PaperCard divination = StaticData.instance().getCommonCards().getUniqueByName("Divination");
@@ -840,6 +876,124 @@ public class TableEditorTest extends AITest {
         assertTrue(TableEditor.waitsForMainPhase(divination, TableEditor.Mode.CAST));
         assertFalse(TableEditor.waitsForMainPhase(divination, TableEditor.Mode.PUT_ONTO_BATTLEFIELD));
         assertFalse(TableEditor.waitsForMainPhase(bears, TableEditor.Mode.CAST));
+    }
+
+    @DataProvider
+    public Object[][] splitHalves() {
+        return new Object[][] {
+                {"Fire", "Fire // Ice", CardStateName.LeftSplit},
+                {"Ice", "Fire // Ice", CardStateName.RightSplit},
+                {"Commit", "Commit // Memory", CardStateName.LeftSplit},
+                {"Grind", "Grind // Dust", CardStateName.LeftSplit},
+        };
+    }
+
+    /**
+     * The card picker offers each half of a split card by its own name, and OCR often reads just one. Picked that way,
+     * the card is cast as that half, and only that half, then goes to the graveyard as the whole card.
+     */
+    @Test(dataProvider = "splitHalves")
+    public void aSplitHalfPickedByItsOwnNameIsCastAsThatHalf(String half, String card, CardStateName state) {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Player other = game.getNextPlayerAfter(active);
+        addCardToZone("Grizzly Bears", other, ZoneType.Battlefield);
+        game.getAction().checkStateEffects(true);
+
+        TableEditor.Result result = TableEditor.addCard(active, half, false, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertFalse(game.getStack().isEmpty(), half + " is on the stack");
+        SpellAbility cast = game.getStack().peekAbility();
+        assertEquals(cast.getCardStateName(), state, half + " is cast, not the other half");
+        assertEquals(cast.getHostCard().getName(), half);
+        resolveAll(game);
+        assertEquals(named(active, ZoneType.Graveyard, card).size(), 1, card + " ends in the graveyard");
+    }
+
+    @DataProvider
+    public Object[][] knownFacesInHand() {
+        return new Object[][] {
+                {"Fire", "Fire // Ice", CardStateName.LeftSplit},
+                {"Ice", "Fire // Ice", CardStateName.RightSplit},
+                {"Heart's Desire", "Lovestruck Beast", CardStateName.Secondary},
+        };
+    }
+
+    /**
+     * AC-20 for a face's own name: a known Fire // Ice in hand is the card that's cast when "Fire" is added from hand,
+     * as Fire, and the unknown cards stay where they are.
+     */
+    @Test(dataProvider = "knownFacesInHand")
+    public void aFaceNameAddedFromHandCastsTheKnownCardAsThatFace(String face, String card, CardStateName state) {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        addCardToZone("Grizzly Bears", game.getNextPlayerAfter(active), ZoneType.Battlefield);
+        Card known = addCardToZone(card, active, ZoneType.Hand);
+        game.getAction().checkStateEffects(true);
+        int hidden = CompanionCards.hiddenInHand(active);
+
+        TableEditor.Result result = TableEditor.addCard(active, face, true, TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(CompanionCards.hiddenInHand(active), hidden, "no unknown card left the hand");
+        assertTrue(named(active, ZoneType.Hand, card).isEmpty(), "the known " + card + " left the hand");
+        SpellAbility cast = game.getStack().peekAbility();
+        assertEquals(cast.getHostCard().getId(), known.getId(), "the known card itself is cast");
+        assertEquals(cast.getCardStateName(), state, face + " is cast, not another face");
+    }
+
+    /** A known modal double-faced card in hand, added by its land back's name, is played as that land. */
+    @Test
+    public void aLandBackNameAddedFromHandPlaysTheKnownCardAsTheLand() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Card known = addCardToZone("Agadeem's Awakening", active, ZoneType.Hand);
+        int hidden = CompanionCards.hiddenInHand(active);
+
+        TableEditor.Result result = TableEditor.addCard(active, "Agadeem, the Undercrypt", true,
+                TableEditor.Mode.CAST);
+        assertTrue(result.done(), result.message());
+        assertEquals(result.fromHand(), CompanionLogEntry.FromHand.KNOWN);
+        assertEquals(CompanionCards.hiddenInHand(active), hidden);
+        List<Card> land = named(active, ZoneType.Battlefield, "Agadeem, the Undercrypt");
+        assertEquals(land.size(), 1);
+        assertEquals(land.get(0).getId(), known.getId());
+    }
+
+    /** An add of a known card's face that fails leaves the known card in hand as it was, whole. */
+    @Test
+    public void aFailedFaceAddLeavesTheKnownCardWholeInHand() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        Card known = addCardToZone("Commit // Memory", active, ZoneType.Hand);
+
+        assertFalse(TableEditor.addCard(active, "Memory", true, TableEditor.Mode.CAST).done());
+        assertTrue(known.isInZone(ZoneType.Hand));
+        assertEquals(known.getName(), "Commit // Memory");
+        assertEquals(known.getCurrentStateName(), CardStateName.Original);
+
+        // turned to its adventure to be put in, which isn't a permanent: turned back
+        Card beast = addCardToZone("Lovestruck Beast", active, ZoneType.Hand);
+        assertFalse(TableEditor.addCard(active, "Heart's Desire", true, TableEditor.Mode.PUT_ONTO_BATTLEFIELD).done());
+        assertTrue(beast.isInZone(ZoneType.Hand));
+        assertEquals(beast.getName(), "Lovestruck Beast");
+        assertEquals(beast.getCurrentStateName(), CardStateName.Original);
+    }
+
+    /**
+     * An aftermath half (Memory) is cast only from a graveyard, never from a hand: picked by its own name, it isn't
+     * cast as the other half instead. The add fails as any uncastable card's does, and the hand is as it was.
+     */
+    @Test
+    public void anAftermathHalfPickedByItsOwnNameIsNotCastFromHand() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player active = game.getPhaseHandler().getPlayerTurn();
+        TableEditor.Result result = TableEditor.addCard(active, "Memory", true, TableEditor.Mode.CAST);
+        assertFalse(result.done());
+        assertEquals(result.message(), "Memory wasn't added: it couldn't be cast, or the cast was cancelled.");
+        assertTrue(game.getStack().isEmpty());
+        assertEquals(CompanionCards.hiddenInHand(active), 7, "the unknown card went back");
+        assertTrue(named(active, ZoneType.Graveyard, "Commit // Memory").isEmpty());
     }
 
     /** A table with a real store in a temp directory, collecting what it reports. */
@@ -1249,6 +1403,76 @@ public class TableEditorTest extends AITest {
         assertFalse(rec.table.parkedReady(game), "nothing waits any more");
         rec.table.runParked(game);
         assertEquals(castCount(game, "Llanowar Elves"), 0);
+    }
+
+    /** The table casts {@code name} for {@code player}, every seat passes until it resolves, and the prompt saves. */
+    private static void castAndResolve(Recorded rec, Game game, Player player, String name) {
+        rec.table.submit(cast(player, name));
+        assertTrue(rec.table.runPending(game));
+        resolveAll(game);
+        saveAsTheTableDoes(rec, game);
+    }
+
+    /**
+     * An undo puts back the spells cast this turn as they were at the save it returns to: after two spells, undoing
+     * the second leaves a storm count of one, cast by the active player, not the two the engine had counted.
+     */
+    @Test
+    public void anUndoKeepsTheSpellsCastThisTurnUpToTheSave() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        castAndResolve(rec, game, ann, "Divination");
+        castAndResolve(rec, game, ann, "Divination");
+        assertEquals(game.getStack().getSpellsCastThisTurn().size(), 2);
+
+        undo(rec, game);
+        assertEquals(castCount(game, "Divination"), 1, "the second cast was taken back");
+        assertEquals(game.getStack().getSpellsCastThisTurn().size(), 1, "storm count");
+        assertEquals(ann.getSpellsCastThisTurn(), 1);
+        assertEquals(game.getView().getStormCount(), 1, "the view's storm count too");
+        Card cast = game.getStack().getSpellCardsCastThisTurn().get(0);
+        assertEquals(cast.getName(), "Divination");
+        assertTrue(cast.isSorcery() && cast.isBlue(), "the cast card's characteristics, for 'a blue spell' checks");
+    }
+
+    /** A resumed game counts the spells cast this turn by whom they were cast, as the saved game did. */
+    @Test
+    public void theSpellsCastThisTurnSurviveSaveAndLoad() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Player bo = game.getNextPlayerAfter(ann);
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        castAndResolve(rec, game, ann, "Divination");
+        castAndResolve(rec, game, bo, "Lightning Bolt");
+        int boIndex = game.getPlayers().indexOf(bo);
+
+        Game loaded = saveAndLoad(game);
+        assertEquals(loaded.getStack().getSpellsCastThisTurn().size(), 2, "storm count");
+        assertEquals(loaded.getPlayers().get(game.getPlayers().indexOf(ann)).getSpellsCastThisTurn(), 1);
+        assertEquals(loaded.getPlayers().get(boIndex).getSpellsCastThisTurn(), 1);
+        assertEquals(loaded.getStack().getSpellCardsCastThisTurn().stream().map(Card::getName).toList(),
+                List.of("Divination", "Lightning Bolt"), "in the order cast");
+        assertEquals(saveAndLoad(saveAndLoad(loaded)).getStack().getSpellsCastThisTurn().size(), 2,
+                "a load of a load keeps them too");
+    }
+
+    /** A split card's half is put back as the half it was cast as: Fire, a red spell of mana value 2. */
+    @Test
+    public void aSpellCastAsOneHalfIsLoadedAsThatHalf() {
+        Game game = startTableIn(PhaseType.MAIN1);
+        Player ann = game.getPhaseHandler().getPlayerTurn();
+        Recorded rec = new Recorded();
+        saveAsTheTableDoes(rec, game);
+        castAndResolve(rec, game, ann, "Fire");
+
+        Card fire = saveAndLoad(game).getStack().getSpellCardsCastThisTurn().get(0);
+        assertEquals(fire.getCurrentStateName(), CardStateName.LeftSplit);
+        assertEquals(fire.getName(), "Fire");
+        assertTrue(fire.isRed() && !fire.isBlue());
+        assertEquals(fire.getCMC(), 2);
     }
 
     /** "Check early": a second Add while a skip waits queues behind it, and both run in Cy's Main 1, in order. */
@@ -4219,12 +4443,13 @@ public class TableEditorTest extends AITest {
         assertEquals(coins.stream().filter(c -> c.endsWith("(heads)")).count(), 1L, "one seat won");
     }
 
-    /** A screen shared by every seat, recording the caption of each reveal and message it shows. */
+    /** A screen shared by every seat, recording the caption of each reveal, message and list of choices it shows. */
     private static forge.gui.interfaces.IGuiGame screenRecordingReveals(List<String> shown) {
         return (forge.gui.interfaces.IGuiGame) java.lang.reflect.Proxy.newProxyInstance(
                 TableEditorTest.class.getClassLoader(), new Class<?>[] {forge.gui.interfaces.IGuiGame.class},
                 (proxy, method, args) -> {
-                    if (method.getName().equals("reveal") || method.getName().equals("message")) {
+                    if (method.getName().equals("reveal") || method.getName().equals("message")
+                            || method.getName().equals("getChoices")) {
                         shown.add(String.valueOf(args[0]));
                     }
                     Class<?> type = method.getReturnType();
@@ -4294,6 +4519,103 @@ public class TableEditorTest extends AITest {
         shown.clear();
         table.endRevealRun(); // a seat is asked for priority in between
         game.getAction().revealTo(cards, game.getPlayers().get(2));
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+    }
+
+    /**
+     * The ante cards taken out of the decks at the start are shown to every seat by the engine; on the one screen they
+     * show once, naming each deck's owner rather than "your".
+     */
+    @Test
+    public void removedAnteCardsShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        com.google.common.collect.Multimap<Player, PaperCard> removed = com.google.common.collect.ArrayListMultimap.create();
+        removed.put(bo, StaticData.instance().getCommonCards().getCard("Contract from Below"));
+
+        game.getAction().revealAnte("These ante cards were removed", removed);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s"), shown.get(0));
+    }
+
+    /**
+     * The cards the AI can't play are listed for every seat by the engine at the start; on the one screen the list
+     * shows once, naming each deck's owner.
+     */
+    @Test
+    public void cardsTheAICantPlayShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        java.util.Map<Player, java.util.Map<forge.deck.DeckSection, List<? extends PaperCard>>> unplayable = new java.util.HashMap<>();
+        unplayable.put(bo, java.util.Map.of(forge.deck.DeckSection.Main,
+                List.of(StaticData.instance().getCommonCards().getCard("Contract from Below"))));
+
+        game.getAction().revealUnplayableByAI("The AI can't play these", unplayable);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s"), shown.get(0));
+    }
+
+    /**
+     * The unsupported cards taken out of the decks are listed for every seat by the engine at the start; on the one
+     * screen the list shows once, naming each deck's owner.
+     */
+    @Test
+    public void unsupportedCardsShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        java.util.Map<Player, List<PaperCard>> unsupported = new java.util.HashMap<>();
+        unsupported.put(bo, List.of(StaticData.instance().getCommonCards().getCard("Contract from Below")));
+
+        game.getAction().revealUnsupported(unsupported);
+        assertEquals(shown.size(), 1, String.valueOf(shown));
+        assertTrue(shown.get(0).contains(bo.getName() + "'s"), shown.get(0));
+    }
+
+    /**
+     * When a seat leaves the game, or the game ends, its face-down cards are revealed to every other seat, including
+     * seats already out of the game. They show once, however many seats have lost.
+     */
+    @Test
+    public void faceDownCardsRevealedWhenASeatLosesShowOnce() {
+        Game game = startTable();
+        CompanionSetup setup = CompanionSetup.withDefaults(List.of(
+                new CompanionSetup.Seat("Ann", true), new CompanionSetup.Seat("Bo", false), new CompanionSetup.Seat("Cy", false)));
+        CompanionTable table = new CompanionTable("t", setup, new CompanionStore(new java.io.File("unused")));
+        List<String> shown = new ArrayList<>();
+        seatEveryoneOn(game, screenRecordingReveals(shown), p ->
+                new CompanionPlayerController(game, p, new forge.ai.LobbyPlayerAi(p.getName(), null), table));
+        Player bo = game.getPlayers().get(1);
+        Player cy = game.getPlayers().get(2);
+        Card hidden = addCardToZone("Grizzly Bears", cy, ZoneType.Battlefield);
+        hidden.turnFaceDown(true);
+
+        bo.concede();
+        game.getAction().checkGameOverCondition();
+        assertTrue(bo.hasLost());
+        shown.clear();
+        table.endRevealRun();
+
+        cy.concede(); // the last opponent: the game ends, and Cy's face-down card is revealed to Ann and to Bo
+        game.getAction().checkGameOverCondition();
+        assertTrue(game.isGameOver());
         assertEquals(shown.size(), 1, String.valueOf(shown));
     }
 

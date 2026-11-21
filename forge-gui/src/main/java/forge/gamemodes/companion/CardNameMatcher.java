@@ -10,6 +10,7 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -19,23 +20,52 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 
-/** Turns typed text into ranked card names. It tolerates typos, and every face of a card is its own name. */
+/**
+ * Turns typed text into ranked card names. It tolerates typos, and every face of a card is its own name. A back face
+ * of a double-faced card also offers the card itself, by its front face's name, right after it (AC-13).
+ */
 public class CardNameMatcher {
     public static final int MIN_QUERY_LENGTH = 2;
     private static final int MIN_FUZZY_QUERY_LENGTH = 4;
 
     public record Suggestion(String card, double confidence) { }
 
-    private record Entry(String name, String normalized) { }
+    /** A name to match; {@code card} is the double-faced card it's the back face of, or null. */
+    private record Entry(String name, String normalized, String card) { }
 
     private final List<Entry> entries = new ArrayList<>();
 
     public CardNameMatcher(Collection<String> names) {
+        this(names, Map.of());
+    }
+
+    /**
+     * @param names         the names to match
+     * @param cardOfBackFace each back face of a double-faced card to that card's name, so a match for the back face
+     *                       offers the card as well
+     */
+    public CardNameMatcher(Collection<String> names, Map<String, String> cardOfBackFace) {
         Map<String, String> unique = new LinkedHashMap<>();
         for (String name : names) {
             unique.putIfAbsent(normalize(name), name);
         }
-        unique.forEach((normalized, name) -> entries.add(new Entry(name, normalized)));
+        unique.forEach((normalized, name) -> entries.add(new Entry(name, normalized, cardOfBackFace.get(name))));
+    }
+
+    /**
+     * Each back face of a transforming or modal double-faced card in Forge's database, to the card's name: "Insectile
+     * Aberration" to "Delver of Secrets". Split cards, adventures and the like aren't in it: their faces are printed
+     * side by side, so the photo or the name typed already is the card.
+     */
+    public static Map<String, String> cardOfBackFace() {
+        Map<String, String> cards = new HashMap<>();
+        for (PaperCard card : StaticData.instance().getCommonCards().getUniqueCards()) {
+            CardRules rules = card.getRules();
+            if (rules.isTransformable() && rules.getOtherPart() != null) {
+                cards.putIfAbsent(rules.getOtherPart().getName(), rules.getName());
+            }
+        }
+        return cards;
     }
 
     /** The name of every face of every card in Forge's database: what a photo of a card can show. */
@@ -53,7 +83,7 @@ public class CardNameMatcher {
         for (CardRules token : StaticData.instance().getAllTokens().getRules().values()) {
             names.add(token.getName());
         }
-        return new CardNameMatcher(names);
+        return new CardNameMatcher(names, cardOfBackFace());
     }
 
     /** The best matches, best first, or nothing if the text has under {@value #MIN_QUERY_LENGTH} characters. */
@@ -65,12 +95,18 @@ public class CardNameMatcher {
         }
         int maxEdits = query.length() < MIN_FUZZY_QUERY_LENGTH ? 0 : query.length() <= 5 ? 1 : query.length() <= 9 ? 2 : 3;
         LevenshteinDistance distance = new LevenshteinDistance(maxEdits);
+        Map<String, Double> best = new HashMap<>();
         for (Entry entry : entries) {
             double score = score(query, entry.normalized(), maxEdits, distance);
             if (score > 0) {
-                matches.add(new Suggestion(entry.name(), score));
+                best.merge(entry.name(), score, Math::max);
+                if (entry.card() != null) {
+                    // just below the back face, so an exact read of the back face still counts as exact
+                    best.merge(entry.card(), Math.nextDown(score), Math::max);
+                }
             }
         }
+        best.forEach((name, score) -> matches.add(new Suggestion(name, score)));
         matches.sort(Comparator.comparingDouble(Suggestion::confidence).reversed()
                 .thenComparingInt(s -> s.card().length())
                 .thenComparing(Suggestion::card));

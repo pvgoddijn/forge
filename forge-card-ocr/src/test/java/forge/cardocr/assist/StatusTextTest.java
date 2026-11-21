@@ -14,6 +14,12 @@ class StatusTextTest {
         assertEquals("Remove or change the card", StatusText.main(true, true, false, true));
         assertEquals("Looking for a card", StatusText.main(false, true, false, true));
         assertEquals("Card found. Press the shutter", StatusText.main(true, false, false, false));
+        assertEquals("Hold steady", StatusText.main(true, false, false, true, SharpnessGate.Verdict.WAITING), "no special prompt");
+        assertEquals("More light", StatusText.main(true, false, false, true, SharpnessGate.Verdict.MORE_LIGHT));
+        assertEquals("Hold steady", StatusText.main(true, false, false, true, SharpnessGate.Verdict.READY));
+        assertEquals("Card found. Press the shutter", StatusText.main(true, false, false, false, SharpnessGate.Verdict.MORE_LIGHT));
+        assertEquals("Remove or change the card", StatusText.main(true, true, false, true, SharpnessGate.Verdict.WAITING));
+        assertEquals("Looking for a card", StatusText.main(false, false, false, true, SharpnessGate.Verdict.NO_CARD));
     }
 
     @Test

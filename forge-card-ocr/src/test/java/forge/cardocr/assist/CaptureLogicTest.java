@@ -35,6 +35,25 @@ class CaptureLogicTest {
     }
 
     @Test
+    void heldBackBySharpnessItNeitherFiresNorLatches() {
+        CaptureGate gate = new CaptureGate(null);
+        for (long t = 900; t < 3000; t += 100) {
+            assertFalse(gate.update(STEADY, SAME, t, true, 800, true, false, null, false), "at " + t);
+            assertFalse(gate.isLatched(), "at " + t);
+        }
+        assertTrue(gate.update(STEADY, SAME, 3000, true, 800, true, false, null, true), "fires once sharp");
+        assertTrue(gate.isLatched());
+    }
+
+    @Test
+    void theShutterLatchesWhateverTheSharpness() {
+        CaptureGate gate = new CaptureGate(null);
+        assertFalse(gate.update(STEADY, SAME, 900, true, 800, true, false, null, false));
+        gate.latch(SAME);
+        assertTrue(gate.isLatched());
+    }
+
+    @Test
     void neverFiresOnAGapTheTrackerIsBridging() {
         TrackedCard ghost = new TrackedCard(1, QUAD, 0, 0, false);
         assertFalse(fire(new CaptureGate(null), ghost, null, 5000));

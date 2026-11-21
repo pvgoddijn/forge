@@ -3,6 +3,7 @@ package forge.gamemodes.companion;
 import forge.StaticData;
 import forge.card.CardRules;
 import forge.card.CardSplitType;
+import forge.card.CardStateName;
 import forge.card.GamePieceType;
 import forge.card.ICardFace;
 import forge.card.mana.ManaAtom;
@@ -122,15 +123,22 @@ public final class TableEditor {
         Card known = fromHand ? findKnownInHand(player, name) : null;
         Card hidden = fromHand && known == null ? firstPlaceholderInHand(player) : null;
         Card card = known;
+        CardStateName half = splitHalf(printing, name);
         if (card == null) {
             if (hidden != null) {
                 game.getAction().ceaseToExist(hidden, true);
             }
             card = Card.fromPaperCard(printing, player);
             card.setGameTimestamp(game.getNextTimestamp());
-            CardUtil.turnToRightFace(name, card);
+            if (half == null) {
+                // a split half stays whole: turnToRightFace would turn even the left half's name to the right half
+                CardUtil.turnToRightFace(name, card);
+            }
             // in hand first, as the rules expect of anything cast, and for zone-change triggers to see where it was
             game.getAction().moveToHand(card, null);
+        } else if (half == null && !card.getName().equals(name)) {
+            // the known card picked by one face's name (Heart's Desire, Agadeem, the Undercrypt): turned to it, as above
+            CardUtil.turnToRightFace(name, card);
         }
 
         boolean done;
@@ -140,7 +148,7 @@ public final class TableEditor {
                 game.getAction().moveToPlay(card, player, null, AbilityKey.newMap());
             }
         } else {
-            done = cast(player, card);
+            done = cast(player, card, half);
         }
         if (!done) {
             undoAdd(player, card, known, hidden);
@@ -684,7 +692,20 @@ public final class TableEditor {
         if (printing == null) {
             return null;
         }
-        CardRules rules = printing.getRules();
+        List<ManaCost> costs = new ArrayList<>();
+        for (ICardFace face : castableFaces(printing.getRules())) {
+            if (instantSpeed(face)) {
+                costs.add(face.getManaCost());
+            }
+        }
+        return costs.isEmpty() ? null : costs;
+    }
+
+    /**
+     * The faces {@code rules} can be cast as: the front and, for a split, adventure, omen or modal double-faced card,
+     * the other one. A transforming or meld card's back face isn't cast.
+     */
+    private static List<ICardFace> castableFaces(CardRules rules) {
         List<ICardFace> faces = new ArrayList<>();
         faces.add(rules.getMainPart());
         CardSplitType split = rules.getSplitType();
@@ -692,13 +713,11 @@ public final class TableEditor {
                 || split == CardSplitType.Omen || split == CardSplitType.Modal)) {
             faces.add(rules.getOtherPart());
         }
-        List<ManaCost> costs = new ArrayList<>();
-        for (ICardFace face : faces) {
-            if (face.getType().isInstant() || hasFlash(face)) {
-                costs.add(face.getManaCost());
-            }
-        }
-        return costs.isEmpty() ? null : costs;
+        return faces;
+    }
+
+    private static boolean instantSpeed(ICardFace face) {
+        return face.getType().isInstant() || hasFlash(face);
     }
 
     private static boolean hasFlash(ICardFace face) {
@@ -789,9 +808,39 @@ public final class TableEditor {
     /**
      * Whether adding {@code printing} this way has to wait for a main phase: a sorcery, cast (AC-42). Permanent spells
      * are sorcery-speed too, but the owner asked for sorceries only; widen it here if that changes (D5).
+     * <p>
+     * The face is only chosen when the card is cast, after this is decided, so every face it can be cast as counts
+     * ({@link #castableFaces}), not just the front: it waits when one of them is a sorcery (an adventure creature's
+     * sorcery adventure, a modal double-faced card's sorcery back, a split card's sorcery half) and none can be cast
+     * at instant speed. With an instant or flash face too (Commit // Memory) it doesn't wait, so that face can still
+     * be cast in response; the sorcery face is then cast where it was logged.
      */
     static boolean waitsForMainPhase(PaperCard printing, Mode mode) {
-        return mode == Mode.CAST && printing.getRules().getType().isSorcery();
+        return waitsForMainPhase(printing, printing.getName(), mode);
+    }
+
+    /**
+     * {@link #waitsForMainPhase(PaperCard, Mode)} for {@code printing} picked as {@code name}. When that's one face's
+     * own name (Heart's Desire, Flamethrower Sonata, Agadeem, the Undercrypt, Memory), only that face is cast
+     * ({@link #addCard} turns the card to it, or casts a split card as that half only), so it alone decides: a
+     * sorcery face waits, any other doesn't. The whole card's name, or one that names no face (a flavor name), counts
+     * every face it can be cast as.
+     */
+    static boolean waitsForMainPhase(PaperCard printing, String name, Mode mode) {
+        if (mode != Mode.CAST) {
+            return false;
+        }
+        CardRules rules = printing.getRules();
+        if (!name.equalsIgnoreCase(printing.getName())) {
+            for (ICardFace face : Arrays.asList(rules.getMainPart(), rules.getOtherPart())) {
+                if (face != null && name.equalsIgnoreCase(face.getName())) {
+                    return face.getType().isSorcery() && !instantSpeed(face);
+                }
+            }
+        }
+        List<ICardFace> faces = castableFaces(rules);
+        return faces.stream().anyMatch(face -> face.getType().isSorcery())
+                && faces.stream().noneMatch(TableEditor::instantSpeed);
     }
 
     /**
@@ -803,7 +852,7 @@ public final class TableEditor {
      */
     public static PhaseType mainPhaseFor(Game game, Player player, String name, Mode mode) {
         PaperCard printing = StaticData.instance().getCommonCards().getUniqueByName(name);
-        if (printing == null || !waitsForMainPhase(printing, mode)) {
+        if (printing == null || !waitsForMainPhase(printing, name, mode)) {
             return null;
         }
         PhaseHandler ph = game.getPhaseHandler();
@@ -823,9 +872,35 @@ public final class TableEditor {
         return phase.isBefore(PhaseType.COMBAT_BEGIN) ? PhaseType.MAIN1 : PhaseType.MAIN2;
     }
 
+    /**
+     * The half of a split card {@code name} names (Fire of Fire // Ice), or {@code null} when it names the whole card,
+     * isn't a split card's, or names no half. {@link #addCard} casts such a card whole, as {@code half} only.
+     */
+    static CardStateName splitHalf(PaperCard printing, String name) {
+        CardRules rules = printing.getRules();
+        if (rules.getSplitType() != CardSplitType.Split || name.equalsIgnoreCase(printing.getName())) {
+            return null;
+        }
+        if (name.equalsIgnoreCase(rules.getMainPart().getName())) {
+            return CardStateName.LeftSplit;
+        }
+        if (rules.getOtherPart() != null && name.equalsIgnoreCase(rules.getOtherPart().getName())) {
+            return CardStateName.RightSplit;
+        }
+        return null;
+    }
+
     private static boolean cast(Player player, Card card) {
+        return cast(player, card, null);
+    }
+
+    /** Casts {@code card} for free, as {@code half} only when that's a split card's half, else as any face it has. */
+    private static boolean cast(Player player, Card card, CardStateName half) {
         // as a "cast it without paying" effect sees them: at any time, on anyone's turn, every face and half
-        List<SpellAbility> spells = AbilityUtils.getBasicSpellsFromPlayEffect(card, player);
+        List<SpellAbility> spells = new ArrayList<>(AbilityUtils.getBasicSpellsFromPlayEffect(card, player));
+        if (half != null) {
+            spells.removeIf(sa -> sa.getCardStateName() != half);
+        }
         if (spells.isEmpty()) {
             return false;
         }
@@ -843,7 +918,12 @@ public final class TableEditor {
     /** Puts things back as they were before {@link #addCard}, when the card couldn't go where it was meant to. */
     private static void undoAdd(Player player, Card card, Card known, Card hidden) {
         if (known != null) {
-            return; // it never left the hand
+            // it never left the hand, but may have been turned to the face it was picked by
+            if (known.getCurrentStateName() != CardStateName.Original && known.hasState(CardStateName.Original)) {
+                known.setState(CardStateName.Original, true);
+                known.setBackSide(false);
+            }
+            return;
         }
         Game game = player.getGame();
         game.getAction().ceaseToExist(card, true);
@@ -906,13 +986,34 @@ public final class TableEditor {
         return null;
     }
 
+    /**
+     * {@code player}'s known card in hand named {@code name}: by its whole name first, else one whose face or half it
+     * names (a known Fire // Ice for "Fire", a known Lovestruck Beast for "Heart's Desire").
+     */
     private static Card findKnownInHand(Player player, String name) {
+        Card byFace = null;
         for (Card card : player.getCardsIn(ZoneType.Hand)) {
-            if (!CompanionCards.isPlaceholder(card) && card.getName().equals(name)) {
+            if (CompanionCards.isPlaceholder(card)) {
+                continue;
+            }
+            if (card.getName().equals(name)) {
                 return card;
             }
+            if (byFace == null && hasFaceNamed(card, name)) {
+                byFace = card;
+            }
         }
-        return null;
+        return byFace;
+    }
+
+    private static boolean hasFaceNamed(Card card, String name) {
+        CardRules rules = card.getRules();
+        if (rules == null) {
+            return false;
+        }
+        ICardFace main = rules.getMainPart();
+        ICardFace other = rules.getOtherPart();
+        return main != null && name.equals(main.getName()) || other != null && name.equals(other.getName());
     }
 
     private static Card firstPlaceholderInHand(Player player) {

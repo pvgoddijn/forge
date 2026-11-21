@@ -2,6 +2,7 @@ package forge.screens.companion;
 
 import forge.Forge;
 import forge.StaticData;
+import forge.gamemodes.companion.CommanderChoices;
 import forge.gamemodes.companion.CommanderLegality;
 import forge.gamemodes.companion.CompanionGameState;
 import forge.gamemodes.companion.CompanionMatch;
@@ -51,6 +52,8 @@ public class CompanionSetupScreen extends LaunchScreen {
     private final FButton[] deckButtons = new FButton[CompanionSetup.MAX_PLAYERS];
     private final FButton[] clears = new FButton[CompanionSetup.MAX_PLAYERS];
     private final CompanionDeckDialog.Loaded[] decks = new CompanionDeckDialog.Loaded[CompanionSetup.MAX_PLAYERS];
+    /** Each seat's commanders from the commander step, kept when it is cancelled so Start doesn't ask again. */
+    private final CommanderChoices commanderChoices = new CommanderChoices(CompanionSetup.MAX_PLAYERS);
     /** The form scrolls: with six players its rows don't fit above the buttons on a small screen. */
     private final FScrollPane form = add(new FScrollPane() {
         @Override
@@ -78,9 +81,9 @@ public class CompanionSetupScreen extends LaunchScreen {
             ups[i] = form.add(new FButton("^"));
             ups[i].setCommand(e -> swapWithRowAbove(row));
             deckButtons[i] = form.add(new FButton("Deck..."));
-            deckButtons[i].setCommand(e -> new CompanionDeckDialog(playerName(row), deck -> setDeck(row, deck)).show());
+            deckButtons[i].setCommand(e -> new CompanionDeckDialog(playerName(row), deck -> changeDeck(row, deck)).show());
             clears[i] = form.add(new FButton("X"));
-            clears[i].setCommand(e -> setDeck(row, null));
+            clears[i].setCommand(e -> changeDeck(row, null));
         }
         txtLife.setIsNumeric(true);
         txtLife.setLiveChangeEvents(true);
@@ -127,11 +130,18 @@ public class CompanionSetupScreen extends LaunchScreen {
         CompanionDeckDialog.Loaded deck = decks[row];
         setDeck(row, decks[row - 1]);
         setDeck(row - 1, deck);
+        commanderChoices.swap(row, row - 1);
     }
 
     private String playerName(int row) {
         String name = names[row].getText().trim();
         return name.isEmpty() ? "Player " + (row + 1) : name;
+    }
+
+    /** A new deck, or none, for the seat in {@code row}: its commanders replace any chosen in an earlier step. */
+    private void changeDeck(int row, CompanionDeckDialog.Loaded deck) {
+        commanderChoices.forget(row);
+        setDeck(row, deck);
     }
 
     /** Attaches {@code deck} to the seat in {@code row}, or clears it for null. */
@@ -246,8 +256,10 @@ public class CompanionSetupScreen extends LaunchScreen {
      * The commander step (AC-44): for each seat from {@code index} on, in seat order, a commander by photo, typing,
      * or "No commander", and a second one when the first can have a partner or a background. Then {@code done}, with
      * the seats and their commanders. A seat whose deck named its commanders is only asked to confirm them, without
-     * the camera, or change them. Cancel at any point ends the step on this screen, with nothing started or saved;
-     * Photo in the picker is the retake. UI thread only, and no game exists yet.
+     * the camera, or change them. Cancel at any point ends the step on this screen, with nothing started or saved,
+     * but the seats already done keep their commanders: the next Start only asks them to confirm, the same way, and
+     * picks up at the seat that was cancelled. Photo in the picker is the retake. UI thread only, and no game exists
+     * yet.
      */
     private void chooseCommanders(List<CompanionSetup.Seat> seats, int index, Consumer<List<CompanionSetup.Seat>> done) {
         if (index == seats.size()) {
@@ -256,20 +268,22 @@ public class CompanionSetupScreen extends LaunchScreen {
         }
         CompanionSetup.Seat seat = seats.get(index);
         Consumer<List<String>> next = commanders -> {
+            commanderChoices.choose(index, commanders);
             seats.set(index, seat.withCommanders(commanders));
             chooseCommanders(seats, index + 1, done);
         };
-        if (!seat.commanders().isEmpty()) {
-            // from the seat's deck (AC-3): only confirmed, without the camera; Change is the usual step
-            String named = String.join(" and ", seat.commanders());
-            FOptionPane.showOptionDialog(seat.name() + "'s deck has " + named + " as its commander"
-                    + (seat.commanders().size() > 1 ? "s." : "."), seat.name() + "'s commander", null,
-                    List.of("Confirm", "Change", "No commander"), 0, choice -> {
+        Optional<CommanderChoices.Confirmation> known = commanderChoices.confirmation(index, seat);
+        if (known.isPresent()) {
+            // chosen in a cancelled step, or from the seat's deck (AC-3): only confirmed, without the camera;
+            // Change is the usual step
+            CommanderChoices.Confirmation confirmation = known.get();
+            FOptionPane.showOptionDialog(confirmation.message(), seat.name() + "'s commander", null,
+                    confirmation.options(), 0, choice -> {
                 if (choice == null) {
                     return; // dismissed: the step ends here, as Cancel in the picker does
                 }
                 if (choice == 0) {
-                    next.accept(seat.commanders());
+                    next.accept(confirmation.commanders());
                 } else if (choice == 2) {
                     next.accept(List.of());
                 } else {

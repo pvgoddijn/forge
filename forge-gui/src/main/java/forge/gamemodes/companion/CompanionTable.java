@@ -1022,9 +1022,11 @@ public class CompanionTable {
      * turn, in the game's order of players, and every seat is on the operator's one screen, so only the first of a
      * run shows it: a later seat given the same one is part of that run. The same one given to an earlier seat again
      * is a new run, as is anything after {@link #endRevealRun}. Game loop thread.
+     * <p>The order is that of every seat, out of the game or not: a seat that leaves reveals its face-down cards to
+     * every other seat, the ones that left before it too, and so does each seat at the end of the game.
      */
     boolean firstToShow(Game game, Player seat, Object key) {
-        int index = game.getPlayers().indexOf(seat);
+        int index = game.getRegisteredPlayers().indexOf(seat);
         boolean sameRun = revealRun != null && revealRun.key().equals(key) && index > revealRun.lastSeatIndex();
         revealRun = new RevealRun(key, index);
         return !sameRun;

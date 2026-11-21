@@ -200,11 +200,13 @@ public class CardSearchDialog extends CardPicker {
         switch (plan.action()) {
             case ADD:
                 hide();
+                photoPicked(plan.card()); // the operator may still undo it: see the slice 8 doc
                 table.submit(new CompanionTable.AddCard(active, plan.card(), true, TableEditor.Mode.CAST),
                         ran -> CompanionMatchExtension.afterAutoAdd(table, ran));
                 return true;
             case COMMANDER_CHOICE:
                 hide();
+                photoPicked(plan.card());
                 addChecked(active, plan.card(), true, TableEditor.Mode.CAST);
                 return true;
             default:

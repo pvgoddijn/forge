@@ -38,6 +38,9 @@ public class Main {
             Class.forName("forge.app.companion.DesktopCardCamera").getMethod("installIfEnabled").invoke(null);
         } catch (ClassNotFoundException e) {
             // built without the profile: no camera
+            if (Boolean.getBoolean("forge.companion.photos")) {
+                System.err.println("WARNING: forge.companion.photos=true but this build lacks the companion-photos profile; no camera. Rebuild with -Pcompanion-photos.");
+            }
         } catch (ReflectiveOperationException e) {
             throw new RuntimeException(e);
         }

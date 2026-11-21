@@ -33,6 +33,12 @@ public final class CardReader {
      * in the full frame, which took 5 s to read on the phone without changing the answer.
      */
     private static final int MAX_CROP_BOXES = 8;
+    /**
+     * Read when the budget's windows gave a weak title: a shorter band makes the name taller in the recogniser's input,
+     * which helps a blurred title. On the phone captures it fixed 2 of 15 misses at a third of the cost of always
+     * reading them.
+     */
+    private static final List<TitleBands.Window> RETRY_WINDOWS = List.of(TitleBands.WIDE_HIGH, TitleBands.WIDE_LOW);
 
     private final TextModels models;
     private final CardNames names;
@@ -81,13 +87,19 @@ public final class CardReader {
                 first = quads.get(0);
             }
             readTitles(image, quads, budget, pass);
+            retryWindows(image, quads, budget, pass);
         }
 
         List<ReadResult.Match> titleOnly = toMatches(pass.best);
         TitleStrength strength = strength(pass);
         boolean runWhole = budget.whole() == ReadBudget.Whole.ALWAYS
                 || budget.whole() == ReadBudget.Whole.IF_WEAK && strength.weak();
-        WholeRun whole = runWhole ? readWholeImage(image, budget, pass.best, true, Integer.MAX_VALUE) : WholeRun.NONE;
+        WholeRun whole = WholeRun.NONE;
+        if (runWhole) {
+            // the text on the flattened card first: in a cluttered frame its title box is found where the whole frame's isn't
+            WholeRun flat = first == null ? WholeRun.NONE : readFlatCard(image, first, budget, pass.best, FROM_WHOLE_BASE);
+            whole = flat.and(readWholeImage(image, budget, pass.best, true, Integer.MAX_VALUE, FROM_WHOLE_BASE + flat.texts().size()));
+        }
 
         List<ReadResult.Match> matches = toMatches(pass.best);
         String text = "";
@@ -133,13 +145,14 @@ public final class CardReader {
             if (fresh != null) {
                 card = fresh;
                 readTitles(image, List.of(fresh), budget, pass);
+                retryWindows(image, List.of(fresh), budget, pass);
             }
         }
         List<ReadResult.Match> titleOnly = toMatches(pass.best);
         TitleStrength strength = strength(pass);
         boolean runWhole = card != null && (budget.whole() == ReadBudget.Whole.ALWAYS
                 || budget.whole() == ReadBudget.Whole.IF_WEAK && strength.weak());
-        WholeRun whole = runWhole ? readFlatCard(image, card, budget, pass.best) : WholeRun.NONE;
+        WholeRun whole = runWhole ? readFlatCard(image, card, budget, pass.best, FROM_WHOLE_BASE) : WholeRun.NONE;
         List<BestMatches.Entry> entries = pass.best.top();
         String text = "";
         if (!entries.isEmpty()) {
@@ -189,7 +202,7 @@ public final class CardReader {
         return new Corner(x, y);
     }
 
-    private WholeRun readFlatCard(ArgbImage image, CardQuad card, ReadBudget budget, BestMatches best) {
+    private WholeRun readFlatCard(ArgbImage image, CardQuad card, ReadBudget budget, BestMatches best, int originBase) {
         long start = System.nanoTime();
         CardQuad grown = grown(card);
         double longSide = Math.max(grown.c0().distanceTo(grown.c3()), grown.c1().distanceTo(grown.c2()));
@@ -198,7 +211,7 @@ public final class CardReader {
         int width = Math.max(1, (int) Math.round(height * 63.0 / 88.0));
         ArgbImage flat = new ArgbImage(CardFinder.warp(image.pixels(), image.width(), image.height(), grown, width, height), width, height);
         double warped = ms(System.nanoTime() - start);
-        WholeRun run = readWholeImage(flat, budget, best, false, MAX_CROP_BOXES);
+        WholeRun run = readWholeImage(flat, budget, best, false, MAX_CROP_BOXES, originBase);
         return new WholeRun(run.detect(), warped + run.rectify(), run.recognise(), run.match(), run.found(), run.read(), run.texts());
     }
 
@@ -229,13 +242,27 @@ public final class CardReader {
         }
     }
 
+    /** Reads the title again through the windows the budget hasn't read, if what it read is weak. */
+    private void retryWindows(ArgbImage image, List<CardQuad> quads, ReadBudget budget, Pass pass) {
+        List<TitleBands.Window> windows = new ArrayList<>(RETRY_WINDOWS);
+        windows.removeAll(budget.windows());
+        if (!windows.isEmpty() && !quads.isEmpty() && strength(pass).weak()) {
+            readTitles(image, quads, windows, budget, pass);
+        }
+    }
+
     private void readTitles(ArgbImage image, List<CardQuad> quads, ReadBudget budget, Pass pass) {
+        readTitles(image, quads, budget.windows(), budget, pass);
+        pass.quads += quads.size();
+    }
+
+    private void readTitles(ArgbImage image, List<CardQuad> quads, List<TitleBands.Window> windows, ReadBudget budget, Pass pass) {
         long start = System.nanoTime();
         List<CardQuad> orientedQuads = new ArrayList<>();
         List<TitleBands.Band> bands = new ArrayList<>();
         for (CardQuad quad : quads) {
             for (CardQuad oriented : List.of(quad, quad.flipped())) {
-                for (TitleBands.Window window : budget.windows()) {
+                for (TitleBands.Window window : windows) {
                     orientedQuads.add(oriented);
                     bands.add(TitleBands.title(image, oriented, window));
                 }
@@ -265,7 +292,6 @@ public final class CardReader {
         pass.rectify += ms(afterRectify - start);
         pass.recognise += ms(afterRecognise - afterRectify);
         pass.match += ms(afterMatch - afterRecognise);
-        pass.quads += quads.size();
         pass.bands += bands.size();
     }
 
@@ -287,14 +313,24 @@ public final class CardReader {
     private record WholeRun(double detect, double rectify, double recognise, double match, int found, int read,
             List<String> texts) {
         static final WholeRun NONE = new WholeRun(0, 0, 0, 0, 0, 0, List.of());
+
+        /** Both runs, the other's texts after these. */
+        WholeRun and(WholeRun other) {
+            List<String> both = new ArrayList<>(texts);
+            both.addAll(other.texts);
+            return new WholeRun(detect + other.detect, rectify + other.rectify, recognise + other.recognise, match + other.match,
+                    found + other.found, read + other.read, both);
+        }
     }
 
     /**
      * @param penaliseOffCentre whether text far from the middle counts for less, which suits a whole
      *     frame. On a flattened card the title is at the edge
      * @param maxBoxes how many text boxes to read, nearest the top or bottom edge first
+     * @param originBase the origin of the first reading's scores; the rest follow it
      */
-    private WholeRun readWholeImage(ArgbImage image, ReadBudget budget, BestMatches best, boolean penaliseOffCentre, int maxBoxes) {
+    private WholeRun readWholeImage(ArgbImage image, ReadBudget budget, BestMatches best, boolean penaliseOffCentre, int maxBoxes,
+            int originBase) {
         long start = System.nanoTime();
         List<TextBox> detected = detectBoxes(image, budget);
         List<TextBox> boxes = detected;
@@ -323,7 +359,7 @@ public final class CardReader {
             TextBox box = boxes.get(i / 2);
             float offCentre = penaliseOffCentre ? (float) (OFF_CENTRE_PENALTY * Math.hypot(box.centreX() - midX, box.centreY() - midY) / diagonal) : 0;
             texts.add(classes.greedy(raws.get(i)));
-            scorer.score(classes.reduce(raws.get(i)), WHOLE_BETA, offCentre + WHOLE_PENALTY, FROM_WHOLE_BASE + i, best);
+            scorer.score(classes.reduce(raws.get(i)), WHOLE_BETA, offCentre + WHOLE_PENALTY, originBase + i, best);
         }
         long end = System.nanoTime();
         return new WholeRun(ms(afterDetect - start), ms(afterRectify - afterDetect), ms(afterRecognise - afterRectify),

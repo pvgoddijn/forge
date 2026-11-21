@@ -134,6 +134,15 @@ public final class CaptureGate {
      */
     public boolean update(TrackedCard card, float[] signature, long nowMs, boolean focusSettled,
             long steadyMs, boolean autoEnabled, boolean captureInFlight, PhoneState phone) {
+        return update(card, signature, nowMs, focusSettled, steadyMs, autoEnabled, captureInFlight, phone, true);
+    }
+
+    /**
+     * As above, and holding back while {@code sharpReady} is false, as {@link SharpnessGate} says. Held back, it
+     * doesn't latch, so the card is captured as soon as the title is sharp.
+     */
+    public boolean update(TrackedCard card, float[] signature, long nowMs, boolean focusSettled,
+            long steadyMs, boolean autoEnabled, boolean captureInFlight, PhoneState phone, boolean sharpReady) {
         lastUpdateMs = nowMs;
         updateLatch(card, signature, nowMs, captureInFlight);
         if (card == null || latched || captureInFlight || !autoEnabled || !focusSettled) {
@@ -156,6 +165,7 @@ public final class CaptureGate {
         } else {
             fire = phone.steadyForMs() >= steadyMs && card.steadyForMs(nowMs) >= Math.min(steadyMs, CARD_STILL_MS);
         }
+        fire &= sharpReady;
         if (fire) {
             lastWaitMs = nowMs - waitingSinceMs;
             latch(signature);

@@ -11,7 +11,8 @@ public class CompanionPreferences extends AbstractPreferences<CompanionPreferenc
 
     /** Preference identifiers, and their default values. */
     public enum CPref implements AbstractPreferences.IPref {
-        AUTO_ADD("false"); // add a confidently read photo at once, with an undo prompt (AC-9, AC-10)
+        AUTO_ADD("false"), // add a confidently read photo at once, with an undo prompt (AC-9, AC-10)
+        KEEP_PHOTOS("false"); // hidden: keep each photo, labelled with the card picked, for the OCR benchmark (slice 8)
 
         private final String strDefaultVal;
 

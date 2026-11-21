@@ -32,7 +32,8 @@ Try the crop with and without simple preprocessing (grayscale, contrast). Photos
 
 ## After
 - Record the choice in `plan.md` section 4.
-- You contact the Forge maintainers with the numbers and the APK size before slice 0 starts.
+- Build the [camera PoC](C-camera-poc.md) next.
+- You contact the Forge maintainers with the numbers from both, and the APK size, before slice 0 starts.
 
 ## Out of scope
 Any change to Forge modules. Any UI.
